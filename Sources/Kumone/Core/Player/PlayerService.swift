@@ -323,6 +323,7 @@ final class PlayerService: ObservableObject {
         if isPlaying {
             engine.pause()
             isPlaying = false
+            AudioSpectrum.shared.reset()
         } else if engine.currentItem == nil {
             // Restored session: re-resolve the source.
             startPlaying(track, indexUnchanged: true)
@@ -337,6 +338,7 @@ final class PlayerService: ObservableObject {
     func pause() {
         engine.pause()
         isPlaying = false
+        AudioSpectrum.shared.reset()
         NowPlayingManager.shared.updateElapsed(progress, rate: 0)
     }
 
@@ -591,7 +593,21 @@ final class PlayerService: ObservableObject {
             ToastCenter.shared.show(String(localized: "VIP 歌曲，当前为试听片段"))
         }
 
-        let item = AVPlayerItem(url: url)
+        // Resolve the asset's audio track before the item goes live: an audio mix
+        // attached after playback starts is silently ignored, so the spectrum tap
+        // has to be spliced in here or not at all. Sources that refuse byte-range
+        // requests never resolve a track — those play untapped and the UI falls
+        // back to its decorative animation.
+        let asset = AVURLAsset(url: url)
+        let assetTrack = await loadAudioTrack(from: asset, timeout: 2)
+        guard generation == resolveGeneration else { return }
+
+        let item = AVPlayerItem(asset: asset)
+        if let assetTrack, let mix = AudioSpectrum.shared.makeAudioMix(for: assetTrack) {
+            item.audioMix = mix
+        }
+        AudioSpectrum.shared.reset()
+
         if let old = endObserver {
             NotificationCenter.default.removeObserver(old)
         }
@@ -609,6 +625,23 @@ final class PlayerService: ObservableObject {
         if let time = data?.time, time > 0 {
             duration = TimeInterval(time) / 1000
             NowPlayingManager.shared.updateMetadata(for: track, duration: duration)
+        }
+    }
+
+    /// Resolves the asset's audio track, giving up after `timeout` so a slow or
+    /// uncooperative source delays playback no longer than it would today.
+    private func loadAudioTrack(from asset: AVURLAsset, timeout: TimeInterval) async -> AVAssetTrack? {
+        await withTaskGroup(of: AVAssetTrack?.self) { group in
+            group.addTask {
+                try? await asset.loadTracks(withMediaType: .audio).first
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 
