@@ -4,7 +4,7 @@ import SwiftUI
 /// large artwork on the left, big synced lyrics on the right.
 struct NowPlayingView: View {
     @EnvironmentObject private var player: PlayerService
-    @ObservedObject private var clock = PlayerService.shared.clock
+    @ObservedObject private var lyricsCursor = PlayerService.shared.lyricsCursor
     @EnvironmentObject private var account: AccountStore
     @EnvironmentObject private var settings: SettingsManager
     #if os(iOS)
@@ -124,6 +124,20 @@ struct NowPlayingView: View {
         #else
         return true
         #endif
+    }
+
+
+    /// Jump straight to the line the song is on. Used when the view appears,
+    /// where waiting for the next line change would leave the lyrics parked at
+    /// the top. Scrolling is deferred a turn: the list has not laid out yet
+    /// while `onAppear` runs, and `scrollTo` on an unlaid list does nothing.
+    private func adoptCursor(proxy: ScrollViewProxy) {
+        let index = lyricsCursor.activeIndex
+        activeIndex = index
+        guard let index else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo(index, anchor: .center)
+        }
     }
 
     // MARK: - Backdrop
@@ -552,14 +566,19 @@ struct NowPlayingView: View {
                         startPoint: .top, endPoint: .bottom
                     )
                 )
-                .onChange(of: clock.progress) { _ in
-                    let index = lyrics.activeIndex(at: clock.progress + 0.2)
+                .onChange(of: lyricsCursor.activeIndex) { index in
                     guard index != activeIndex else { return }
                     activeIndex = index
                     guard !isUserScrolling, let index else { return }
                     withAnimation(.spring(response: 0.8, dampingFraction: 0.85)) {
                         proxy.scrollTo(index, anchor: .center)
                     }
+                }
+                .onAppear {
+                    // The cursor only fires on a line change, which can be many
+                    // seconds away — on re-entering the page, adopt where the
+                    // song already is instead of waiting for the next line.
+                    adoptCursor(proxy: proxy)
                 }
                 .onChange(of: player.currentTrack?.id) { _ in
                     activeIndex = nil
@@ -627,7 +646,7 @@ struct NowPlayingView: View {
 #if os(iOS)
 private struct IOSImmersiveLyricsColumn: View {
     @EnvironmentObject private var player: PlayerService
-    @ObservedObject private var clock = PlayerService.shared.clock
+    @ObservedObject private var lyricsCursor = PlayerService.shared.lyricsCursor
     @EnvironmentObject private var settings: SettingsManager
 
     @State private var activeIndex: Int?
@@ -651,14 +670,16 @@ private struct IOSImmersiveLyricsColumn: View {
                     }
                     .mask(edgeMask)
                     .accessibilityIdentifier("syncedLyricsScroll")
-                    .onChange(of: clock.progress) { _ in
-                        let index = lyrics.activeIndex(at: clock.progress + 0.2)
+                    .onChange(of: lyricsCursor.activeIndex) { index in
                         guard index != activeIndex else { return }
                         activeIndex = index
                         guard !isUserScrolling, let index else { return }
                         withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.38)) {
                             proxy.scrollTo(index, anchor: .center)
                         }
+                    }
+                    .onAppear {
+                        adoptCursor(proxy: proxy)
                     }
                     .onChange(of: player.currentTrack?.id) { _ in
                         activeIndex = nil
@@ -699,6 +720,20 @@ private struct IOSImmersiveLyricsColumn: View {
         }
         .onDisappear {
             resumeTask?.cancel()
+        }
+    }
+
+
+    /// Jump straight to the line the song is on. Used when the view appears,
+    /// where waiting for the next line change would leave the lyrics parked at
+    /// the top. Scrolling is deferred a turn: the list has not laid out yet
+    /// while `onAppear` runs, and `scrollTo` on an unlaid list does nothing.
+    private func adoptCursor(proxy: ScrollViewProxy) {
+        let index = lyricsCursor.activeIndex
+        activeIndex = index
+        guard let index else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo(index, anchor: .center)
         }
     }
 
@@ -1278,11 +1313,11 @@ struct MiniLyricsView: View {
     let onOpen: () -> Void
 
     @EnvironmentObject private var player: PlayerService
-    @ObservedObject private var clock = PlayerService.shared.clock
+    @ObservedObject private var lyricsCursor = PlayerService.shared.lyricsCursor
 
     private var lines: (previous: LyricLine?, current: LyricLine?, next: LyricLine?) {
         guard let lyrics = player.lyrics, !lyrics.isEmpty else { return (nil, nil, nil) }
-        guard let index = lyrics.activeIndex(at: clock.progress + 0.2) else {
+        guard let index = lyricsCursor.activeIndex else {
             return (nil, nil, lyrics.lines.first)
         }
         let all = lyrics.lines

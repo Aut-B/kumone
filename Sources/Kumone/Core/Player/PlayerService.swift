@@ -93,6 +93,18 @@ final class PlaybackClock: ObservableObject {
     @Published var progress: TimeInterval = 0
 }
 
+/// Which lyric line is current.
+///
+/// Every lyric view used to derive this itself, which meant observing the clock
+/// and re-rendering on every tick just to discover the line hadn't changed —
+/// and for the now-playing page, whose body is the whole immersive layout, that
+/// was five full re-evaluations a second. Computing it once here and publishing
+/// only on a change turns that into one re-render per lyric line.
+@MainActor
+final class LyricsCursor: ObservableObject {
+    @Published var activeIndex: Int?
+}
+
 @MainActor
 final class PlayerService: ObservableObject {
     static let shared = PlayerService()
@@ -112,6 +124,7 @@ final class PlayerService: ObservableObject {
     @Published private(set) var unblockSource: String?
     @Published private(set) var isTrial = false
     let clock = PlaybackClock()
+    let lyricsCursor = LyricsCursor()
     /// Passthrough to the clock so existing `progress` reads/writes keep working.
     var progress: TimeInterval {
         get { clock.progress }
@@ -204,7 +217,17 @@ final class PlayerService: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, !self.isScrubbing else { return }
                 let seconds = time.seconds
-                if seconds.isFinite, abs(seconds - self.progress) > 0.05 {
+                guard seconds.isFinite else { return }
+
+                // Lyrics need this cadence to stay in sync; the cursor itself
+                // only publishes when the line actually changes.
+                self.updateLyricsCursor(at: seconds)
+
+                // The scrubber does not. Publishing the position every tick
+                // re-renders it — and SwiftUI rebuilds the display list for the
+                // whole tree each time — to move the thumb a fraction of a
+                // pixel. Half a second is still smoother than the eye needs.
+                if abs(seconds - self.progress) > 0.45 {
                     self.progress = seconds
                     NowPlayingManager.shared.updateElapsed(seconds, rate: self.isPlaying ? 1 : 0)
                 }
@@ -339,8 +362,18 @@ final class PlayerService: ObservableObject {
         startPlaying(activeQueue[idx])
     }
 
+    /// Recomputes the current lyric line, publishing only on a change.
+    /// The lead makes a line light up just before it is sung.
+    private func updateLyricsCursor(at seconds: TimeInterval) {
+        let index = lyrics?.activeIndex(at: seconds + 0.2)
+        if index != lyricsCursor.activeIndex {
+            lyricsCursor.activeIndex = index
+        }
+    }
+
     func seek(to seconds: TimeInterval) {
         progress = seconds
+        updateLyricsCursor(at: seconds)
         engine.seek(to: CMTime(seconds: seconds, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero)
         NowPlayingManager.shared.updateElapsed(seconds, rate: isPlaying ? 1 : 0)
@@ -497,6 +530,7 @@ final class PlayerService: ObservableObject {
         lyrics = nil
         scrobbled = false
         isPlaying = true
+        lyricsCursor.activeIndex = nil
         resolveGeneration += 1
         let generation = resolveGeneration
 
@@ -582,6 +616,7 @@ final class PlayerService: ObservableObject {
         let response = try? await NeteaseAPI.lyric(id: track.id)
         guard generation == resolveGeneration else { return }
         lyrics = response.map(LyricsParser.parse)
+        updateLyricsCursor(at: progress)
     }
 
     // MARK: - Scrobble
