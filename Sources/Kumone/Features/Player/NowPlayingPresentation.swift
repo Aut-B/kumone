@@ -129,7 +129,7 @@ struct IOSNowPlayingPresentation<Content: View>: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let isInteractive = proxy.size.width < 720 && mode == .immersive
+            let isInteractive = proxy.size.width < 720 && mode != .classic
             let usesCustomDrag = isInteractive && !usesSystemInteractiveDismissal
 
             ZStack(alignment: .top) {
