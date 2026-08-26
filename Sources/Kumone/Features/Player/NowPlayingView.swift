@@ -1767,6 +1767,7 @@ private struct MinimalTransportControls: View {
                     .foregroundStyle(playbackModeTint)
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .trailing)
             }
+            .buttonStyle(.plain)
             .accessibilityLabel(playbackModeLabel)
         }
     }
