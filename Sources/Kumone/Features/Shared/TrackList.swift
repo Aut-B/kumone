@@ -395,7 +395,26 @@ final class SpectrumBarsView: PlatformView {
 
     @MainActor
     private func tick() {
-        let live = AudioSpectrum.shared.isLive
+        let spectrum = AudioSpectrum.shared
+        let live: Bool
+        switch spectrum.tapState {
+        case .tapped:
+            // Samples may still be a few hundred milliseconds out while the
+            // source buffers. Hold still through that rather than animating,
+            // which reads as a glitch right as a song starts.
+            live = spectrum.isLive
+            guard live else {
+                apply(scaleForAll: Self.minHeight / Self.maxHeight)
+                return
+            }
+        case .untappable:
+            live = false
+        case .idle, .preparing:
+            // Not yet known whether this source can be tapped.
+            apply(scaleForAll: Self.minHeight / Self.maxHeight)
+            return
+        }
+
         let elapsed = CACurrentMediaTime() - startedAt
         let span = Self.maxHeight - Self.minHeight
 
@@ -405,7 +424,7 @@ final class SpectrumBarsView: PlatformView {
             // Real band levels when the tap is feeding us; otherwise the old
             // decorative sine, so untappable sources still look alive.
             let level = live
-                ? CGFloat(AudioSpectrum.shared.level(at: i))
+                ? CGFloat(spectrum.level(at: i))
                 : CGFloat(abs(sin(elapsed * 2.4 + Double(i) * 0.9)))
             let height = Self.minHeight + span * level
             bar.transform = CATransform3DMakeScale(1, height / Self.maxHeight, 1)

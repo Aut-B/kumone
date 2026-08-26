@@ -11,9 +11,9 @@ import MediaToolbox
 /// preallocated, lock-free and allocation-free.
 ///
 /// Not every track can be tapped — an audio mix needs a resolved `AVAssetTrack`,
-/// and a source server that refuses byte-range requests never produces one. That
-/// is why `isLive` exists: callers fall back to a decorative animation when the
-/// real thing is unavailable.
+/// and a source server that refuses byte-range requests never produces one. See
+/// `tapState`, which callers use to decide between real levels, holding still,
+/// and the decorative fallback.
 @MainActor
 final class AudioSpectrum {
     static let shared = AudioSpectrum()
@@ -22,11 +22,39 @@ final class AudioSpectrum {
     /// too, so it stays outside the actor's isolation.
     nonisolated static let bandCount = 4
 
-    private let store = SpectrumStore()
+    /// Replaced for each new item rather than cleared.
+    ///
+    /// The outgoing track's tap keeps running until its player item is actually
+    /// swapped out, so clearing the store in place doesn't work: the old tap
+    /// simply writes the old track's levels straight back, and the bars show the
+    /// previous song for a moment as the new one starts. Handing the new item a
+    /// fresh store leaves the old tap writing to one nobody reads, which it
+    /// keeps alive on its own until it is finalized.
+    private var store = SpectrumStore()
     private init() {}
 
     /// True while the tap is actually delivering samples for the current track.
     var isLive: Bool { store.isLive }
+
+    /// What is known about the current track's tap.
+    ///
+    /// Three states rather than a flag, because there is a stretch after the
+    /// user hits play where the answer isn't known yet: the track's URL is still
+    /// being resolved. Treating that as "untappable" flashes the decorative
+    /// animation for a moment right as a song starts, and treating it as
+    /// "tapped" would freeze the previous track's last frame under it.
+    enum TapState {
+        /// Nothing playing.
+        case idle
+        /// Resolving the source; it isn't known yet whether it can be tapped.
+        case preparing
+        /// A tap is attached. `isLive` says whether samples have arrived yet.
+        case tapped
+        /// This source can't be tapped — the decorative fallback belongs here.
+        case untappable
+    }
+
+    private(set) var tapState: TapState = .idle
 
     /// Latest level for one band, already smoothed and normalized to `0...1`.
     /// A single pointer read — cheap enough to call per bar, per frame.
@@ -45,11 +73,31 @@ final class AudioSpectrum {
         params.audioTapProcessor = tap
         let mix = AVMutableAudioMix()
         mix.inputParameters = [params]
+        tapState = .tapped
         return mix
     }
 
-    /// Silences the bands — call when playback stops or the track changes so a
-    /// frozen last frame doesn't linger under the UI.
+    /// Call as soon as a track is chosen — before its URL is resolved — so the
+    /// bars hold still instead of falling back while the answer is unknown.
+    func beginPreparing() {
+        tapState = .preparing
+        store = SpectrumStore()
+    }
+
+    /// Call once it's settled that this source can't be tapped.
+    func markUntappable() {
+        tapState = .untappable
+        store.reset()
+    }
+
+    /// Call when playback stops entirely.
+    func markIdle() {
+        tapState = .idle
+        store.reset()
+    }
+
+    /// Silences the bands without forgetting that the current item is tapped —
+    /// pausing shouldn't make a tapped track look untappable when it resumes.
     func reset() {
         store.reset()
     }

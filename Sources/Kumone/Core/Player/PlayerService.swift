@@ -533,6 +533,10 @@ final class PlayerService: ObservableObject {
         scrobbled = false
         isPlaying = true
         lyricsCursor.activeIndex = nil
+        // Before the URL is even resolved: holds the bars still rather than
+        // letting them fall back to the decorative animation for the moment it
+        // takes to find out whether this source can be tapped.
+        AudioSpectrum.shared.beginPreparing()
         resolveGeneration += 1
         let generation = resolveGeneration
 
@@ -605,8 +609,9 @@ final class PlayerService: ObservableObject {
         let item = AVPlayerItem(asset: asset)
         if let assetTrack, let mix = AudioSpectrum.shared.makeAudioMix(for: assetTrack) {
             item.audioMix = mix
+        } else {
+            AudioSpectrum.shared.markUntappable()
         }
-        AudioSpectrum.shared.reset()
 
         if let old = endObserver {
             NotificationCenter.default.removeObserver(old)
