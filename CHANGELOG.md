@@ -6,6 +6,35 @@
 section the English bullets come first, followed by their Simplified Chinese
 counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单行。
 
+## 0.3.9 - 2026-08-27
+
+### Added / 新增
+
+- Settings → 更新: a "启动时自动检查更新" toggle. Off suppresses the launch update sheet on iOS and disables Sparkle's scheduled checks on macOS; manual check still works. (#42)
+- 设置 → 更新：新增「启动时自动检查更新」开关。关闭后 iOS 启动不再自动弹更新提示、macOS 停用 Sparkle 定时检查；仍可手动检查。（#42）
+
+### Fixed / 修复
+
+- macOS: clicking the Dock icon reopens the main window after it was closed (e.g. while desktop lyrics keeps the app running). Thanks @kitiho (#34, fixes #30).
+- macOS：主窗口关闭后（例如桌面歌词让 App 常驻时）点击 Dock 图标可重新打开主窗口。感谢 @kitiho（#34，修复 #30）。
+- iOS #31: the bottom mini-player text no longer turns white/unreadable after entering search — the accessory's colour scheme is pinned to the app appearance.
+- iOS #31：进入搜索后底部迷你播放条文字不再变白看不清——已把该控件的配色方案固定为 App 外观。
+- iOS #37: the volume slider in the now-playing page works again — a nested GeometryReader was silently swallowing the drag.
+- iOS #37：播放页的音量滑轨恢复可用——此前一个嵌套的 GeometryReader 把拖动吞掉了。
+- 最近播放（最近一周）now records plays: the client was sending only the `play` weblog and never the `startplay` one that writes the recent-plays list. Thanks @fanyuexiang for the root cause (#33).
+- 最近播放（最近一周）现在能记录了：客户端此前只发了 `play` 打卡、从未发写入「最近播放」列表的 `startplay`。感谢 @fanyuexiang 的根因分析（#33）。
+- Gray-track unblock tries 酷狗 before 酷我 — 酷我 increasingly returns a "请在酷我音乐APP播放" promo clip instead of the song, so it is now the last resort. (#44)
+- 灰色歌曲解锁改为先试酷狗再试酷我——酷我越来越多返回「请在酷我音乐APP播放」的提示音而非歌曲，现降为最后备选。（#44）
+
+### Improved / 改进
+
+- Performance: an idle, loaded home page no longer burns ~16% CPU. MarqueeText now animates a render-server CATextLayer instead of a forever SwiftUI animation; the active lyric line is computed once and published only on change; shelves use LazyHStack. Thanks @XerWandeRer (#38).
+- 性能：静止的首页不再持续占用约 16% CPU。跑马灯改为在 render server 侧的 CATextLayer 上做动画（不再是永不停止的 SwiftUI 动画）；当前歌词行集中计算、仅在换行时广播；货架改用 LazyHStack。感谢 @XerWandeRer（#38）。
+- iOS: best-effort now-playing hardening (declare the media session as audio) for the "can't tap back into the app from the system Now Playing / Dynamic Island" reports, which otherwise look like an iOS 26/27-beta issue. (#36, #40)
+- iOS：对「无法从系统正在播放 / 灵动岛点回 App」的问题做了尽力而为的加固（声明媒体会话为音频）；该问题很可能是 iOS 26/27 beta 的系统问题。（#36、#40）
+- CI: releases can auto-bump the Homebrew cask (guarded so a missing token can't fail a release). Thanks @Goooler (#43).
+- CI：发布可自动提交 Homebrew cask 版本更新（已加保护，缺 token 也不会让发布失败）。感谢 @Goooler（#43）。
+
 ## 0.3.8 - 2026-08-25
 
 ### Fixed / 修复
