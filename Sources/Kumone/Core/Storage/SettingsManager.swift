@@ -56,6 +56,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 enum NowPlayingMode: String, CaseIterable, Identifiable {
     case classic
     case immersive
+    case minimal
 
     var id: String { rawValue }
 
@@ -63,6 +64,7 @@ enum NowPlayingMode: String, CaseIterable, Identifiable {
         switch self {
         case .classic: return String(localized: "经典模式")
         case .immersive: return String(localized: "沉浸模式")
+        case .minimal: return String(localized: "简洁模式")
         }
     }
 }

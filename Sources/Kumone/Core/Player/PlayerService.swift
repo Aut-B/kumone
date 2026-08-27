@@ -372,11 +372,14 @@ final class PlayerService: ObservableObject {
         }
     }
 
-    func seek(to seconds: TimeInterval) {
+    func seek(to seconds: TimeInterval, completion: (@MainActor () -> Void)? = nil) {
         progress = seconds
         updateLyricsCursor(at: seconds)
         engine.seek(to: CMTime(seconds: seconds, preferredTimescale: 600),
-                    toleranceBefore: .zero, toleranceAfter: .zero)
+                    toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            guard let completion else { return }
+            Task { @MainActor in completion() }
+        }
         NowPlayingManager.shared.updateElapsed(seconds, rate: isPlaying ? 1 : 0)
     }
 
@@ -395,6 +398,26 @@ final class PlayerService: ObservableObject {
     func cycleRepeatMode() {
         guard !isFMMode else { return }
         repeatMode = repeatMode.next
+    }
+
+    /// Single-button mode cycle for the iOS minimal transport row:
+    /// sequential → loop all → loop one → shuffle → sequential.
+    func cyclePlaybackMode() {
+        guard !isFMMode else { return }
+        if shuffleEnabled {
+            toggleShuffle()
+            repeatMode = .off
+        } else {
+            switch repeatMode {
+            case .off:
+                repeatMode = .all
+            case .all:
+                repeatMode = .one
+            case .one:
+                repeatMode = .off
+                toggleShuffle()
+            }
+        }
     }
 
     /// Jump to a track in the upcoming list (queue panel click).
