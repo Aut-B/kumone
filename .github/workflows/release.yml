@@ -134,6 +134,9 @@ jobs:
             dist/appcast.xml
 
       - name: Bump Homebrew cask
+        # Best-effort: a missing GH_HOMEBREW_TOKEN (or a brew failure) must not
+        # fail the release — the app/IPA/appcast are already published above.
+        continue-on-error: true
         env:
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GH_HOMEBREW_TOKEN || secrets.HOMEBREW_GITHUB_API_TOKEN || secrets.GH_TOKEN || secrets.PAT }}
         run: |
