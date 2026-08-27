@@ -171,7 +171,6 @@ jobs:
           brew bump-cask-pr \
             --version="$VERSION" \
             --sha256="$SHA" \
-            --url="$URL" \
             --no-browse \
             --no-audit \
             owo-network/brew/kumone
