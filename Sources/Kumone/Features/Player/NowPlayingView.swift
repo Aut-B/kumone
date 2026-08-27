@@ -1328,6 +1328,8 @@ private struct IOSMinimalLyricsColumn: View {
     @State private var lineCenters: [Int: CGFloat] = [:]
     @State private var isDragging = false
     @State private var suppressesAutoScroll = false
+    @State private var scrollSettleTask: Task<Void, Never>?
+    @State private var selectionTimeoutTask: Task<Void, Never>?
 
     var body: some View {
         GeometryReader { geometry in
@@ -1349,14 +1351,11 @@ private struct IOSMinimalLyricsColumn: View {
                                             return
                                         }
                                         guard selectedIndex == line.id else {
-                                            self.selectedIndex = nil
-                                            nearestIndex = nil
-                                            guard let activeIndex else { return }
-                                            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                                                proxy.scrollTo(activeIndex, anchor: .center)
-                                            }
+                                            returnToActiveLine(proxy: proxy)
                                             return
                                         }
+                                        selectionTimeoutTask?.cancel()
+                                        selectionTimeoutTask = nil
                                         suppressesAutoScroll = true
                                         player.seek(to: line.time) {
                                             suppressesAutoScroll = false
@@ -1390,10 +1389,15 @@ private struct IOSMinimalLyricsColumn: View {
                         .accessibilityIdentifier("syncedLyricsScroll")
                         .onPreferenceChange(MinimalLyricCentersKey.self) { centers in
                             lineCenters = centers
-                            guard isDragging else { return }
+                            guard isDragging || scrollSettleTask != nil else { return }
                             nearestIndex = nearestLine(
                                 to: geometry.size.height / 2,
                                 in: centers
+                            )
+                            guard !isDragging else { return }
+                            scheduleScrollSelection(
+                                guideY: geometry.size.height / 2,
+                                proxy: proxy
                             )
                         }
                         .onAppear {
@@ -1410,7 +1414,8 @@ private struct IOSMinimalLyricsColumn: View {
                             guard index != activeIndex else { return }
                             activeIndex = index
                             guard !suppressesAutoScroll,
-                                  !isDragging, selectedIndex == nil, let index else { return }
+                                  !isDragging, scrollSettleTask == nil,
+                                  selectedIndex == nil, let index else { return }
                             withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.38)) {
                                 proxy.scrollTo(index, anchor: .center)
                             }
@@ -1420,11 +1425,19 @@ private struct IOSMinimalLyricsColumn: View {
                             selectedIndex = nil
                             nearestIndex = nil
                             suppressesAutoScroll = false
+                            scrollSettleTask?.cancel()
+                            scrollSettleTask = nil
+                            selectionTimeoutTask?.cancel()
+                            selectionTimeoutTask = nil
                         }
                         .simultaneousGesture(
                             DragGesture()
                                 .onChanged { _ in
                                     if !isDragging {
+                                        scrollSettleTask?.cancel()
+                                        scrollSettleTask = nil
+                                        selectionTimeoutTask?.cancel()
+                                        selectionTimeoutTask = nil
                                         selectedIndex = nil
                                         isDragging = true
                                     }
@@ -1434,20 +1447,11 @@ private struct IOSMinimalLyricsColumn: View {
                                     )
                                 }
                                 .onEnded { _ in
-                                    let selection = nearestLine(
-                                        to: geometry.size.height / 2,
-                                        in: lineCenters
-                                    ) ?? nearestIndex
-                                    selectedIndex = selection
-                                    nearestIndex = selection
                                     isDragging = false
-                                    guard let selection else { return }
-                                    Task { @MainActor in
-                                        await Task.yield()
-                                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                                            proxy.scrollTo(selection, anchor: .center)
-                                        }
-                                    }
+                                    scheduleScrollSelection(
+                                        guideY: geometry.size.height / 2,
+                                        proxy: proxy
+                                    )
                                 }
                         )
                         .overlay {
@@ -1474,14 +1478,19 @@ private struct IOSMinimalLyricsColumn: View {
                 }
             }
         }
+        .onDisappear {
+            scrollSettleTask?.cancel()
+            selectionTimeoutTask?.cancel()
+        }
     }
 
     @ViewBuilder
     private func selectionGuide(lyrics: ParsedLyrics) -> some View {
-        if let index = isDragging ? nearestIndex : selectedIndex,
+        let isScrolling = isDragging || scrollSettleTask != nil
+        if let index = isScrolling ? nearestIndex : selectedIndex,
            lyrics.lines.indices.contains(index) {
             HStack(spacing: 8) {
-                if isDragging {
+                if isScrolling {
                     Canvas { context, size in
                         var path = Path()
                         path.move(to: CGPoint(x: 0, y: size.height / 2))
@@ -1511,7 +1520,50 @@ private struct IOSMinimalLyricsColumn: View {
         centers.min { abs($0.value - guideY) < abs($1.value - guideY) }?.key
     }
 
+    private func scheduleScrollSelection(guideY: CGFloat, proxy: ScrollViewProxy) {
+        scrollSettleTask?.cancel()
+        // ponytail: iOS 16 has no scroll phase API; replace with onScrollPhaseChange
+        // when the deployment target reaches iOS 18.
+        scrollSettleTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            let selection = nearestLine(to: guideY, in: lineCenters) ?? nearestIndex
+            selectedIndex = selection
+            nearestIndex = selection
+            scrollSettleTask = nil
+            guard let selection else { return }
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                proxy.scrollTo(selection, anchor: .center)
+            }
+            scheduleSelectionTimeout(proxy: proxy)
+        }
+    }
+
+    private func scheduleSelectionTimeout(proxy: ScrollViewProxy) {
+        selectionTimeoutTask?.cancel()
+        selectionTimeoutTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled, selectedIndex != nil else { return }
+            returnToActiveLine(proxy: proxy)
+        }
+    }
+
+    private func returnToActiveLine(proxy: ScrollViewProxy) {
+        selectionTimeoutTask?.cancel()
+        selectionTimeoutTask = nil
+        selectedIndex = nil
+        nearestIndex = nil
+        guard let activeIndex else { return }
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            proxy.scrollTo(activeIndex, anchor: .center)
+        }
+    }
+
     private func closeLyrics() {
+        scrollSettleTask?.cancel()
+        scrollSettleTask = nil
+        selectionTimeoutTask?.cancel()
+        selectionTimeoutTask = nil
         selectedIndex = nil
         nearestIndex = nil
         isDragging = false
@@ -1549,17 +1601,17 @@ private struct IOSMinimalLyricsColumn: View {
                 }
 
                 Text(line.text.isEmpty ? "♪" : line.text)
-                    .font(.system(size: 23, weight: .bold))
+                    .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(.white.opacity(isActive ? 1 : 0.45))
                     .fixedSize(horizontal: false, vertical: true)
-                    .scaleEffect(isActive ? 1.02 : 19.0 / 23.0, anchor: .leading)
+                    .scaleEffect(isActive ? 1.02 : 16.0 / 17.0, anchor: .leading)
 
                 if settings.showLyricsTranslation, let translation = line.translation {
                     Text(translation)
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.35))
                         .fixedSize(horizontal: false, vertical: true)
-                        .scaleEffect(isActive ? 1.02 : 12.0 / 14.0, anchor: .leading)
+                        .scaleEffect(isActive ? 1.02 : 12.0 / 13.0, anchor: .leading)
                 }
             }
             .multilineTextAlignment(.leading)
