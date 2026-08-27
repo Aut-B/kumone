@@ -744,9 +744,11 @@ struct NowPlayingView: View {
                         .font(.system(size: isActive ? 15 : 13, weight: .medium))
                         .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.35))
                 }
-                Text(line.text.isEmpty ? "♪" : line.text)
-                    .font(.system(size: isActive ? 26 : 20, weight: isActive ? .bold : .semibold))
-                    .foregroundStyle(.white.opacity(isActive ? 1 : 0.45))
+                LyricMainText(
+                    line: line, isActive: isActive,
+                    font: .system(size: isActive ? 26 : 20, weight: isActive ? .bold : .semibold),
+                    verbatim: settings.verbatimLyrics
+                )
                 if settings.showLyricsTranslation, let translation = line.translation {
                     Text(translation)
                         .font(.system(size: isActive ? 16 : 14, weight: .medium))
@@ -761,6 +763,51 @@ struct NowPlayingView: View {
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isActive)
+    }
+}
+
+
+/// The main lyric line. Renders karaoke-style per-character highlighting from
+/// verbatim (`yrc`) timings, driven live by the player, when the line is active
+/// and verbatim data exists; otherwise a plain line.
+struct LyricMainText: View {
+    let line: LyricLine
+    let isActive: Bool
+    let font: Font
+    let verbatim: Bool
+    var inactiveOpacity: Double = 0.45
+
+    @EnvironmentObject private var player: PlayerService
+
+    var body: some View {
+        if isActive, verbatim, let words = line.words, !words.isEmpty {
+            TimelineView(.animation(paused: !player.isPlaying)) { _ in
+                karaoke(words, at: player.livePlaybackTime).font(font)
+            }
+        } else {
+            Text(line.text.isEmpty ? "♪" : line.text)
+                .font(font)
+                .foregroundStyle(.white.opacity(isActive ? 1 : inactiveOpacity))
+        }
+    }
+
+    /// One concatenated `Text` (so it wraps) with per-character opacity: sung
+    /// characters are bright, the current one fades in, unsung stay dim.
+    private func karaoke(_ words: [LyricWord], at time: TimeInterval) -> Text {
+        let unsung = max(inactiveOpacity, 0.5)
+        var out = Text(verbatim: "")
+        for word in words {
+            let chars = Array(word.text)
+            let per = chars.isEmpty ? word.duration : word.duration / Double(chars.count)
+            for (i, ch) in chars.enumerated() {
+                let charStart = word.start + per * Double(i)
+                let frac = per > 0 ? min(max((time - charStart) / per, 0), 1)
+                                   : (time >= charStart ? 1 : 0)
+                let alpha = unsung + (1 - unsung) * frac
+                out = out + Text(verbatim: String(ch)).foregroundColor(.white.opacity(alpha))
+            }
+        }
+        return out
     }
 }
 
@@ -882,9 +929,11 @@ private struct IOSImmersiveLyricsColumn: View {
                         .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.35))
                 }
 
-                Text(line.text.isEmpty ? "♪" : line.text)
-                    .font(.system(size: 27, weight: isActive ? .bold : .semibold))
-                    .foregroundStyle(.white.opacity(isActive ? 1 : 0.45))
+                LyricMainText(
+                    line: line, isActive: isActive,
+                    font: .system(size: 27, weight: isActive ? .bold : .semibold),
+                    verbatim: settings.verbatimLyrics
+                )
 
                 if settings.showLyricsTranslation, let translation = line.translation {
                     Text(translation)
@@ -1612,9 +1661,11 @@ private struct IOSMinimalLyricsColumn: View {
                         .scaleEffect(isActive ? 1.02 : 12.0 / 13.0, anchor: .leading)
                 }
 
-                Text(line.text.isEmpty ? "♪" : line.text)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.white.opacity(isActive ? 1 : 0.45))
+                LyricMainText(
+                    line: line, isActive: isActive,
+                    font: .system(size: 17, weight: .bold),
+                    verbatim: settings.verbatimLyrics
+                )
                     .fixedSize(horizontal: false, vertical: true)
                     .scaleEffect(isActive ? 1.02 : 16.0 / 17.0, anchor: .leading)
 

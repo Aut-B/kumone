@@ -165,6 +165,13 @@ final class PlayerService: ObservableObject {
     // MARK: - Engine
 
     private let engine = AVPlayer()
+
+    /// Live playback position straight from the player, for smooth per-frame
+    /// karaoke highlighting (the published `progress` is intentionally coarse).
+    var livePlaybackTime: TimeInterval {
+        let t = engine.currentTime().seconds
+        return t.isFinite ? t : progress
+    }
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
