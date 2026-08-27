@@ -259,6 +259,10 @@ final class MarqueeTextView: PlatformView {
     private var laidOutFor: CGSize = .zero
     private var needsMarquee: Bool { textWidth > bounds.width + 1 }
 
+    /// `NSView.layer` is optional (needs `wantsLayer`); `UIView.layer` is not.
+    /// A single optional accessor lets the shared setup code work on both.
+    private var hostLayer: CALayer? { layer }
+
     init(text: String, fontSize: CGFloat, weight: PlatformFont.Weight) {
         self.text = text
         self.fontSize = fontSize
@@ -267,10 +271,10 @@ final class MarqueeTextView: PlatformView {
         #if os(macOS)
         wantsLayer = true
         #endif
-        layer?.addSublayer(scroller)
+        hostLayer?.addSublayer(scroller)
         scroller.addSublayer(first)
         scroller.addSublayer(second)
-        layer?.mask = fade
+        hostLayer?.mask = fade
         fade.startPoint = CGPoint(x: 0, y: 0.5)
         fade.endPoint = CGPoint(x: 1, y: 0.5)
         for textLayer in [first, second] {
