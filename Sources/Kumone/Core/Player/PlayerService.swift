@@ -171,6 +171,7 @@ final class PlayerService: ObservableObject {
     private var resolveGeneration = 0
     private var consecutiveFailures = 0
     private var scrobbled = false
+    private var startScrobbled = false
 
     private init() {
         engine.actionAtItemEnd = .pause
@@ -529,6 +530,7 @@ final class PlayerService: ObservableObject {
         isTrial = false
         lyrics = nil
         scrobbled = false
+        startScrobbled = false
         isPlaying = true
         lyricsCursor.activeIndex = nil
         resolveGeneration += 1
@@ -606,6 +608,13 @@ final class PlayerService: ObservableObject {
         engine.play()
         isPlaying = true
 
+        if !startScrobbled {
+            startScrobbled = true
+            let tid = track.id
+            let sid = source.sourceID
+            Task.detached { await NeteaseAPI.scrobbleStart(trackID: tid, sourceID: sid) }
+        }
+
         if let time = data?.time, time > 0 {
             duration = TimeInterval(time) / 1000
             NowPlayingManager.shared.updateMetadata(for: track, duration: duration)
@@ -627,7 +636,7 @@ final class PlayerService: ObservableObject {
         let seconds = completed ? Int(duration) : Int(progress)
         let sourceID = source.sourceID
         Task.detached {
-            await NeteaseAPI.scrobble(trackID: track.id, sourceID: sourceID, seconds: seconds)
+            await NeteaseAPI.scrobbleFinish(trackID: track.id, sourceID: sourceID, seconds: seconds)
         }
     }
 

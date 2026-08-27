@@ -952,35 +952,40 @@ private struct CompactTransportControls: View {
 
 private struct CompactVolumeControl: View {
     @EnvironmentObject private var player: PlayerService
-    @State private var isHovering = false
     @State private var isDragging = false
 
     var body: some View {
         HStack(spacing: 11) {
             Image(systemName: "speaker.fill")
                 .font(.caption2)
+            // One GeometryReader with the gesture on the ZStack. A nested
+            // GeometryReader (the old TranslucentSliderTrack) silently dropped
+            // the drag, so the volume slider did nothing (#37).
             GeometryReader { geo in
-                TranslucentSliderTrack(
-                    fraction: CGFloat(player.volume),
-                    isActive: isHovering || isDragging
-                )
+                let width = geo.size.width
+                let fraction = min(max(CGFloat(player.volume), 0), 1)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.28))
+                    Capsule().fill(.white.opacity(0.78))
+                        .frame(width: width * fraction)
+                }
+                .frame(height: isDragging ? 10 : 6)
+                .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
                             isDragging = true
-                            updateVolume(at: value.location.x, width: geo.size.width)
+                            updateVolume(at: value.location.x, width: width)
                         }
                         .onEnded { value in
-                            updateVolume(at: value.location.x, width: geo.size.width)
+                            updateVolume(at: value.location.x, width: width)
                             isDragging = false
                         }
                 )
+                .animation(.spring(response: 0.24, dampingFraction: 0.82), value: isDragging)
             }
             .frame(height: 24)
-            .onHover { hovering in
-                withAnimation(AppAnimation.quick) { isHovering = hovering }
-            }
             .accessibilityElement()
             .accessibilityLabel("音量")
             .accessibilityValue("\(Int((player.volume * 100).rounded()))%")
@@ -1199,35 +1204,7 @@ private struct CompactQueueRow: View {
     }
 }
 
-private struct TranslucentSliderTrack: View {
-    let fraction: CGFloat
-    let isActive: Bool
 
-    private var clampedFraction: CGFloat {
-        min(max(fraction, 0), 1)
-    }
-
-    private var trackHeight: CGFloat {
-        isActive ? 10 : 6
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.white.opacity(0.28))
-
-                Rectangle()
-                    .fill(.white.opacity(0.78))
-                    .frame(width: geo.size.width * clampedFraction)
-            }
-            .clipShape(Capsule())
-            .frame(height: trackHeight)
-            .frame(maxHeight: .infinity)
-        }
-        .animation(.spring(response: 0.24, dampingFraction: 0.82), value: isActive)
-    }
-}
 
 
 #endif
