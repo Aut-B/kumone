@@ -2,7 +2,14 @@ name: Release
 
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to bump (e.g. 0.3.8)"
+        required: false
+        default: "0.3.8"
 
 permissions:
   contents: write
@@ -22,11 +29,18 @@ jobs:
 
       - name: Derive version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if [ -z "$VERSION" ] || [ "$VERSION" = "main" ]; then
+            VERSION="0.3.8"
+          fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BUILD_NUMBER=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
 
       - name: Extract release notes from CHANGELOG.md
+        if: false
         run: |
           Scripts/release-notes.sh "$VERSION" > "$RUNNER_TEMP/notes.md"
           Scripts/release-notes.sh "$VERSION" --html > "$RUNNER_TEMP/$APP_NAME-$VERSION.html"
@@ -34,6 +48,7 @@ jobs:
           cat "$RUNNER_TEMP/notes.md"
 
       - name: Import signing certificate
+        if: false
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -52,12 +67,14 @@ jobs:
           rm -f "$RUNNER_TEMP/cert.p12"
 
       - name: Build app (universal)
+        if: false
         run: |
           MARKETING_VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" \
             ARCHES="arm64 x86_64" \
             Scripts/build-app.sh release
 
       - name: Codesign (Developer ID, hardened runtime)
+        if: false
         run: |
           APP=".build/app/$APP_NAME.app"
           FW="$APP/Contents/Frameworks/Sparkle.framework"
@@ -72,6 +89,7 @@ jobs:
           codesign --verify --deep --strict "$APP"
 
       - name: Notarize and staple
+        if: false
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -86,6 +104,7 @@ jobs:
           spctl -a -vv --type execute "$APP"
 
       - name: Package and generate appcast
+        if: false
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
@@ -100,15 +119,16 @@ jobs:
 
           printf '%s' "$SPARKLE_PRIVATE_KEY" | \
             "$RUNNER_TEMP/sparkle/bin/generate_appcast" \
-              --ed-key-file - \
-              --embed-release-notes \
-              --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/v$VERSION/" \
-              -o dist/appcast.xml \
-              dist
+               --ed-key-file - \
+               --embed-release-notes \
+               --download-url-prefix "https://github.com/missuo/kumone/releases/download/v$VERSION/" \
+               -o dist/appcast.xml \
+               dist
           rm -f "dist/$APP_NAME-$VERSION.html"
           cat dist/appcast.xml
 
       - name: Build unsigned iOS IPA
+        if: false
         run: |
           xcodebuild -workspace ios/KumoneIOS.xcworkspace -scheme KumoneIOS \
             -configuration Release -destination 'generic/platform=iOS' \
@@ -123,6 +143,7 @@ jobs:
           ls -la dist/
 
       - name: Create GitHub release
+        if: false
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -137,6 +158,11 @@ jobs:
         env:
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GH_HOMEBREW_TOKEN || secrets.HOMEBREW_GITHUB_API_TOKEN }}
         run: |
+          URL="https://github.com/missuo/kumone/releases/download/v$VERSION/$APP_NAME-$VERSION.zip"
+          if [ ! -f "dist/$APP_NAME-$VERSION.zip" ]; then
+            mkdir -p dist
+            curl -sL -o "dist/$APP_NAME-$VERSION.zip" "$URL"
+          fi
           SHA="$(shasum -a 256 "dist/$APP_NAME-$VERSION.zip" | awk '{print $1}')"
           git config --global user.email "41898282+github-actions@users.noreply.github.com"
           git config --global user.name "github-actions"
@@ -145,7 +171,7 @@ jobs:
           brew bump-cask-pr \
             --version="$VERSION" \
             --sha256="$SHA" \
-            --url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v$VERSION/$APP_NAME-$VERSION.zip" \
+            --url="$URL" \
             --no-browse \
             --no-audit \
             owo-network/brew/kumone
