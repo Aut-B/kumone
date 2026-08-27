@@ -159,21 +159,32 @@ public struct IOSMainWindow: View {
     @ViewBuilder
     private var tabInterface: some View {
         if #available(iOS 26.0, *) {
-            iOS26TabView
-                .tabBarMinimizeBehavior(.onScrollDown)
+            iOS26TabInterface
+        } else {
+            customTabInterface
+        }
+    }
+
+    /// Attach the bottom mini-player accessory only when something is playing.
+    /// Leaving the modifier on with empty content still renders an empty,
+    /// translucent accessory platter above the tab bar when idle (#35), so we
+    /// apply it conditionally.
+    @available(iOS 26.0, *)
+    @ViewBuilder
+    private var iOS26TabInterface: some View {
+        let base = iOS26TabView.tabBarMinimizeBehavior(.onScrollDown)
+        if player.hasCurrentTrack {
+            base
                 .tabViewBottomAccessory {
-                    if player.hasCurrentTrack {
-                        IOSMiniPlayerAccessory(
-                            transitionNamespace: nowPlayingTransition
-                        )
+                    IOSMiniPlayerAccessory(transitionNamespace: nowPlayingTransition)
                         // Pin the scheme so the search-active tab environment
                         // doesn't flip the bar's text to white (#31).
                         .environment(\.colorScheme, resolvedColorScheme)
-                    }
                 }
                 .animation(AppAnimation.standard, value: player.hasCurrentTrack)
         } else {
-            customTabInterface
+            base
+                .animation(AppAnimation.standard, value: player.hasCurrentTrack)
         }
     }
 

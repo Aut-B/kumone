@@ -340,8 +340,11 @@ final class SpectrumBarsView: PlatformView {
 
     deinit { timer?.invalidate() }
 
+    /// `NSView.layer` is optional; `UIView.layer` is not.
+    private var hostLayer: CALayer? { layer }
+
     private func buildBars() {
-        guard let host = layer else { return }
+        guard let host = hostLayer else { return }
         let color = PlatformColor(Theme.accent).cgColor
         for _ in 0..<AudioSpectrum.bandCount {
             let bar = CALayer()
