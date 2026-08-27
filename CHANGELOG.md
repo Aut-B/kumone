@@ -6,6 +6,18 @@
 section the English bullets come first, followed by their Simplified Chinese
 counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单行。
 
+## 0.3.11 - 2026-08-27
+
+### Added / 新增
+
+- Karaoke (word-by-word) lyrics: when a song has NetEase verbatim (`yrc`) lyrics, the active line highlights character by character — sung characters bright, the current one fading in, the rest dim — synced live to playback. Songs without verbatim lyrics keep line-level highlighting. New setting 逐字歌词（卡拉OK）, on by default.
+- 逐字歌词（卡拉OK）：当歌曲有网易云的逐字歌词（`yrc`）时，当前行会逐字高亮——已唱的字亮、正在唱的字渐亮、未唱的字暗——实时跟随播放。没有逐字歌词的歌曲保持整行高亮。设置新增「逐字歌词（卡拉OK）」，默认开启。
+
+### Fixed / 修复
+
+- iOS: turning off "启动时自动检查更新" now actually stops the launch update sheet — the 0.3.9 toggle's iOS gate had silently not been applied. (#42)
+- iOS：关闭「启动时自动检查更新」现在真的会停掉启动时的更新弹窗——0.3.9 那个开关的 iOS 侧判断此前未生效。（#42）
+
 ## 0.3.10 - 2026-08-27
 
 ### Added / 新增
