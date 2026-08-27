@@ -9,6 +9,7 @@ struct NowPlayingView: View {
     @EnvironmentObject private var settings: SettingsManager
     #if os(iOS)
     @Environment(\.dismissNowPlayingAction) private var dismissNowPlayingAction
+    @Environment(\.dismissNowPlayingDragAction) private var dismissNowPlayingDragAction
     #endif
 
     @State private var artworkImage: PlatformImage?
@@ -419,6 +420,10 @@ struct NowPlayingView: View {
                 .accessibilityHidden(!showLyricsOnMobile)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .simultaneousGesture(
+                minimalDismissGesture,
+                including: showLyricsOnMobile ? .none : .all
+            )
             .padding(.bottom, 20)
 
             minimalControls
@@ -457,6 +462,27 @@ struct NowPlayingView: View {
     private func toggleMinimalLyrics() {
         guard showLyricsOnMobile || player.lyrics?.isEmpty == false else { return }
         showLyricsOnMobile.toggle()
+    }
+
+    private var minimalDismissGesture: some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
+            .onChanged { value in
+                guard let dismissNowPlayingDragAction else { return }
+                let translation = value.translation
+                let isDownward = translation.height > 0
+                    && abs(translation.height) > abs(translation.width)
+                dismissNowPlayingDragAction.onChanged(isDownward ? translation.height : 0)
+            }
+            .onEnded { value in
+                guard let dismissNowPlayingDragAction else { return }
+                let translation = value.translation
+                let isDownward = translation.height > 0
+                    && abs(translation.height) > abs(translation.width)
+                dismissNowPlayingDragAction.onEnded(
+                    isDownward ? translation.height : 0,
+                    isDownward ? value.predictedEndTranslation.height : 0
+                )
+            }
     }
     #endif
 
