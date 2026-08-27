@@ -6,6 +6,20 @@
 section the English bullets come first, followed by their Simplified Chinese
 counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单行。
 
+## 0.3.10 - 2026-08-27
+
+### Added / 新增
+
+- iOS: an opt-in concise now-playing mode (简洁模式) alongside classic and immersive — focused artwork/lyrics/controls, tap-to-switch, draggable lyrics with seek, a half-screen queue, and an AirPlay entry. Default is unchanged (immersive). Thanks @AL-Pinecore (#41).
+- iOS：新增可选的「简洁模式」播放页（与经典/沉浸并列）——聚焦的封面/歌词/控制、点击切换、可拖动歌词并跳转、半屏队列、AirPlay 入口。默认仍是沉浸模式。感谢 @AL-Pinecore（#41）。
+- The four playing-indicator bars are now driven by the real audio spectrum (via MTAudioProcessingTap, with per-band adaptive windows); sources without a tappable stream keep the previous sine-wave animation. Thanks @XerWandeRer (#39, revisits #14).
+- 「正在播放」那一行的四根柱子现在由真实音频频谱驱动（MTAudioProcessingTap，每频段自适应窗口）；无法挂载 tap 的音源保持原有的正弦波动画。感谢 @XerWandeRer（#39，重启 #14）。
+
+### Fixed / 修复
+
+- iOS 26: an empty translucent block no longer appears above the tab bar when nothing is playing — the mini-player accessory was always attached; it is now attached only when there is a current track. (#35)
+- iOS 26：无歌曲播放时，Tab Bar 上方不再出现一个空的半透明块——迷你播放器的系统配件此前一直挂载，现在仅在有当前歌曲时才挂载。（#35）
+
 ## 0.3.9 - 2026-08-27
 
 ### Added / 新增
