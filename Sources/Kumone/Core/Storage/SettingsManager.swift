@@ -83,6 +83,7 @@ final class SettingsManager: ObservableObject {
         static let volume = "settings.volume"
         static let fmMode = "settings.fmMode"
         static let unblock = "settings.enableUnblock"
+        static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
     }
 
@@ -102,6 +103,17 @@ final class SettingsManager: ObservableObject {
 
     @Published var showLyricsTranslation: Bool {
         didSet { UserDefaults.standard.set(showLyricsTranslation, forKey: Keys.showTranslation) }
+    }
+
+    /// Check for updates on launch. When off, no update sheet appears
+    /// automatically; the user can still check manually (#42).
+    @Published var autoCheckUpdates: Bool {
+        didSet {
+            UserDefaults.standard.set(autoCheckUpdates, forKey: Keys.autoCheckUpdates)
+            #if os(macOS)
+            UpdaterManager.shared.setAutomaticChecks(autoCheckUpdates)
+            #endif
+        }
     }
 
     /// Romaji line above Japanese lyrics.
@@ -129,6 +141,7 @@ final class SettingsManager: ObservableObject {
         showLyricsTranslation = defaults.object(forKey: Keys.showTranslation) as? Bool ?? true
         showLyricsRomaji = defaults.object(forKey: Keys.showRomaji) as? Bool ?? false
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
+        autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
     }
 }

@@ -67,6 +67,13 @@ struct SettingsView: View {
                 }
             }
 
+            Section("更新") {
+                Toggle("启动时自动检查更新", isOn: $settings.autoCheckUpdates)
+                Text("关闭后启动不再自动弹出更新提示，仍可手动检查更新")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("关于") {
                 LabeledContent("Kumone", value: appVersion)
                 #if os(iOS)

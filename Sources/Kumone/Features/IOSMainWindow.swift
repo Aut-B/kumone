@@ -8,6 +8,13 @@ public struct IOSMainWindow: View {
     @StateObject private var toasts = ToastCenter.shared
     @StateObject private var updater = IOSUpdater.shared
     @Namespace private var nowPlayingTransition
+    @Environment(\.colorScheme) private var systemColorScheme
+
+    /// The app's intended scheme, read on this ancestor so the search-active
+    /// tab environment can't invert it (#31).
+    private var resolvedColorScheme: ColorScheme {
+        settings.appearance.colorScheme ?? systemColorScheme
+    }
 
     @State private var selectedTab: IOSTab = .home
     @State private var showLogin = false
@@ -159,6 +166,9 @@ public struct IOSMainWindow: View {
                         IOSMiniPlayerAccessory(
                             transitionNamespace: nowPlayingTransition
                         )
+                        // Pin the scheme so the search-active tab environment
+                        // doesn't flip the bar's text to white (#31).
+                        .environment(\.colorScheme, resolvedColorScheme)
                     }
                 }
                 .animation(AppAnimation.standard, value: player.hasCurrentTrack)
