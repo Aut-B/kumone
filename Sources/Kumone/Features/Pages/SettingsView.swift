@@ -36,6 +36,7 @@ struct SettingsView: View {
                 }
                 #endif
                 Toggle("显示歌词翻译", isOn: $settings.showLyricsTranslation)
+                Toggle("逐字歌词（卡拉OK）", isOn: $settings.verbatimLyrics)
                 Picker("日文歌词读音", selection: $settings.lyricsAnnotation) {
                     ForEach(LyricsAnnotation.allCases) { annotation in
                         Text(annotation.displayName).tag(annotation)
@@ -69,6 +70,13 @@ struct SettingsView: View {
                     Text("未登录")
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            Section("更新") {
+                Toggle("启动时自动检查更新", isOn: $settings.autoCheckUpdates)
+                Text("关闭后启动不再自动弹出更新提示，仍可手动检查更新")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("关于") {

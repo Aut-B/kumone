@@ -13,6 +13,8 @@ struct LyricText: View {
     var color: Color = .primary
     var alignment: NSTextAlignment = .left
     var rounded: Bool = false
+    /// Per-character opacity for the karaoke wipe, when there is one.
+    var alphas: [Double]?
 
     @EnvironmentObject private var settings: SettingsManager
 
@@ -25,12 +27,27 @@ struct LyricText: View {
                 color: color,
                 rubyColor: color.opacity(0.72),
                 alignment: alignment,
-                rounded: rounded
+                rounded: rounded,
+                alphas: alphas
             )
+        } else if let alphas, !alphas.isEmpty {
+            wiped(alphas)
+                .font(.system(size: size, weight: weight, design: rounded ? .rounded : .default))
         } else {
             Text(line.text.isEmpty ? "♪" : line.text)
                 .font(.system(size: size, weight: weight, design: rounded ? .rounded : .default))
                 .foregroundStyle(color)
         }
+    }
+
+    /// One concatenated `Text`, so the line still wraps, with the wipe applied
+    /// per character.
+    private func wiped(_ alphas: [Double]) -> Text {
+        var out = Text(verbatim: "")
+        for (index, character) in line.text.enumerated() {
+            let alpha = index < alphas.count ? alphas[index] : 1
+            out = out + Text(verbatim: String(character)).foregroundColor(color.opacity(alpha))
+        }
+        return out
     }
 }

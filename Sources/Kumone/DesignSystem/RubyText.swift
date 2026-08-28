@@ -13,7 +13,12 @@ enum RubyAttributedString {
         var rounded: Bool
     }
 
-    static func make(_ segments: [RubySegment], style: Style) -> NSAttributedString {
+    /// `alphas` carries one opacity per character of the base text, for the
+    /// karaoke wipe. A reading follows the dimmest character it sits over, so
+    /// it never lights up ahead of the kanji it belongs to.
+    static func make(
+        _ segments: [RubySegment], style: Style, alphas: [Double]? = nil
+    ) -> NSAttributedString {
         let baseFont = font(style.size, style.weight, style.rounded)
         let rubyFont = font(style.size * style.rubyScale, .medium, style.rounded)
 
@@ -31,10 +36,18 @@ enum RubyAttributedString {
         ]
 
         let output = NSMutableAttributedString()
+        var cursor = 0
         for segment in segments {
+            let start = cursor
+            cursor += segment.text.count
             guard let ruby = segment.ruby, !ruby.isEmpty else {
                 output.append(NSAttributedString(string: segment.text, attributes: baseAttributes))
                 continue
+            }
+            var rubyColor = style.rubyColor
+            if let alphas {
+                let over = (start..<cursor).compactMap { $0 < alphas.count ? alphas[$0] : nil }
+                rubyColor = rubyColor.withAlphaComponent(rubyColor.cgColor.alpha * CGFloat(over.min() ?? 1))
             }
             // `.auto` alignment spreads the reading evenly across its base,
             // which at lyric sizes reads as loose tracking: あなた over 貴方
@@ -50,12 +63,27 @@ enum RubyAttributedString {
                 .center, .auto, .before, ruby as CFString,
                 [
                     kCTFontAttributeName: rubyFont,
-                    kCTForegroundColorAttributeName: style.rubyColor,
+                    kCTForegroundColorAttributeName: rubyColor,
                 ] as CFDictionary
             )
             var attributes = baseAttributes
             attributes[NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)] = annotation
             output.append(NSAttributedString(string: segment.text, attributes: attributes))
+        }
+
+        if let alphas {
+            var location = 0
+            for (index, character) in Array(output.string).enumerated() {
+                let length = (String(character) as NSString).length
+                if index < alphas.count {
+                    output.addAttribute(
+                        .foregroundColor,
+                        value: style.color.withAlphaComponent(style.color.cgColor.alpha * CGFloat(alphas[index])),
+                        range: NSRange(location: location, length: length)
+                    )
+                }
+                location += length
+            }
         }
         return output
     }
@@ -118,6 +146,7 @@ struct RubyText: View, Animatable {
     private var rubyScale: CGFloat
     private var alignment: NSTextAlignment
     private var rounded: Bool
+    private var alphas: [Double]?
 
     init(
         segments: [RubySegment],
@@ -127,7 +156,8 @@ struct RubyText: View, Animatable {
         rubyColor: Color? = nil,
         rubyScale: CGFloat = 0.5,
         alignment: NSTextAlignment = .left,
-        rounded: Bool = false
+        rounded: Bool = false,
+        alphas: [Double]? = nil
     ) {
         self.segments = segments
         self.size = size
@@ -137,6 +167,7 @@ struct RubyText: View, Animatable {
         self.rubyScale = rubyScale
         self.alignment = alignment
         self.rounded = rounded
+        self.alphas = alphas
     }
 
     /// The glyphs are drawn by hand, so SwiftUI cannot interpolate them the way
@@ -162,7 +193,7 @@ struct RubyText: View, Animatable {
             alignment: alignment,
             rounded: rounded
         )
-        let attributed = RubyAttributedString.make(segments, style: style)
+        let attributed = RubyAttributedString.make(segments, style: style, alphas: alphas)
 
         return RubyTextLayout(attributed: attributed) {
             Canvas(rendersAsynchronously: false) { context, canvasSize in

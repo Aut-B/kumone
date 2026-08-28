@@ -93,6 +93,18 @@ final class PlaybackClock: ObservableObject {
     @Published var progress: TimeInterval = 0
 }
 
+/// Which lyric line is current.
+///
+/// Every lyric view used to derive this itself, which meant observing the clock
+/// and re-rendering on every tick just to discover the line hadn't changed —
+/// and for the now-playing page, whose body is the whole immersive layout, that
+/// was five full re-evaluations a second. Computing it once here and publishing
+/// only on a change turns that into one re-render per lyric line.
+@MainActor
+final class LyricsCursor: ObservableObject {
+    @Published var activeIndex: Int?
+}
+
 @MainActor
 final class PlayerService: ObservableObject {
     static let shared = PlayerService()
@@ -112,6 +124,7 @@ final class PlayerService: ObservableObject {
     @Published private(set) var unblockSource: String?
     @Published private(set) var isTrial = false
     let clock = PlaybackClock()
+    let lyricsCursor = LyricsCursor()
     /// Passthrough to the clock so existing `progress` reads/writes keep working.
     var progress: TimeInterval {
         get { clock.progress }
@@ -152,12 +165,20 @@ final class PlayerService: ObservableObject {
     // MARK: - Engine
 
     private let engine = AVPlayer()
+
+    /// Live playback position straight from the player, for smooth per-frame
+    /// karaoke highlighting (the published `progress` is intentionally coarse).
+    var livePlaybackTime: TimeInterval {
+        let t = engine.currentTime().seconds
+        return t.isFinite ? t : progress
+    }
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
     private var resolveGeneration = 0
     private var consecutiveFailures = 0
     private var scrobbled = false
+    private var startScrobbled = false
 
     private init() {
         engine.actionAtItemEnd = .pause
@@ -204,7 +225,17 @@ final class PlayerService: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, !self.isScrubbing else { return }
                 let seconds = time.seconds
-                if seconds.isFinite, abs(seconds - self.progress) > 0.05 {
+                guard seconds.isFinite else { return }
+
+                // Lyrics need this cadence to stay in sync; the cursor itself
+                // only publishes when the line actually changes.
+                self.updateLyricsCursor(at: seconds)
+
+                // The scrubber does not. Publishing the position every tick
+                // re-renders it — and SwiftUI rebuilds the display list for the
+                // whole tree each time — to move the thumb a fraction of a
+                // pixel. Half a second is still smoother than the eye needs.
+                if abs(seconds - self.progress) > 0.45 {
                     self.progress = seconds
                     NowPlayingManager.shared.updateElapsed(seconds, rate: self.isPlaying ? 1 : 0)
                 }
@@ -300,6 +331,7 @@ final class PlayerService: ObservableObject {
         if isPlaying {
             engine.pause()
             isPlaying = false
+            AudioSpectrum.shared.reset()
         } else if engine.currentItem == nil {
             // Restored session: re-resolve the source.
             startPlaying(track, indexUnchanged: true)
@@ -314,6 +346,7 @@ final class PlayerService: ObservableObject {
     func pause() {
         engine.pause()
         isPlaying = false
+        AudioSpectrum.shared.reset()
         NowPlayingManager.shared.updateElapsed(progress, rate: 0)
     }
 
@@ -339,10 +372,23 @@ final class PlayerService: ObservableObject {
         startPlaying(activeQueue[idx])
     }
 
-    func seek(to seconds: TimeInterval) {
+    /// Recomputes the current lyric line, publishing only on a change.
+    /// The lead makes a line light up just before it is sung.
+    private func updateLyricsCursor(at seconds: TimeInterval) {
+        let index = lyrics?.activeIndex(at: seconds + 0.2)
+        if index != lyricsCursor.activeIndex {
+            lyricsCursor.activeIndex = index
+        }
+    }
+
+    func seek(to seconds: TimeInterval, completion: (@MainActor () -> Void)? = nil) {
         progress = seconds
+        updateLyricsCursor(at: seconds)
         engine.seek(to: CMTime(seconds: seconds, preferredTimescale: 600),
-                    toleranceBefore: .zero, toleranceAfter: .zero)
+                    toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            guard let completion else { return }
+            Task { @MainActor in completion() }
+        }
         NowPlayingManager.shared.updateElapsed(seconds, rate: isPlaying ? 1 : 0)
     }
 
@@ -361,6 +407,26 @@ final class PlayerService: ObservableObject {
     func cycleRepeatMode() {
         guard !isFMMode else { return }
         repeatMode = repeatMode.next
+    }
+
+    /// Single-button mode cycle for the iOS minimal transport row:
+    /// sequential → loop all → loop one → shuffle → sequential.
+    func cyclePlaybackMode() {
+        guard !isFMMode else { return }
+        if shuffleEnabled {
+            toggleShuffle()
+            repeatMode = .off
+        } else {
+            switch repeatMode {
+            case .off:
+                repeatMode = .all
+            case .all:
+                repeatMode = .one
+            case .one:
+                repeatMode = .off
+                toggleShuffle()
+            }
+        }
     }
 
     /// Jump to a track in the upcoming list (queue panel click).
@@ -496,7 +562,13 @@ final class PlayerService: ObservableObject {
         isTrial = false
         lyrics = nil
         scrobbled = false
+        startScrobbled = false
         isPlaying = true
+        lyricsCursor.activeIndex = nil
+        // Before the URL is even resolved: holds the bars still rather than
+        // letting them fall back to the decorative animation for the moment it
+        // takes to find out whether this source can be tapped.
+        AudioSpectrum.shared.beginPreparing()
         resolveGeneration += 1
         let generation = resolveGeneration
 
@@ -557,7 +629,22 @@ final class PlayerService: ObservableObject {
             ToastCenter.shared.show(String(localized: "VIP 歌曲，当前为试听片段"))
         }
 
-        let item = AVPlayerItem(url: url)
+        // Resolve the asset's audio track before the item goes live: an audio mix
+        // attached after playback starts is silently ignored, so the spectrum tap
+        // has to be spliced in here or not at all. Sources that refuse byte-range
+        // requests never resolve a track — those play untapped and the UI falls
+        // back to its decorative animation.
+        let asset = AVURLAsset(url: url)
+        let assetTrack = await loadAudioTrack(from: asset, timeout: 2)
+        guard generation == resolveGeneration else { return }
+
+        let item = AVPlayerItem(asset: asset)
+        if let assetTrack, let mix = AudioSpectrum.shared.makeAudioMix(for: assetTrack) {
+            item.audioMix = mix
+        } else {
+            AudioSpectrum.shared.markUntappable()
+        }
+
         if let old = endObserver {
             NotificationCenter.default.removeObserver(old)
         }
@@ -572,9 +659,33 @@ final class PlayerService: ObservableObject {
         engine.play()
         isPlaying = true
 
+        if !startScrobbled {
+            startScrobbled = true
+            let tid = track.id
+            let sid = source.sourceID
+            Task.detached { await NeteaseAPI.scrobbleStart(trackID: tid, sourceID: sid) }
+        }
+
         if let time = data?.time, time > 0 {
             duration = TimeInterval(time) / 1000
             NowPlayingManager.shared.updateMetadata(for: track, duration: duration)
+        }
+    }
+
+    /// Resolves the asset's audio track, giving up after `timeout` so a slow or
+    /// uncooperative source delays playback no longer than it would today.
+    private func loadAudioTrack(from asset: AVURLAsset, timeout: TimeInterval) async -> AVAssetTrack? {
+        await withTaskGroup(of: AVAssetTrack?.self) { group in
+            group.addTask {
+                try? await asset.loadTracks(withMediaType: .audio).first
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 
@@ -582,6 +693,7 @@ final class PlayerService: ObservableObject {
         let response = try? await NeteaseAPI.lyric(id: track.id)
         guard generation == resolveGeneration else { return }
         lyrics = response.map(LyricsParser.parse)
+        updateLyricsCursor(at: progress)
     }
 
     // MARK: - Scrobble
@@ -592,7 +704,7 @@ final class PlayerService: ObservableObject {
         let seconds = completed ? Int(duration) : Int(progress)
         let sourceID = source.sourceID
         Task.detached {
-            await NeteaseAPI.scrobble(trackID: track.id, sourceID: sourceID, seconds: seconds)
+            await NeteaseAPI.scrobbleFinish(trackID: track.id, sourceID: sourceID, seconds: seconds)
         }
     }
 
