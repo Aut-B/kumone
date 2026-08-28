@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// High-fidelity programmatic vector vinyl record disc.
-/// Features realistic vinyl grooves, angular specular shine, and center circular artwork.
+/// Features dense micro-grooves, radial light refraction, specular sheen sweep,
+/// beveled vinyl rims, and refined center circular artwork.
 public struct VinylRecordView: View {
     public let artworkImage: PlatformImage?
     public let size: CGFloat
@@ -13,83 +14,163 @@ public struct VinylRecordView: View {
 
     public var body: some View {
         let discDiameter = size
-        let labelDiameter = discDiameter * 0.65 // Classic NetEase ratio
-        let spindleHoleDiameter = max(8, discDiameter * 0.035)
+        let labelDiameter = discDiameter * 0.64 // Authentic NetEase / vintage vinyl ratio
+        let spindleHoleDiameter = max(7, discDiameter * 0.032)
 
         return ZStack {
-            // 1. Base Vinyl Disc with Depth Shadow
+            // MARK: 1. Outer Turntable Rubber Platter Underlay (转盘防滑垫底盘)
             Circle()
                 .fill(
-                    LinearGradient(
-                        colors: [Color(white: 0.12), Color(white: 0.05)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+                    RadialGradient(
+                        colors: [Color(white: 0.06), Color(white: 0.02)],
+                        center: .center,
+                        startRadius: discDiameter * 0.3,
+                        endRadius: discDiameter * 0.5
+                    )
+                )
+                .frame(width: discDiameter + 6, height: discDiameter + 6)
+                .shadow(color: .black.opacity(0.45), radius: max(16, discDiameter * 0.08), x: 0, y: discDiameter * 0.04)
+                .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
+
+            // MARK: 2. Heavy Glossy Vinyl Disc Body (黑胶本体与边缘倒角)
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color(white: 0.14),
+                            Color(white: 0.08),
+                            Color(white: 0.05),
+                            Color(white: 0.03)
+                        ],
+                        center: .center,
+                        startRadius: discDiameter * 0.25,
+                        endRadius: discDiameter * 0.5
                     )
                 )
                 .frame(width: discDiameter, height: discDiameter)
-                .shadow(color: .black.opacity(0.55), radius: max(10, discDiameter * 0.06), x: 0, y: discDiameter * 0.035)
+                .overlay {
+                    // Outer beveled edge highlight
+                    Circle()
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.25),
+                                    Color.white.opacity(0.04),
+                                    Color.white.opacity(0.18),
+                                    Color.black.opacity(0.6)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1.2
+                        )
+                }
 
-            // 2. Vinyl Matte Texture with Outer Rim
+            // MARK: 3. High-Frequency Vinyl Micro-Grooves & Radial Diffraction (径向微光与高密音轨)
             Circle()
                 .fill(
                     AngularGradient(
                         gradient: Gradient(colors: [
-                            Color(white: 0.08),
-                            Color(white: 0.22),
                             Color(white: 0.06),
                             Color(white: 0.18),
-                            Color(white: 0.07),
+                            Color(white: 0.05),
                             Color(white: 0.22),
-                            Color(white: 0.08)
+                            Color(white: 0.07),
+                            Color(white: 0.16),
+                            Color(white: 0.05),
+                            Color(white: 0.20),
+                            Color(white: 0.06),
+                            Color(white: 0.18),
+                            Color(white: 0.06)
                         ]),
                         center: .center
                     )
                 )
                 .frame(width: discDiameter - 4, height: discDiameter - 4)
+                .opacity(0.9)
 
-            // 3. Realistic Concentric Audio Grooves
-            ForEach([0.72, 0.76, 0.80, 0.84, 0.88, 0.92, 0.96], id: \.self) { scale in
+            // 18 Dense Concentric Audio Grooves (细腻刻纹)
+            ForEach(0..<18, id: \.self) { i in
+                let factor = 0.68 + (Double(i) / 17.0) * 0.29
+                let isMajorTrack = (i % 4 == 0)
                 Circle()
                     .stroke(
                         LinearGradient(
-                            colors: [.white.opacity(0.12), .white.opacity(0.03)],
+                            colors: [
+                                Color.white.opacity(isMajorTrack ? 0.14 : 0.06),
+                                Color.black.opacity(0.4),
+                                Color.white.opacity(isMajorTrack ? 0.09 : 0.03)
+                            ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
-                        lineWidth: max(0.6, discDiameter * 0.0025)
+                        lineWidth: isMajorTrack ? 0.8 : 0.45
                     )
-                    .frame(width: discDiameter * scale, height: discDiameter * scale)
+                    .frame(width: discDiameter * factor, height: discDiameter * factor)
             }
 
-            // 4. Specular Sheen (Screen Blend)
+            // Lead-in Outer Groove (外圈入轨引导槽)
+            Circle()
+                .stroke(Color.white.opacity(0.18), lineWidth: 0.9)
+                .frame(width: discDiameter * 0.98, height: discDiameter * 0.98)
+
+            // Run-out Inner Groove (内圈死区/导光槽)
+            Circle()
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.20), Color.black.opacity(0.5)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.2
+                )
+                .frame(width: discDiameter * 0.665, height: discDiameter * 0.665)
+
+            // MARK: 4. Dual-Lobe Specular Sheen Sweep (逼真的双扇形镜面扫光)
             Circle()
                 .fill(
                     AngularGradient(
-                        gradient: Gradient(colors: [
-                            .clear,
-                            Color.white.opacity(0.14),
-                            .clear,
-                            Color.white.opacity(0.06),
-                            .clear,
-                            Color.white.opacity(0.14),
-                            .clear
+                        gradient: Gradient(stops: [
+                            .init(color: .clear, location: 0.0),
+                            .init(color: Color.white.opacity(0.02), location: 0.08),
+                            .init(color: Color.white.opacity(0.18), location: 0.14),
+                            .init(color: Color(red: 0.85, green: 0.95, blue: 1.0).opacity(0.24), location: 0.17),
+                            .init(color: Color.white.opacity(0.18), location: 0.20),
+                            .init(color: Color.white.opacity(0.02), location: 0.26),
+                            .init(color: .clear, location: 0.34),
+
+                            .init(color: .clear, location: 0.50),
+                            .init(color: Color.white.opacity(0.02), location: 0.58),
+                            .init(color: Color.white.opacity(0.18), location: 0.64),
+                            .init(color: Color(red: 0.85, green: 0.95, blue: 1.0).opacity(0.24), location: 0.67),
+                            .init(color: Color.white.opacity(0.18), location: 0.70),
+                            .init(color: Color.white.opacity(0.02), location: 0.76),
+                            .init(color: .clear, location: 0.84),
+                            .init(color: .clear, location: 1.0)
                         ]),
                         center: .center,
-                        angle: .degrees(45)
+                        angle: .degrees(35)
                     )
                 )
-                .frame(width: discDiameter - 4, height: discDiameter - 4)
+                .frame(width: discDiameter - 2, height: discDiameter - 2)
                 .blendMode(.screen)
                 .allowsHitTesting(false)
 
-            // 5. Center Label Rim & Artwork
+            // MARK: 5. Center Label & Album Artwork (精美唱片中心纸标与主轴孔)
             ZStack {
-                // Outer label bevel ring
+                // Label outer bevel frame
                 Circle()
-                    .fill(Color(white: 0.08))
-                    .frame(width: labelDiameter + 4, height: labelDiameter + 4)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(white: 0.16), Color(white: 0.06)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: labelDiameter + 6, height: labelDiameter + 6)
+                    .shadow(color: .black.opacity(0.6), radius: 3, x: 0, y: 1)
 
-                // Album Artwork
+                // Album Artwork Cover
                 Group {
                     if let artworkImage {
                         Image(platformImage: artworkImage)
@@ -98,45 +179,66 @@ public struct VinylRecordView: View {
                     } else {
                         ZStack {
                             LinearGradient(
-                                colors: [Color(white: 0.2), Color(white: 0.1)],
+                                colors: [Color(white: 0.22), Color(white: 0.12)],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                             Image(systemName: "music.note")
                                 .font(.system(size: labelDiameter * 0.35, weight: .light))
-                                .foregroundStyle(.white.opacity(0.4))
+                                .foregroundStyle(.white.opacity(0.45))
                         }
                     }
                 }
                 .frame(width: labelDiameter, height: labelDiameter)
                 .clipShape(Circle())
                 .overlay {
+                    // Paper label edge ring
                     Circle()
-                        .stroke(Color.black.opacity(0.4), lineWidth: max(1, discDiameter * 0.004))
+                        .strokeBorder(Color.black.opacity(0.45), lineWidth: 1.5)
                 }
 
-                // Inner label groove ring
+                // Inner label fine gold-embossed ring (复古装饰金线)
                 Circle()
-                    .stroke(Color.white.opacity(0.15), lineWidth: 0.8)
-                    .frame(width: labelDiameter * 0.85, height: labelDiameter * 0.85)
+                    .stroke(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.28), Color.white.opacity(0.08)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.8
+                    )
+                    .frame(width: labelDiameter * 0.86, height: labelDiameter * 0.86)
 
-                // 6. Center Spindle Bevel & Hole
+                // Central Chrome Spindle Grommet (金属主轴孔环)
                 Circle()
                     .fill(
                         LinearGradient(
-                            colors: [Color(white: 0.85), Color(white: 0.35)],
+                            colors: [
+                                Color(white: 0.95),
+                                Color(white: 0.65),
+                                Color(white: 0.90),
+                                Color(white: 0.40)
+                            ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
                     )
-                    .frame(width: spindleHoleDiameter * 2.2, height: spindleHoleDiameter * 2.2)
-                    .shadow(color: .black.opacity(0.4), radius: 1, y: 1)
+                    .frame(width: spindleHoleDiameter * 2.4, height: spindleHoleDiameter * 2.4)
+                    .shadow(color: .black.opacity(0.5), radius: 1.5, y: 1)
 
                 Circle()
-                    .fill(Color.black)
+                    .stroke(Color.white.opacity(0.6), lineWidth: 0.6)
+                    .frame(width: spindleHoleDiameter * 2.4, height: spindleHoleDiameter * 2.4)
+
+                // Spindle Center Hole
+                Circle()
+                    .fill(Color(white: 0.04))
                     .frame(width: spindleHoleDiameter, height: spindleHoleDiameter)
+                    .overlay {
+                        Circle().stroke(Color.black.opacity(0.9), lineWidth: 0.8)
+                    }
             }
         }
-        .frame(width: discDiameter, height: discDiameter)
+        .frame(width: discDiameter + 6, height: discDiameter + 6)
     }
 }

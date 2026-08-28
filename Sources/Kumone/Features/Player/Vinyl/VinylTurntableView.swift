@@ -13,6 +13,7 @@ public struct VinylTurntableView: View {
 
     @State private var rotationState = RecordRotationState()
     @State private var dragOffset: CGFloat = 0
+    @State private var isDragging = false
     @State private var isTransitioningTrack = false
 
     public init(
@@ -35,20 +36,20 @@ public struct VinylTurntableView: View {
 
     public var body: some View {
         let discSize = size
-        let armHeight = discSize * 0.62
-        let stageWidth = discSize + 40
-        let stageHeight = discSize + armHeight * 0.45
+        let armHeight = discSize * 0.68
+        let stageWidth = discSize + 48
+        let stageHeight = discSize + armHeight * 0.38
 
         return ZStack(alignment: .top) {
-            // MARK: 1. Rotating Vinyl Disc (with horizontal drag & transition)
-            TimelineView(.animation(paused: !isPlaying)) { timeline in
+            // MARK: 1. Rotating Vinyl Disc (with horizontal drag & slide transitions)
+            TimelineView(.animation(paused: !isPlaying || isDragging || isTransitioningTrack)) { timeline in
                 let currentAngle = rotationState.currentAngle(at: timeline.date)
 
                 VinylRecordView(artworkImage: artworkImage, size: discSize)
                     .rotationEffect(.degrees(currentAngle))
             }
             .offset(x: dragOffset)
-            .padding(.top, armHeight * 0.35)
+            .padding(.top, armHeight * 0.36)
             .contentShape(Circle())
             .gesture(dragAndSwipeGesture(discSize: discSize))
             .onTapGesture {
@@ -56,11 +57,14 @@ public struct VinylTurntableView: View {
             }
             .zIndex(1)
 
-            // MARK: 2. Tonearm (Placed above and to the right of the disc)
-            VinylTonearmView(isPlaying: isPlaying && !isTransitioningTrack, height: armHeight)
-                .offset(x: discSize * 0.22, y: 0)
-                .allowsHitTesting(false)
-                .zIndex(2)
+            // MARK: 2. Tonearm (Placed at the top-center above the disc, reaching down)
+            VinylTonearmView(
+                isPlaying: isPlaying && !isDragging && !isTransitioningTrack,
+                height: armHeight
+            )
+            .offset(x: discSize * 0.12, y: -armHeight * 0.08)
+            .allowsHitTesting(false)
+            .zIndex(2)
         }
         .frame(width: stageWidth, height: stageHeight, alignment: .top)
         .onAppear {
@@ -76,10 +80,10 @@ public struct VinylTurntableView: View {
             }
         }
         .onChange(of: trackId) { _ in
-            // Temporary lift tonearm on track change
+            // Temporarily lift tonearm on track change
             isTransitioningTrack = true
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 350_000_000)
+                try? await Task.sleep(nanoseconds: 320_000_000)
                 isTransitioningTrack = false
             }
         }
@@ -88,48 +92,52 @@ public struct VinylTurntableView: View {
     // MARK: - Gestures
 
     private func dragAndSwipeGesture(discSize: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 10)
+        DragGesture(minimumDistance: 8)
             .onChanged { value in
-                // Only track primarily horizontal drags
-                if abs(value.translation.width) > abs(value.translation.height) {
-                    let translation = value.translation.width
-                    // Apply resistance damping as user drags further
-                    dragOffset = translation * 0.75
+                // Only track horizontal gestures
+                if abs(value.translation.width) > abs(value.translation.height) * 0.6 {
+                    isDragging = true
+                    let raw = value.translation.width
+                    // Damped elastic feel
+                    dragOffset = raw
                 }
             }
             .onEnded { value in
                 let translation = value.translation.width
                 let velocity = value.predictedEndTranslation.width
-                let swipeThreshold: CGFloat = 55
+                let swipeThreshold: CGFloat = 45
 
-                if translation < -swipeThreshold || velocity < -120 {
-                    // Swipe Left -> Next Track
-                    withAnimation(.easeOut(duration: 0.22)) {
-                        dragOffset = -discSize * 1.1
+                if translation < -swipeThreshold || velocity < -100 {
+                    // Swipe Left -> Next Track (下一首)
+                    withAnimation(.easeOut(duration: 0.20)) {
+                        dragOffset = -discSize * 1.25
                     }
                     onNextTrack?()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-                        dragOffset = discSize * 1.1
-                        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                        dragOffset = discSize * 1.25
+                        withAnimation(.spring(response: 0.38, dampingFraction: 0.80)) {
                             dragOffset = 0
+                            isDragging = false
                         }
                     }
-                } else if translation > swipeThreshold || velocity > 120 {
-                    // Swipe Right -> Previous Track
-                    withAnimation(.easeOut(duration: 0.22)) {
-                        dragOffset = discSize * 1.1
+                } else if translation > swipeThreshold || velocity > 100 {
+                    // Swipe Right -> Previous Track (上一首)
+                    withAnimation(.easeOut(duration: 0.20)) {
+                        dragOffset = discSize * 1.25
                     }
                     onPreviousTrack?()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-                        dragOffset = -discSize * 1.1
-                        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                        dragOffset = -discSize * 1.25
+                        withAnimation(.spring(response: 0.38, dampingFraction: 0.80)) {
                             dragOffset = 0
+                            isDragging = false
                         }
                     }
                 } else {
                     // Reset back to center
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.76)) {
                         dragOffset = 0
+                        isDragging = false
                     }
                 }
             }
