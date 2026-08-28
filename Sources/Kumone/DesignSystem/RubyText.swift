@@ -40,15 +40,19 @@ enum RubyAttributedString {
         for segment in segments {
             let start = cursor
             cursor += segment.text.count
+            let span = alphas.map { a in (start..<cursor).map { $0 < a.count ? a[$0] : 1 } }
+
             guard let ruby = segment.ruby, !ruby.isEmpty else {
-                output.append(NSAttributedString(string: segment.text, attributes: baseAttributes))
+                output.append(tinted(segment.text, baseAttributes, span, style.color))
                 continue
             }
-            var rubyColor = style.rubyColor
-            if let alphas {
-                let over = (start..<cursor).compactMap { $0 < alphas.count ? alphas[$0] : nil }
-                rubyColor = rubyColor.withAlphaComponent(rubyColor.cgColor.alpha * CGFloat(over.min() ?? 1))
-            }
+            // An annotated run has to stay a *single* attribute run. Core Text
+            // draws the annotation once per run, so colouring 気 and 分
+            // separately as the wipe passes between them repeats きぶん over
+            // each of them and prises the pair apart. The run fades as a whole
+            // instead, on the mean of the characters it covers.
+            let level = span.map { $0.reduce(0, +) / Double(max($0.count, 1)) } ?? 1
+
             // `.auto` alignment spreads the reading evenly across its base,
             // which at lyric sizes reads as loose tracking: あなた over 貴方
             // comes out あ な た. Centring keeps it together.
@@ -63,29 +67,35 @@ enum RubyAttributedString {
                 .center, .auto, .before, ruby as CFString,
                 [
                     kCTFontAttributeName: rubyFont,
-                    kCTForegroundColorAttributeName: rubyColor,
+                    kCTForegroundColorAttributeName: style.rubyColor.faded(to: level),
                 ] as CFDictionary
             )
             var attributes = baseAttributes
+            attributes[.foregroundColor] = style.color.faded(to: level)
             attributes[NSAttributedString.Key(kCTRubyAnnotationAttributeName as String)] = annotation
             output.append(NSAttributedString(string: segment.text, attributes: attributes))
         }
-
-        if let alphas {
-            var location = 0
-            for (index, character) in Array(output.string).enumerated() {
-                let length = (String(character) as NSString).length
-                if index < alphas.count {
-                    output.addAttribute(
-                        .foregroundColor,
-                        value: style.color.withAlphaComponent(style.color.cgColor.alpha * CGFloat(alphas[index])),
-                        range: NSRange(location: location, length: length)
-                    )
-                }
-                location += length
-            }
-        }
         return output
+    }
+
+    /// Unannotated text can be coloured character by character; splitting the
+    /// run there costs nothing.
+    private static func tinted(
+        _ text: String, _ attributes: [NSAttributedString.Key: Any],
+        _ alphas: [Double]?, _ color: PlatformColor
+    ) -> NSAttributedString {
+        let piece = NSMutableAttributedString(string: text, attributes: attributes)
+        guard let alphas else { return piece }
+        var location = 0
+        for (index, character) in text.enumerated() {
+            let length = (String(character) as NSString).length
+            if index < alphas.count {
+                piece.addAttribute(.foregroundColor, value: color.faded(to: alphas[index]),
+                                   range: NSRange(location: location, length: length))
+            }
+            location += length
+        }
+        return piece
     }
 
     private static func font(
@@ -260,5 +270,11 @@ private extension Font.Weight {
         case .black: return .black
         default: return .regular
         }
+    }
+}
+
+private extension PlatformColor {
+    func faded(to level: Double) -> PlatformColor {
+        withAlphaComponent(cgColor.alpha * CGFloat(level))
     }
 }
