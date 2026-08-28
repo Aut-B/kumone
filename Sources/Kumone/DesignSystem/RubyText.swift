@@ -11,20 +11,18 @@ enum RubyAttributedString {
         var rubyScale: CGFloat
         var alignment: NSTextAlignment
         var rounded: Bool
-
-        /// Ruby sits above the base line box, which the framesetter does not
-        /// account for, so the first line needs headroom of its own.
-        var topPadding: CGFloat { ceil(size * rubyScale * 0.9) }
     }
 
     static func make(_ segments: [RubySegment], style: Style) -> NSAttributedString {
         let baseFont = font(style.size, style.weight, style.rounded)
         let rubyFont = font(style.size * style.rubyScale, .medium, style.rounded)
 
+        // The framesetter measures the ruby: an annotated line reports a
+        // taller box than the same text without it, and a wrapped line leaves
+        // room for the ruby of the line below. Adding headroom on top of that
+        // just leaves a dead band above the text.
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = style.alignment
-        // Room between wrapped lines for the ruby of the line below.
-        paragraph.lineHeightMultiple = 1 + style.rubyScale * 0.85
 
         let baseAttributes: [NSAttributedString.Key: Any] = [
             .font: baseFont,
@@ -165,9 +163,8 @@ struct RubyText: View, Animatable {
             rounded: rounded
         )
         let attributed = RubyAttributedString.make(segments, style: style)
-        let inset = style.topPadding
 
-        return RubyTextLayout(attributed: attributed, topPadding: inset) {
+        return RubyTextLayout(attributed: attributed) {
             Canvas(rendersAsynchronously: false) { context, canvasSize in
                 context.withCGContext { cgContext in
                     cgContext.saveGState()
@@ -177,11 +174,7 @@ struct RubyText: View, Animatable {
                     cgContext.scaleBy(x: 1, y: -1)
                     RubyAttributedString.draw(
                         attributed,
-                        in: CGRect(
-                            x: 0, y: 0,
-                            width: canvasSize.width,
-                            height: max(canvasSize.height - inset, 1)
-                        ),
+                        in: CGRect(origin: .zero, size: canvasSize),
                         context: cgContext
                     )
                     cgContext.restoreGState()
@@ -200,11 +193,9 @@ private final class AttributedBox: @unchecked Sendable {
 
 private struct RubyTextLayout: Layout {
     private let box: AttributedBox
-    let topPadding: CGFloat
 
-    init(attributed: NSAttributedString, topPadding: CGFloat) {
+    init(attributed: NSAttributedString) {
         box = AttributedBox(attributed)
-        self.topPadding = topPadding
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
@@ -212,10 +203,10 @@ private struct RubyTextLayout: Layout {
         // `fixedSize` the line must not stretch to some arbitrary default.
         guard let proposed = proposal.width, proposed.isFinite, proposed > 0 else {
             let fitted = RubyAttributedString.fittedSize(box.string, width: .greatestFiniteMagnitude)
-            return CGSize(width: ceil(fitted.width), height: ceil(fitted.height) + topPadding)
+            return CGSize(width: ceil(fitted.width), height: ceil(fitted.height))
         }
         let fitted = RubyAttributedString.fittedSize(box.string, width: proposed)
-        return CGSize(width: proposed, height: ceil(fitted.height) + topPadding)
+        return CGSize(width: proposed, height: ceil(fitted.height))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
