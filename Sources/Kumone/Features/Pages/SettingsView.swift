@@ -28,13 +28,11 @@ struct SettingsView: View {
                         Text(appearance.displayName).tag(appearance)
                     }
                 }
-                #if os(iOS)
                 Picker("播放页模式", selection: $settings.nowPlayingMode) {
                     ForEach(NowPlayingMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
                     }
                 }
-                #endif
                 Toggle("显示歌词翻译", isOn: $settings.showLyricsTranslation)
                 Toggle("逐字歌词（卡拉OK）", isOn: $settings.verbatimLyrics)
                 Toggle("显示日文歌词罗马音", isOn: $settings.showLyricsRomaji)
