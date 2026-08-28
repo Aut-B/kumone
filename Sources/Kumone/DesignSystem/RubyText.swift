@@ -38,8 +38,18 @@ enum RubyAttributedString {
                 output.append(NSAttributedString(string: segment.text, attributes: baseAttributes))
                 continue
             }
+            // `.auto` alignment spreads the reading evenly across its base,
+            // which at lyric sizes reads as loose tracking: あなた over 貴方
+            // comes out あ な た. Centring keeps it together.
+            //
+            // A reading too wide for its base still has to go somewhere, and
+            // overhanging the neighbouring kana is what Japanese typesetting
+            // does. Scaling it down to fit instead would keep every line at its
+            // unannotated width, but the reading size would then swing with the
+            // ratio: なみだ over 涙 would render two thirds the size of あじ
+            // over 味, in the same line. Ruby is set at one size.
             let annotation = CTRubyAnnotationCreateWithAttributes(
-                .auto, .auto, .before, ruby as CFString,
+                .center, .auto, .before, ruby as CFString,
                 [
                     kCTFontAttributeName: rubyFont,
                     kCTForegroundColorAttributeName: style.rubyColor,
