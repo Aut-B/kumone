@@ -30,6 +30,10 @@ struct LyricText: View {
                 rounded: rounded,
                 alphas: alphas
             )
+            // The line is glyphs in a `Canvas`, which carries no text for
+            // VoiceOver to read. Stand in the plain lyric; the readings are a
+            // visual aid and would only clutter it spoken.
+            .accessibilityRepresentation { Text(line.text.isEmpty ? "♪" : line.text) }
         } else if let alphas, !alphas.isEmpty {
             wiped(alphas)
                 .font(.system(size: size, weight: weight, design: rounded ? .rounded : .default))
