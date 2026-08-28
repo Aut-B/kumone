@@ -36,16 +36,31 @@ enum ReadingOverrides {
     /// Longest first, so 私達 wins over 私.
     private static let sortedKeys: [String] = table.keys.sorted { $0.count > $1.count }
 
-    /// Longest match starting at `index`.
+    /// Longest match starting at `index`, and only where the word stands on
+    /// its own.
+    ///
+    /// Wedged into a longer run of kanji these are usually wrong, and the
+    /// analyser reading the whole compound is usually right: 私立 is しりつ,
+    /// not わたし plus 立; 君達 is きみたち, not きみ plus 達 read as the given
+    /// name とおる; 明日香 is あすか. The table is here for words the analyser
+    /// mis-segments, so where it has a compound to work with, it wins.
     static func match(_ characters: [Character], at index: Int) -> (surface: String, reading: String)? {
         for key in sortedKeys {
             let length = key.count
-            guard index + length <= characters.count else { continue }
-            if String(characters[index..<(index + length)]) == key, let reading = table[key] {
-                return (key, reading)
-            }
+            guard index + length <= characters.count,
+                  String(characters[index..<(index + length)]) == key,
+                  let reading = table[key],
+                  !isKanji(characters, at: index - 1),
+                  !isKanji(characters, at: index + length)
+            else { continue }
+            return (key, reading)
         }
         return nil
+    }
+
+    private static func isKanji(_ characters: [Character], at index: Int) -> Bool {
+        guard characters.indices.contains(index) else { return false }
+        return characters[index].unicodeScalars.contains(where: Kana.isKanji)
     }
 
     /// Rewrites every overridden word as its kana reading. Feeding the result
