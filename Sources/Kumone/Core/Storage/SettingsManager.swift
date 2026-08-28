@@ -52,6 +52,23 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 }
 
+/// What to show above Japanese lyrics.
+enum LyricsAnnotation: String, CaseIterable, Identifiable {
+    case off
+    case romaji
+    case furigana
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .off: return String(localized: "关闭")
+        case .romaji: return String(localized: "罗马音")
+        case .furigana: return String(localized: "汉字读音")
+        }
+    }
+}
+
 #if os(iOS)
 enum NowPlayingMode: String, CaseIterable, Identifiable {
     case classic
@@ -79,7 +96,8 @@ final class SettingsManager: ObservableObject {
         static let nowPlayingMode = "settings.nowPlayingMode"
         #endif
         static let showTranslation = "settings.showLyricsTranslation"
-        static let showRomaji = "settings.showLyricsRomaji"
+        static let showRomaji = "settings.showLyricsRomaji"  // migrated to `annotation`
+        static let annotation = "settings.lyricsAnnotation"
         static let volume = "settings.volume"
         static let fmMode = "settings.fmMode"
         static let unblock = "settings.enableUnblock"
@@ -104,9 +122,10 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(showLyricsTranslation, forKey: Keys.showTranslation) }
     }
 
-    /// Romaji line above Japanese lyrics.
-    @Published var showLyricsRomaji: Bool {
-        didSet { UserDefaults.standard.set(showLyricsRomaji, forKey: Keys.showRomaji) }
+    /// Reading shown for Japanese lyrics: a romaji line above, furigana over
+    /// the kanji, or nothing.
+    @Published var lyricsAnnotation: LyricsAnnotation {
+        didSet { UserDefaults.standard.set(lyricsAnnotation.rawValue, forKey: Keys.annotation) }
     }
 
     /// Resolve gray tracks from third-party sources (UnblockNeteaseMusic-style).
@@ -127,7 +146,9 @@ final class SettingsManager: ObservableObject {
         nowPlayingMode = defaults.string(forKey: Keys.nowPlayingMode).flatMap(NowPlayingMode.init) ?? .immersive
         #endif
         showLyricsTranslation = defaults.object(forKey: Keys.showTranslation) as? Bool ?? true
-        showLyricsRomaji = defaults.object(forKey: Keys.showRomaji) as? Bool ?? false
+        // Carry over the old on/off romaji toggle for anyone who had it on.
+        lyricsAnnotation = defaults.string(forKey: Keys.annotation).flatMap(LyricsAnnotation.init)
+            ?? (defaults.bool(forKey: Keys.showRomaji) ? .romaji : .off)
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
     }

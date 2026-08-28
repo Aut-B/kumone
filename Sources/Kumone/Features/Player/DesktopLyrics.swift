@@ -134,11 +134,23 @@ private struct DesktopLyricsBox: View {
                 // The box itself stays put; only the text crossfades and the
                 // capsule width eases to the new line's size.
                 VStack(spacing: 5) {
-                    Text(line.text)
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
-                        .contentTransition(.opacity)
+                    if settings.lyricsAnnotation == .romaji, let romaji = line.romaji {
+                        Text(romaji)
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.78))
+                            .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+                            .contentTransition(.opacity)
+                    }
+                    LyricText(
+                        line: line,
+                        size: 26,
+                        weight: .bold,
+                        color: .white,
+                        alignment: .center,
+                        rounded: true
+                    )
+                    .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
+                    .contentTransition(.opacity)
                     if settings.showLyricsTranslation, let translation = line.translation {
                         Text(translation)
                             .font(.system(size: 16, weight: .semibold, design: .rounded))

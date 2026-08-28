@@ -599,14 +599,17 @@ struct NowPlayingView: View {
             player.seek(to: line.time)
         } label: {
             VStack(alignment: .leading, spacing: 5) {
-                if settings.showLyricsRomaji, let romaji = line.romaji {
+                if settings.lyricsAnnotation == .romaji, let romaji = line.romaji {
                     Text(romaji)
                         .font(.system(size: isActive ? 15 : 13, weight: .medium))
                         .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.35))
                 }
-                Text(line.text.isEmpty ? "♪" : line.text)
-                    .font(.system(size: isActive ? 26 : 20, weight: isActive ? .bold : .semibold))
-                    .foregroundStyle(.white.opacity(isActive ? 1 : 0.45))
+                LyricText(
+                    line: line,
+                    size: isActive ? 26 : 20,
+                    weight: isActive ? .bold : .semibold,
+                    color: .white.opacity(isActive ? 1 : 0.45)
+                )
                 if settings.showLyricsTranslation, let translation = line.translation {
                     Text(translation)
                         .font(.system(size: isActive ? 16 : 14, weight: .medium))
@@ -720,15 +723,18 @@ private struct IOSImmersiveLyricsColumn: View {
             player.seek(to: line.time)
         } label: {
             VStack(alignment: .leading, spacing: 5) {
-                if settings.showLyricsRomaji, let romaji = line.romaji {
+                if settings.lyricsAnnotation == .romaji, let romaji = line.romaji {
                     Text(romaji)
                         .font(.system(size: isActive ? 15 : 13, weight: .medium))
                         .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.35))
                 }
 
-                Text(line.text.isEmpty ? "♪" : line.text)
-                    .font(.system(size: 27, weight: isActive ? .bold : .semibold))
-                    .foregroundStyle(.white.opacity(isActive ? 1 : 0.45))
+                LyricText(
+                    line: line,
+                    size: 27,
+                    weight: isActive ? .bold : .semibold,
+                    color: .white.opacity(isActive ? 1 : 0.45)
+                )
 
                 if settings.showLyricsTranslation, let translation = line.translation {
                     Text(translation)
