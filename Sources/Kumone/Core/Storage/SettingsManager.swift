@@ -52,6 +52,23 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 }
 
+/// What to show above Japanese lyrics.
+enum LyricsAnnotation: String, CaseIterable, Identifiable {
+    case off
+    case romaji
+    case furigana
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .off: return String(localized: "关闭")
+        case .romaji: return String(localized: "罗马音")
+        case .furigana: return String(localized: "汉字读音")
+        }
+    }
+}
+
 #if os(iOS)
 enum NowPlayingMode: String, CaseIterable, Identifiable {
     case classic
@@ -81,7 +98,8 @@ final class SettingsManager: ObservableObject {
         static let nowPlayingMode = "settings.nowPlayingMode"
         #endif
         static let showTranslation = "settings.showLyricsTranslation"
-        static let showRomaji = "settings.showLyricsRomaji"
+        static let showRomaji = "settings.showLyricsRomaji"  // migrated to `annotation`
+        static let annotation = "settings.lyricsAnnotation"
         static let verbatimLyrics = "settings.verbatimLyrics"
         static let volume = "settings.volume"
         static let fmMode = "settings.fmMode"
@@ -119,9 +137,10 @@ final class SettingsManager: ObservableObject {
         }
     }
 
-    /// Romaji line above Japanese lyrics.
-    @Published var showLyricsRomaji: Bool {
-        didSet { UserDefaults.standard.set(showLyricsRomaji, forKey: Keys.showRomaji) }
+    /// Reading shown for Japanese lyrics: a romaji line above, furigana over
+    /// the kanji, or nothing.
+    @Published var lyricsAnnotation: LyricsAnnotation {
+        didSet { UserDefaults.standard.set(lyricsAnnotation.rawValue, forKey: Keys.annotation) }
     }
 
     /// Karaoke-style word-by-word highlighting when the song has verbatim
@@ -148,7 +167,9 @@ final class SettingsManager: ObservableObject {
         nowPlayingMode = defaults.string(forKey: Keys.nowPlayingMode).flatMap(NowPlayingMode.init) ?? .immersive
         #endif
         showLyricsTranslation = defaults.object(forKey: Keys.showTranslation) as? Bool ?? true
-        showLyricsRomaji = defaults.object(forKey: Keys.showRomaji) as? Bool ?? false
+        // Carry over the old on/off romaji toggle for anyone who had it on.
+        lyricsAnnotation = defaults.string(forKey: Keys.annotation).flatMap(LyricsAnnotation.init)
+            ?? (defaults.bool(forKey: Keys.showRomaji) ? .romaji : .off)
         verbatimLyrics = defaults.object(forKey: Keys.verbatimLyrics) as? Bool ?? true
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true

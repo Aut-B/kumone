@@ -37,8 +37,12 @@ struct SettingsView: View {
                 #endif
                 Toggle("显示歌词翻译", isOn: $settings.showLyricsTranslation)
                 Toggle("逐字歌词（卡拉OK）", isOn: $settings.verbatimLyrics)
-                Toggle("显示日文歌词罗马音", isOn: $settings.showLyricsRomaji)
-                Text("日文歌词上方显示罗马音，缺少官方罗马音时自动生成读音")
+                Picker("日文歌词读音", selection: $settings.lyricsAnnotation) {
+                    ForEach(LyricsAnnotation.allCases) { annotation in
+                        Text(annotation.displayName).tag(annotation)
+                    }
+                }
+                Text("罗马音在歌词上方另起一行，汉字读音把假名标在汉字正上方；缺少官方罗马音时自动生成读音")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 #if os(macOS)
