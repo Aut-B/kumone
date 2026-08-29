@@ -18,9 +18,7 @@ struct NowPlayingView: View {
     @State private var isUserScrolling = false
     @State private var resumeTask: Task<Void, Never>?
     @State private var showLyricsOnMobile = false
-    #if os(iOS)
     @State private var showQueueOnMobile = false
-    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -104,7 +102,7 @@ struct NowPlayingView: View {
             showQueueOnMobile = false
         }
         .onChange(of: player.currentTrack?.id) { _ in
-            if settings.nowPlayingMode == .minimal {
+            if settings.nowPlayingMode == .minimal || settings.nowPlayingMode == .vinyl {
                 showLyricsOnMobile = false
             }
         }
@@ -213,6 +211,8 @@ struct NowPlayingView: View {
     private func compactLayout(size: CGSize) -> some View {
         #if os(iOS)
         switch settings.nowPlayingMode {
+        case .vinyl:
+            vinylCompactLayout(size: size)
         case .classic:
             classicCompactLayout(size: size)
         case .immersive:
@@ -221,8 +221,112 @@ struct NowPlayingView: View {
             minimalCompactLayout(size: size)
         }
         #else
-        classicCompactLayout(size: size)
+        switch settings.nowPlayingMode {
+        case .vinyl:
+            vinylCompactLayout(size: size)
+        default:
+            classicCompactLayout(size: size)
+        }
         #endif
+    }
+
+    private func vinylCompactLayout(size: CGSize) -> some View {
+        let discDimension = min(size.width - 64, size.height * 0.42, 320)
+        let showsVinyl = !showLyricsOnMobile && !showQueueOnMobile
+
+        return VStack(spacing: 0) {
+            #if os(iOS)
+            Color.clear.frame(
+                height: NowPlayingPresentationMetrics.immersiveHeaderTopInset
+            )
+
+            CompactTrackHeader(showsExpandedArtwork: showsVinyl)
+                .padding(.bottom, 10)
+            #else
+            Spacer().frame(height: 30)
+            trackMetaView
+                .padding(.bottom, 10)
+            #endif
+
+            ZStack {
+                if showsVinyl {
+                    VStack(spacing: 12) {
+                        Spacer(minLength: 4)
+
+                        VinylTurntableView(
+                            artworkImage: artworkImage,
+                            isPlaying: player.isPlaying,
+                            trackId: player.currentTrack?.id,
+                            size: discDimension,
+                            onTap: {
+                                withAnimation(AppAnimation.standard) {
+                                    showLyricsOnMobile = true
+                                }
+                            },
+                            onNextTrack: {
+                                player.next()
+                            },
+                            onPreviousTrack: {
+                                player.previous()
+                            }
+                        )
+                        .accessibilityIdentifier("vinylTurntable")
+
+                        MiniLyricsView(onOpen: {
+                            withAnimation(AppAnimation.standard) {
+                                showLyricsOnMobile = true
+                            }
+                        })
+                        .frame(maxWidth: .infinity, maxHeight: 70)
+
+                        Spacer(minLength: 0)
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                } else if showQueueOnMobile {
+                    #if os(iOS)
+                    CompactQueueContent()
+                        .transition(.opacity)
+                    #else
+                    lyricsColumn
+                        .transition(.opacity)
+                    #endif
+                } else {
+                    #if os(iOS)
+                    IOSImmersiveLyricsColumn()
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(AppAnimation.standard) {
+                                showLyricsOnMobile = false
+                            }
+                        }
+                        .transition(.opacity.combined(with: .scale(scale: 1.05)))
+                    #else
+                    lyricsColumn
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(AppAnimation.standard) {
+                                showLyricsOnMobile = false
+                            }
+                        }
+                        .transition(.opacity.combined(with: .scale(scale: 1.05)))
+                    #endif
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            #if os(iOS)
+            immersiveControls
+            #else
+            VStack(spacing: 12) {
+                NowPlayingScrubber()
+                    .padding(.horizontal, 24)
+                controls
+            }
+            .padding(.bottom, 24)
+            #endif
+        }
+        .frame(width: max(size.width - 64, 0))
+        .padding(.horizontal, 32)
     }
 
     private func classicCompactLayout(size: CGSize) -> some View {
@@ -548,7 +652,25 @@ struct NowPlayingView: View {
         VStack(spacing: 26) {
             Spacer()
 
-            artworkView(size: artworkSize)
+            if settings.nowPlayingMode == .vinyl {
+                VinylTurntableView(
+                    artworkImage: artworkImage,
+                    isPlaying: player.isPlaying,
+                    trackId: player.currentTrack?.id,
+                    size: artworkSize,
+                    onTap: {
+                        player.togglePlayPause()
+                    },
+                    onNextTrack: {
+                        player.next()
+                    },
+                    onPreviousTrack: {
+                        player.previous()
+                    }
+                )
+            } else {
+                artworkView(size: artworkSize)
+            }
             trackMetaView
 
             VStack(spacing: 14) {
