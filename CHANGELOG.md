@@ -6,6 +6,20 @@
 section the English bullets come first, followed by their Simplified Chinese
 counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单行。
 
+## 0.3.14 - 2026-08-29
+
+### Added / 新增
+
+- **iOS + macOS**: a retro vinyl record-player now-playing mode (黑胶模式) — programmatic vinyl + tonearm with swipe-to-switch. Opt in from Settings (the default stays 沉浸模式). Thanks @MikeChongCan (#55).
+- **iOS + macOS**：新增黑胶唱片播放页模式（黑胶模式）——矢量唱片 + 唱臂，可滑动切换。默认仍是沉浸模式，可在设置中选择。感谢 @MikeChongCan（#55）。
+- **macOS**: a "桌面歌词水平居中" toggle that locks the floating lyric capsule to the horizontal centre of the screen (vertical drag still works). (#48)
+- **macOS**：新增「桌面歌词水平居中」开关，可把悬浮歌词锁定在屏幕水平中央（仍可上下拖动）。（#48）
+
+### Fixed / 修复
+
+- **macOS**: the desktop-lyrics button in the player bar now reflects its on/off state — it read the setting directly and never re-rendered when toggled. (#48)
+- **macOS**：播放条上的桌面歌词按钮现在会正确反映开/关状态——之前直接读取设置、切换后不重绘，颜色卡住。（#48）
+
 ## 0.3.13 - 2026-08-29
 
 ### Added / 新增
