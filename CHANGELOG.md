@@ -6,6 +6,27 @@
 section the English bullets come first, followed by their Simplified Chinese
 counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单行。
 
+## 0.3.13 - 2026-08-29
+
+### Added / 新增
+
+- **iOS + macOS**: furigana (振假名) shown over the kanji in Japanese lyrics, composing with the karaoke wipe; romaji sokuon and some dictionary readings corrected; a 3-way 歌词注音 setting (无 / 罗马音 / 振假名). Desktop lyrics now show the annotation too (closes #45). Thanks @xyspg (#53, follow-up on #25).
+- **iOS + macOS**：日文歌词汉字上方显示振假名（与逐字高亮叠加）；修正罗马音促音与部分词典读音；歌词注音改为三档设置（无 / 罗马音 / 振假名）；桌面歌词也会显示注音（修复 #45）。感谢 @xyspg（#53，#25 的后续）。
+
+### Fixed / 修复
+
+- **macOS**: the app launches a single main window instead of two overlapping ones, and reopens correctly from the Dock — the scene is now a single-instance `Window`. Thanks @baisensenseng (#52, fixes #58).
+- **macOS**：应用启动只创建单个主窗口（不再出现两个重叠窗口），并能正确从 Dock 重开——场景改为单实例 `Window`。感谢 @baisensenseng（#52，修复 #58）。
+- **iOS**: the mini-player cover no longer reloads/flashes each time you switch tabs — `CachedAsyncImage` seeds from the in-memory cache synchronously. (#46)
+- **iOS**：切换 TabBar 时底部播放栏封面不再重新加载/闪烁——图片会同步从内存缓存取用。（#46）
+- **iOS**: the now-playing zoom transition anchors on the mini player again instead of the screen centre (a regression from the #35 idle-platter fix). (#57)
+- **iOS**：进入/退出播放页的 zoom 转场重新以迷你播放器为锚点（此前退化为屏幕中央，是 #35 修复引入的回归）。（#57）
+
+### Improved / 改进
+
+- **iOS**: the 精选 / 搜索 / 收藏 card lists now show two columns on iPhone (like 推荐), instead of one. (#47)
+- **iOS**：精选 / 搜索 / 收藏 的卡片列表在 iPhone 上改为两列显示（与推荐一致），不再是单列。（#47）
+
 ## 0.3.12 - 2026-08-27
 
 ### Improved / 改进
