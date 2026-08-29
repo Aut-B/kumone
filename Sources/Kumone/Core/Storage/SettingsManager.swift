@@ -104,6 +104,7 @@ final class SettingsManager: ObservableObject {
         static let unblock = "settings.enableUnblock"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
+        static let desktopLyricsCentered = "settings.desktopLyricsCentered"
     }
 
     @Published var audioQuality: AudioQuality {
@@ -155,6 +156,12 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(showDesktopLyrics, forKey: Keys.desktopLyrics) }
     }
 
+    /// Lock the desktop-lyrics capsule to the horizontal centre of the screen
+    /// instead of the free-drag position (#48).
+    @Published var desktopLyricsCentered: Bool {
+        didSet { UserDefaults.standard.set(desktopLyricsCentered, forKey: Keys.desktopLyricsCentered) }
+    }
+
     private init() {
         let defaults = UserDefaults.standard
         audioQuality = defaults.string(forKey: Keys.quality).flatMap(AudioQuality.init) ?? .exhigh
@@ -168,5 +175,6 @@ final class SettingsManager: ObservableObject {
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
+        desktopLyricsCentered = defaults.object(forKey: Keys.desktopLyricsCentered) as? Bool ?? false
     }
 }

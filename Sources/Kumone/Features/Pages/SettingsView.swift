@@ -45,6 +45,9 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 #if os(macOS)
                 Toggle("桌面歌词", isOn: $settings.showDesktopLyrics)
+                if settings.showDesktopLyrics {
+                    Toggle("桌面歌词水平居中", isOn: $settings.desktopLyricsCentered)
+                }
                 Text("在屏幕上悬浮显示当前歌词，可拖动调整位置")
                     .font(.caption)
                     .foregroundStyle(.secondary)
