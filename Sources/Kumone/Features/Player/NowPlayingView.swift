@@ -195,6 +195,11 @@ struct NowPlayingView: View {
         // Everything below the artwork needs ~300pt; shrink the artwork on
         // short displays (iPhone landscape) instead of clipping it.
         let artworkSize = max(120, min(340, size.width * 0.32, size.height - 300))
+        // Cap the two-column band and centre it. Spreading each column to
+        // `.infinity` across an ultra-wide display (iPad landscape, ~1368pt)
+        // left the left column's content floating in an oversized half and a
+        // wide blank gutter on the right (#62).
+        let maxBandWidth: CGFloat = hasLyricsColumn ? 1040 : 560
         return HStack(spacing: 0) {
             leftColumn(artworkSize: artworkSize)
                 .frame(maxWidth: .infinity)
@@ -203,6 +208,8 @@ struct NowPlayingView: View {
                     .frame(maxWidth: .infinity)
             }
         }
+        .frame(maxWidth: maxBandWidth)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 48)
         .padding(.vertical, size.height < 500 ? 24 : 40)
     }
