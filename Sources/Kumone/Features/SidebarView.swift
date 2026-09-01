@@ -158,7 +158,21 @@ struct SidebarView: View {
                 accountEntry
                     .frame(maxWidth: .infinity, alignment: .leading)
 #if os(iOS)
-                // iPad-only Settings entry (macOS uses the Cmd+, Settings scene).
+                // iPad-only entries (macOS has toolbar search + the Cmd+, scene).
+                // The desktop toolbar doesn't surface search/settings on iPad, so
+                // put reliable entries in the always-visible footer (#59/#67).
+                Button {
+                    selection = .search
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 17))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, height: 40)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text("搜索"))
+
                 Button {
                     showSettings = true
                 } label: {

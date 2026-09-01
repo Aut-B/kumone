@@ -23,12 +23,17 @@ counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单
 - **iOS**：修复部分设备（如 iPhone 15 Pro Max）以信箱模式（黑边、界面放大）启动的问题——此前 `UILaunchScreen` 被生成为嵌套的错误结构，现改为正确的扁平声明，应用按原生全屏分辨率渲染。（#71）
 - **iOS**: playlist cover cards on 推荐 / 精选 no longer misalign vertically when titles wrap to two lines — the play-count badge and hover button are now overlays that don't affect the cover's layout size. Thanks @sld272 (#68).
 - **iOS**：推荐 / 精选 的歌单封面卡片在标题换行时不再上下错位——播放量徽标与悬浮按钮改为不参与封面尺寸计算的 overlay。感谢 @sld272（#68）。
-- **iPadOS**: Settings is now reachable on iPad (a gear button in the toolbar), so audio quality and other options can be changed — the iPad layout previously exposed no Settings entry at all. (#67, part of #59)
-- **iPadOS**：iPad 现在可以打开设置（工具栏齿轮按钮），从而切换音质等选项——此前 iPad 布局完全没有设置入口。（#67，#59 的一部分）
+- **iPadOS**: Settings and Search are now reachable on iPad — gear + magnifier entries in the sidebar footer. The iPad layout previously had no Settings entry (so audio quality etc. couldn't be changed) and no working search. (#67, #59)
+- **iPadOS**：iPad 现在可以打开设置和搜索——侧栏底部新增齿轮与放大镜入口。此前 iPad 布局没有设置入口（音质等无法切换）、也没有可用的搜索。（#67，#59）
 - **iPadOS**: the landscape now-playing page no longer stretches its two columns edge-to-edge (cramped on the left, a wide blank gutter on the right) — the content band is capped and centred. (#62)
 - **iPadOS**：横屏播放页不再把两栏铺满整个宽度（左侧拥挤、右侧大片留白）——内容区域现在限制最大宽度并居中。（#62）
 - **macOS**: closing the main window (Cmd+W / red button) now hides it instead of destroying the scene, so the Dock icon always brings it back; also covers reopening after minimize and fronting the window when it is hidden behind others. Regression from the #52 single-window change. (#60, #63, #66, #70)
 - **macOS**：用 Cmd+W / 红灯关闭主窗口时改为隐藏而非销毁场景，点击 Dock 图标始终能重新唤出；同时覆盖最小化后重开、以及窗口被其他窗口盖住时的前置。此为 #52 单窗口改动引入的回归。（#60、#63、#66、#70）
+
+### Improved / 改进
+
+- **iOS**: in the immersive now-playing page, tapping the small top-left cover while lyrics (or the queue) are shown collapses back to the full artwork — matching Apple Music. (#50)
+- **iOS**：沉浸播放页在显示歌词（或队列）时，点击左上角的小封面即可收起、回到大封面视图，与 Apple Music 一致。（#50）
 
 ## 0.3.14 - 2026-08-29
 

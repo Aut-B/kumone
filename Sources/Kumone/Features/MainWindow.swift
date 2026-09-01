@@ -120,6 +120,11 @@ struct MainWindow: View {
             ExploreView()
         case .fm:
             FMView()
+        case .search:
+            // iPad search entry: SearchView's `.searchable` bar surfaces in the
+            // detail nav bar (the desktop toolbar search field doesn't render on
+            // iPad). (#59)
+            SearchView(query: "")
         case .likedSongs:
             if let playlist = account.likedSongsPlaylist {
                 PlaylistDetailView(playlistID: playlist.id, isLikedList: true)
