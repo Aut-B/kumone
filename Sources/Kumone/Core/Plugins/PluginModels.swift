@@ -27,7 +27,12 @@ struct PluginMusicItem: Identifiable, Hashable, Sendable {
     /// doesn't carry its own (e.g. imported playlists carry it per item).
     init?(normalizing dict: [String: Any], platform: String) {
         guard let itemID = dict["id"] as? String, !itemID.isEmpty else { return nil }
-        let resolvedPlatform = (dict["platform"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? platform
+        // The routing key must match the mounted instance: prefer the context
+        // platform (registry name). The dict's own platform is only used when
+        // no context is given (e.g. imported backups).
+        let resolvedPlatform = platform.isEmpty
+            ? ((dict["platform"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? platform)
+            : platform
         self.platform = resolvedPlatform
         self.itemID = itemID
         id = "\(resolvedPlatform)|\(itemID)"

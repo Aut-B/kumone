@@ -166,6 +166,20 @@ final class PlayerService: ObservableObject {
     /// instead of spinning forever.
     @Published private(set) var hasNoLyrics = false
 
+    private var syncedRealDurationTrackID: Int?
+
+    /// Adopts the AVPlayerItem's real duration (authoritative) once known.
+    private func syncRealDurationIfNeeded() {
+        guard let item = engine.currentItem else { return }
+        let real = item.duration.seconds
+        guard item.duration.isNumeric, real.isFinite, real > 0 else { return }
+        guard syncedRealDurationTrackID != currentTrack?.id else { return }
+        syncedRealDurationTrackID = currentTrack?.id
+        // Metadata duration is either wrong or unknown; the item wins.
+        duration = real
+        NowPlayingManager.shared.updateMetadata(for: currentTrack, duration: real)
+    }
+
     /// Keep playing while other apps play audio (mixWithOthers).
     func applyAudioMixPreference() {
         #if os(iOS)
@@ -297,6 +311,11 @@ final class PlayerService: ObservableObject {
                 guard let self, !self.isScrubbing else { return }
                 let seconds = time.seconds
                 guard seconds.isFinite else { return }
+
+                // Plugin metadata can misreport duration (then scrubbing past
+                // the real end skips to the next track). Once the item knows
+                // its real duration, adopt it — it is authoritative.
+                self.syncRealDurationIfNeeded()
 
                 // Lyrics need this cadence to stay in sync; the cursor itself
                 // only publishes when the line actually changes.
@@ -453,14 +472,17 @@ final class PlayerService: ObservableObject {
     }
 
     func seek(to seconds: TimeInterval, completion: (@MainActor () -> Void)? = nil) {
-        progress = seconds
-        updateLyricsCursor(at: seconds)
-        engine.seek(to: CMTime(seconds: seconds, preferredTimescale: 600),
+        // Clamp inside the known duration so a seek can never run past the
+        // real end of a stream (which would trigger end-of-item -> next song).
+        let clamped = duration > 1 ? min(max(seconds, 0), duration - 0.5) : max(seconds, 0)
+        progress = clamped
+        updateLyricsCursor(at: clamped)
+        engine.seek(to: CMTime(seconds: clamped, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero) { _ in
             guard let completion else { return }
             Task { @MainActor in completion() }
         }
-        NowPlayingManager.shared.updateElapsed(seconds, rate: isPlaying ? 1 : 0)
+        NowPlayingManager.shared.updateElapsed(clamped, rate: isPlaying ? 1 : 0)
     }
 
     func toggleShuffle() {

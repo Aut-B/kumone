@@ -371,8 +371,38 @@
       });
     }
   };
+  // Platform-name variants of the same source family (item names vs declared
+  // names can differ, e.g. backup items "b站-ios" vs mounted "bilibili").
+  var __mf_platformFamilies = [
+    ['bilibili', 'b站-ios', 'b站', 'bili', '哔哩哔哩'],
+  ];
+  function __mf_sameFamily(a, b) {
+    for (var i = 0; i < __mf_platformFamilies.length; i++) {
+      var f = __mf_platformFamilies[i];
+      if (f.indexOf(a) >= 0 && f.indexOf(b) >= 0) return true;
+    }
+    return false;
+  }
+
   globalThis.__mf_callNamed = function (platform, method, argsJSON, done) {
     var inst = globalThis.__mf_instances[platform];
+    if (!inst) {
+      var keys = Object.keys(globalThis.__mf_instances);
+      if (keys.length === 1) {
+        inst = globalThis.__mf_instances[keys[0]];
+      } else {
+        var target = String(platform).toLowerCase();
+        for (var i = 0; i < keys.length; i++) {
+          var k = keys[i];
+          var lk = k.toLowerCase();
+          if (lk === target || __mf_sameFamily(platform, k)
+              || lk.indexOf(target) >= 0 || target.indexOf(lk) >= 0) {
+            inst = globalThis.__mf_instances[k];
+            break;
+          }
+        }
+      }
+    }
     if (!inst) { done(JSON.stringify({ ok: false, error: 'plugin not mounted: ' + platform })); return; }
     __mf_call(inst, method, argsJSON, done);
   };

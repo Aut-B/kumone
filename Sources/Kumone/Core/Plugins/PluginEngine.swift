@@ -192,7 +192,7 @@ final class PluginEngine {
         guard let data = optionsJSON.data(using: .utf8),
               let options = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let urlString = options["url"] as? String,
-              let url = URL(string: urlString) else {
+              let url = Self.robustPluginURL(urlString) else {
             respond(completion, withError: "invalid request options")
             return
         }
@@ -261,6 +261,23 @@ final class PluginEngine {
         queue.async {
             completion.call(withArguments: ["{\"error\":\"\(message)\"}"])
         }
+    }
+
+    /// Builds a URL tolerantly. Plugins sometimes contain format-style
+    /// placeholders (`view?%s`) — Foundation rejects the bare `%s` escape,
+    /// which used to kill the whole request (RN's stack percent-encodes it).
+    /// Escape invalid percent sequences, then fall back to URLComponents and
+    /// percent-encoding, mirroring what the RN network layer accepts.
+    static func robustPluginURL(_ raw: String) -> URL? {
+        if let url = URL(string: raw), url.scheme != nil { return url }
+        let sanitized = raw.replacingOccurrences(
+            of: "%(?![0-9a-fA-F]{2})",
+            with: "%25",
+            options: .regularExpression
+        )
+        if let url = URL(string: sanitized), url.scheme != nil { return url }
+        if let url = URLComponents(string: sanitized)?.url, url.scheme != nil { return url }
+        return URL(string: sanitized.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sanitized)
     }
 
     // MARK: - JS evaluation
