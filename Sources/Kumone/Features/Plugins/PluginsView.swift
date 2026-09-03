@@ -581,19 +581,24 @@ struct WebDAVImportView: View {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            var nextPath = path
+            let list: [WebDAVEntry]
             if let directory {
-                if !nextPath.isEmpty, !nextPath.hasSuffix("/") { nextPath += "/" }
-                let name = directory.name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? directory.name
-                nextPath += name
+                // Navigate via the href the server returned — the server's own
+                // encoding is always correct, unlike client-side path building.
+                list = try await WebDAVClient.list(
+                    urlString: directory.urlString,
+                    username: username,
+                    password: password
+                )
+                path = URLComponents(string: directory.urlString)?.path ?? directory.name
+            } else {
+                list = try await WebDAVClient.listRoot(
+                    server: trimmedServer,
+                    username: username,
+                    password: password
+                )
+                path = ""
             }
-            let list = try await WebDAVClient.list(
-                server: trimmedServer,
-                username: username,
-                password: password,
-                path: nextPath
-            )
-            path = nextPath
             entries = list
         } catch {
             errorMessage = error.localizedDescription

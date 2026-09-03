@@ -6,6 +6,7 @@ import http from "http";
 import { fileURLToPath } from "url";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
+const jsDir = path.join(dir, "../../Sources/Kumone/Core/Plugins/JS");
 
 // --- local mock server acting as a fake music API ---
 const server = http.createServer((req, res) => {
@@ -33,6 +34,7 @@ await new Promise((r) => server.listen(18081, "127.0.0.1", r));
 const libOrder = [
   "crypto-js.js", "dayjs.js", "qs.js", "he.js", "big-integer.js",
   "__mf_lib_cheerio.js", "__mf_lib_webdav.js", "__mf_lib_whatwgurl.js",
+  "url-fallback.js",
   "__mf_lib_compareVersions.js", "kumone-plugin-runtime.js",
 ];
 const sandbox = {
@@ -67,7 +69,7 @@ sandbox.__mf_native = {
 };
 sandbox.__mf_nativeLog = () => {};
 for (const f of libOrder) {
-  vm.runInContext(fs.readFileSync(path.join(dir, f), "utf8"), sandbox, { filename: f });
+  vm.runInContext(fs.readFileSync(path.join(jsDir, f), "utf8"), sandbox, { filename: f });
 }
 
 const pluginCode = `

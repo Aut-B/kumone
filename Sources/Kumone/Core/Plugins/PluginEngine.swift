@@ -73,6 +73,7 @@ final class PluginEngine {
         "__mf_lib_cheerio.js",
         "__mf_lib_webdav.js",
         "__mf_lib_whatwgurl.js",
+        "url-fallback.js",
         "__mf_lib_compareVersions.js",
         "kumone-plugin-runtime.js",
     ]

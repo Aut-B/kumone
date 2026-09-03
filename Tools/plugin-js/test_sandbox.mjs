@@ -6,6 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
+const jsDir = path.join(dir, "../../Sources/Kumone/Core/Plugins/JS");
 const defaultPlugins = [
   "https://raw.githubusercontent.com/ThomasBy2025/musicfree/refs/heads/main/plugins/wy.js",
   "https://13413.kstore.vip/yuanli/wy.js",
@@ -77,7 +78,7 @@ sandbox.__mf_native = {
 sandbox.__mf_nativeLog = (lvl, msg) => console.log(`[plugin:${lvl}]`, msg.slice(0, 300));
 
 for (const f of libOrder) {
-  const code = fs.readFileSync(path.join(dir, f), "utf8");
+  const code = fs.readFileSync(path.join(jsDir, f), "utf8");
   try {
     vm.runInContext(code, sandbox, { filename: f });
   } catch (e) {

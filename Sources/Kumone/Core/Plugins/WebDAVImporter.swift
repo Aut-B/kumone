@@ -49,18 +49,17 @@ struct WebDAVEntry: Identifiable, Hashable {
 
 /// Minimal native WebDAV client: PROPFIND directory listing + GET download.
 enum WebDAVClient {
-    /// Lists entries under `path` (server-relative, "" = root).
-    static func list(server: String, username: String, password: String, path: String) async throws -> [WebDAVEntry] {
-        guard URL(string: server)?.scheme != nil else {
-            throw WebDAVError.badServer
-        }
-        var urlString = server
-        if !path.isEmpty {
-            if !urlString.hasSuffix("/") { urlString += "/" }
-            urlString += path
-            if !urlString.hasSuffix("/") { urlString += "/" }
-        }
-        guard let url = URL(string: urlString) else { throw WebDAVError.badServer }
+    /// Builds a URL tolerantly (WebDAV hrefs may contain percent-escapes
+    /// that `URL(string:)` rejects, or raw spaces in display paths).
+    static func robustURL(_ string: String) -> URL? {
+        if let url = URL(string: string), url.scheme != nil { return url }
+        if let url = URLComponents(string: string)?.url, url.scheme != nil { return url }
+        return URL(string: string.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? string)
+    }
+
+    /// Lists entries under an absolute collection URL (from a PROPFIND href).
+    static func list(urlString: String, username: String, password: String) async throws -> [WebDAVEntry] {
+        guard let url = robustURL(urlString) else { throw WebDAVError.badServer }
 
         var request = URLRequest(url: url)
         request.httpMethod = "PROPFIND"
@@ -96,9 +95,17 @@ enum WebDAVClient {
         return entries.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
     }
 
+    /// Lists the root of a server. `server` must end with the collection
+    /// path (e.g. https://dav.jianguoyun.com/dav/).
+    static func listRoot(server: String, username: String, password: String) async throws -> [WebDAVEntry] {
+        var urlString = server.trimmingCharacters(in: .whitespaces)
+        if !urlString.hasSuffix("/") { urlString += "/" }
+        return try await list(urlString: urlString, username: username, password: password)
+    }
+
     /// Downloads a file over WebDAV.
     static func download(urlString: String, username: String, password: String) async throws -> Data {
-        guard let url = URL(string: urlString) else { throw WebDAVError.badServer }
+        guard let url = robustURL(urlString) else { throw WebDAVError.badServer }
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
         request.setValue("Basic \(Data("\(username):\(password)".utf8).base64EncodedString())", forHTTPHeaderField: "Authorization")
