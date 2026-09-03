@@ -205,9 +205,30 @@ final class PluginEngine {
 
     // MARK: - JS evaluation
 
+    /// Renders a Swift string as a JS string literal.
+    /// NOTE: must NOT use JSONSerialization here — a bare String is not a
+    /// valid JSON top-level type and Foundation raises an unbridgeable
+    /// NSException ("Invalid top-level type in JSON write") that crashes
+    /// the app when it unwinds through the JS block boundary.
     private func jsString(_ string: String) -> String {
-        let data = (try? JSONSerialization.data(withJSONObject: string)) ?? Data("\"\"".utf8)
-        return String(data: data, encoding: .utf8) ?? "\"\""
+        var output = "\""
+        for scalar in string.unicodeScalars {
+            switch scalar.value {
+            case 0x22: output += "\\\""   // "
+            case 0x5C: output += "\\\\"   // backslash
+            case 0x0A: output += "\\n"
+            case 0x0D: output += "\\r"
+            case 0x09: output += "\\t"
+            case 0x08: output += "\\b"
+            case 0x0C: output += "\\f"
+            case 0x2028: output += "\\u2028"
+            case 0x2029: output += "\\u2029"
+            case 0x00 ... 0x1F: output += String(format: "\\u%04x", scalar.value)
+            default: output.unicodeScalars.append(scalar)
+            }
+        }
+        output += "\""
+        return output
     }
 
     /// Evaluates `script` with a completion callback named `__CALLBACK__`,
