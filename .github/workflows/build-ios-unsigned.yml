@@ -1,0 +1,38 @@
+name: Build unsigned iOS IPA
+
+on:
+  push:
+    branches: ["dev-musicfree"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build iOS app (unsigned)
+        run: |
+          xcodebuild -workspace ios/KumoneIOS.xcworkspace -scheme KumoneIOS \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/ios-dd" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package IPA
+        run: |
+          APP="$RUNNER_TEMP/ios-dd/Build/Products/Release-iphoneos/KumoneIOS.app"
+          mkdir -p "$RUNNER_TEMP/payload/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/payload/Payload/"
+          (cd "$RUNNER_TEMP/payload" && zip -qry "$GITHUB_WORKSPACE/Kumone-iOS-plugins.ipa" Payload)
+          ls -la Kumone-iOS-plugins.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kumone-iOS-plugins-unsigned
+          path: Kumone-iOS-plugins.ipa
+          retention-days: 14

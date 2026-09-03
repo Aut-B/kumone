@@ -20,6 +20,10 @@ let package = Package(
             ],
             path: "Sources/Kumone",
             exclude: ["Resources"],
+            resources: [
+                // MusicFree plugin sandbox runtime + bundled JS libraries.
+                .process("Core/Plugins/JS"),
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ]

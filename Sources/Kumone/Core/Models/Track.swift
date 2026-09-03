@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct ArtistRef: Codable, Hashable, Identifiable {
@@ -54,10 +55,13 @@ struct Track: Codable, Hashable, Identifiable {
     let isCloud: Bool
     /// Some endpoints (cloudsearch, FM) embed the privilege in the track itself.
     let embeddedPrivilege: TrackPrivilege?
+    /// Set when this track comes from a MusicFree-style JS plugin.
+    let plugin: PluginTrackInfo?
 
     var artistNames: String { artists.map(\.name).joined(separator: " / ") }
     var duration: TimeInterval { TimeInterval(durationMS) / 1000 }
     var subtitle: String? { transNames.first ?? alias.first }
+    var isPluginTrack: Bool { plugin != nil }
 
     private enum CodingKeys: String, CodingKey {
         case id, name
@@ -66,6 +70,34 @@ struct Track: Codable, Hashable, Identifiable {
         case dt, duration
         case alia, alias
         case tns, fee, mv, no, cd, noCopyrightRcmd, pc, privilege
+        case plugin
+    }
+
+    /// Builds a Track wrapper around a plugin search result.
+    init(pluginItem: PluginMusicItem) {
+        let digest = SHA256.hash(data: Data(pluginItem.id.utf8))
+        let numeric = digest.withUnsafeBytes { raw in
+            raw.loadUnaligned(as: UInt64.self) & 0x7FFF_FFFF_FFFF_FFFF
+        }
+        id = Int(truncatingIfNeeded: numeric)
+        name = pluginItem.title
+        artists = [ArtistRef(id: 0, name: pluginItem.artist)]
+        album = AlbumRef(id: 0, name: pluginItem.album, picUrl: pluginItem.artwork)
+        durationMS = pluginItem.durationMS
+        alias = []
+        transNames = []
+        fee = 0
+        mvID = 0
+        trackNo = 0
+        disc = nil
+        noCopyright = false
+        isCloud = false
+        embeddedPrivilege = nil
+        plugin = PluginTrackInfo(
+            platform: pluginItem.platform,
+            itemID: pluginItem.itemID,
+            rawJSON: pluginItem.rawJSON
+        )
     }
 
     init(from decoder: Decoder) throws {
@@ -90,6 +122,7 @@ struct Track: Codable, Hashable, Identifiable {
             && (try? c.decodeNil(forKey: .noCopyrightRcmd)) == false
         isCloud = c.contains(.pc) && (try? c.decodeNil(forKey: .pc)) == false
         embeddedPrivilege = try? c.decode(TrackPrivilege.self, forKey: .privilege)
+        plugin = try? c.decode(PluginTrackInfo.self, forKey: .plugin)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -105,6 +138,7 @@ struct Track: Codable, Hashable, Identifiable {
         try c.encode(mvID, forKey: .mv)
         try c.encode(trackNo, forKey: .no)
         try c.encodeIfPresent(disc, forKey: .cd)
+        try c.encodeIfPresent(plugin, forKey: .plugin)
     }
 }
 

@@ -19,6 +19,7 @@ public struct IOSMainWindow: View {
     @State private var selectedTab: IOSTab = .home
     @State private var showLogin = false
     @State private var homePath = NavigationPath()
+    @State private var pluginsPath = NavigationPath()
     @State private var explorePath = NavigationPath()
     @State private var fmPath = NavigationPath()
     @State private var searchPath = NavigationPath()
@@ -208,6 +209,10 @@ public struct IOSMainWindow: View {
                 tabStack(.library) { IOSLibraryView(showLogin: $showLogin) }
             }
 
+            Tab("插件", systemImage: "puzzlepiece.extension", value: .plugins) {
+                tabStack(.plugins) { PluginsRootView() }
+            }
+
             Tab(value: .search, role: .search) {
                 tabStack(.search) { SearchView(query: "") }
             } label: {
@@ -224,6 +229,7 @@ public struct IOSMainWindow: View {
                 page(.fm) { tabStack(.fm) { FMView() } }
                 page(.search) { tabStack(.search) { SearchView(query: "") } }
                 page(.library) { tabStack(.library) { IOSLibraryView(showLogin: $showLogin) } }
+                page(.plugins) { tabStack(.plugins) { PluginsRootView() } }
             }
 
             VStack(spacing: 8) {
@@ -250,6 +256,7 @@ public struct IOSMainWindow: View {
         case .fm: fmPath = NavigationPath()
         case .search: searchPath = NavigationPath()
         case .library: libraryPath = NavigationPath()
+        case .plugins: pluginsPath = NavigationPath()
         }
     }
 
@@ -281,12 +288,13 @@ public struct IOSMainWindow: View {
         case .fm: return $fmPath
         case .search: return $searchPath
         case .library: return $libraryPath
+        case .plugins: return $pluginsPath
         }
     }
 }
 
 enum IOSTab: Hashable {
-    case home, explore, fm, search, library
+    case home, explore, fm, search, library, plugins
 }
 
 extension IOSMainWindow {
@@ -295,6 +303,7 @@ extension IOSMainWindow {
         .init(tab: .explore, title: "精选", icon: "square.grid.2x2"),
         .init(tab: .fm, title: "漫游", icon: "dot.radiowaves.left.and.right"),
         .init(tab: .search, title: "搜索", icon: "magnifyingglass"),
+        .init(tab: .plugins, title: "插件", icon: "puzzlepiece.extension"),
         .init(tab: .library, title: "我的", icon: "person.crop.circle"),
     ]
 }

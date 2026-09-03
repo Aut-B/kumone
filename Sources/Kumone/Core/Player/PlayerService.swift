@@ -20,6 +20,8 @@ enum PlaySource: Equatable {
     case artist(Int)
     case daily
     case cloud
+    /// Queue from a MusicFree-style JS plugin.
+    case plugins
     case none
 
     var sourceID: Int {
@@ -42,6 +44,8 @@ struct PlayContext: Codable, Hashable {
         case playlist, album, artist
         /// Fixed per-account entry points, each reloaded from its own API.
         case daily, cloud, recents, heartbeat, fm
+        /// JS plugin queues; restored from persisted track payloads.
+        case plugins
     }
 
     let kind: Kind
@@ -61,6 +65,7 @@ struct PlayContext: Codable, Hashable {
         .init(kind: .artist, id: id, name: name)
     }
 
+    static func plugins(name: String) -> PlayContext { .init(kind: .plugins, id: 0, name: name) }
     static var daily: PlayContext { .init(kind: .daily, id: 0, name: String(localized: "每日推荐")) }
     static var cloud: PlayContext { .init(kind: .cloud, id: 0, name: String(localized: "音乐云盘")) }
     static var recents: PlayContext { .init(kind: .recents, id: 0, name: String(localized: "最近播放")) }
@@ -592,8 +597,33 @@ final class PlayerService: ObservableObject {
         guard generation == resolveGeneration else { return }
 
         var resolvedURL: URL?
+        var pluginHeaders: [String: String]?
         if let urlString = data?.url {
             resolvedURL = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://"))
+        }
+
+        // JS plugin tracks: resolve through the plugin's getMediaSource instead.
+        if let plugin = track.plugin {
+            let item = PluginMusicItem(
+                id: "\(plugin.platform)|\(plugin.itemID)",
+                platform: plugin.platform,
+                itemID: plugin.itemID,
+                title: track.name,
+                artist: track.artistNames,
+                album: track.album.name,
+                artwork: track.album.picUrl,
+                durationMS: track.durationMS,
+                rawJSON: plugin.rawJSON
+            )
+            let source = await PluginManager.shared.getMediaSource(
+                platform: plugin.platform,
+                item: item,
+                quality: SettingsManager.shared.audioQuality.pluginQuality
+            )
+            guard generation == resolveGeneration else { return }
+            resolvedURL = source.url
+            pluginHeaders = source.headers
+            data = nil
         }
 
         // NetEase refused — try third-party sources (UnblockNeteaseMusic-style).
@@ -634,7 +664,12 @@ final class PlayerService: ObservableObject {
         // has to be spliced in here or not at all. Sources that refuse byte-range
         // requests never resolve a track — those play untapped and the UI falls
         // back to its decorative animation.
-        let asset = AVURLAsset(url: url)
+        let asset: AVURLAsset
+        if let pluginHeaders, !pluginHeaders.isEmpty {
+            asset = AVURLAsset(url: url, options: [AVURLAssetHTTPHeaderFieldsKey: pluginHeaders])
+        } else {
+            asset = AVURLAsset(url: url)
+        }
         let assetTrack = await loadAudioTrack(from: asset, timeout: 2)
         guard generation == resolveGeneration else { return }
 
@@ -690,6 +725,8 @@ final class PlayerService: ObservableObject {
     }
 
     private func loadLyrics(for track: Track, generation: Int) async {
+        // Plugin tracks carry no NetEase lyric id; lyrics support comes later.
+        guard track.plugin == nil else { return }
         let response = try? await NeteaseAPI.lyric(id: track.id)
         guard generation == resolveGeneration else { return }
         lyrics = response.map(LyricsParser.parse)
@@ -700,6 +737,8 @@ final class PlayerService: ObservableObject {
 
     private func scrobbleIfNeeded(completed: Bool) {
         guard let track = currentTrack, !scrobbled, progress > 1 else { return }
+        // Plugin tracks don't map to a NetEase id — nothing to scrobble.
+        guard track.plugin == nil else { return }
         scrobbled = true
         let seconds = completed ? Int(duration) : Int(progress)
         let sourceID = source.sourceID
