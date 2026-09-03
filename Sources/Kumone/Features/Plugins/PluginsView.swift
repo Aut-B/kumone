@@ -65,9 +65,15 @@ final class PluginsSearchModel: ObservableObject {
 // MARK: - Root tab
 
 struct PluginsRootView: View {
+    enum Section: Hashable {
+        case search, playlists
+    }
+
     @StateObject private var model = PluginsSearchModel()
     @State private var query = ""
     @State private var showManager = false
+    @State private var showWebDAV = false
+    @State private var section: Section = .search
 
     var body: some View {
         content
@@ -78,10 +84,17 @@ struct PluginsRootView: View {
                 prompt: Text("在插件音源中搜索")
             )
             .onSubmit(of: .search) {
+                section = .search
                 Task { await model.search(query: query) }
             }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        showWebDAV = true
+                    } label: {
+                        Image(systemName: "tray.and.arrow.down")
+                    }
+                    .accessibilityLabel("从 WebDAV 导入歌单")
                     Button {
                         showManager = true
                     } label: {
@@ -92,6 +105,9 @@ struct PluginsRootView: View {
             }
             .sheet(isPresented: $showManager) {
                 PluginManagerView()
+            }
+            .sheet(isPresented: $showWebDAV) {
+                WebDAVImportView()
             }
             .onAppear {
                 model.selectFirst()
@@ -107,12 +123,25 @@ struct PluginsRootView: View {
             EmptyStateView(
                 icon: "puzzlepiece.extension",
                 title: "还没有安装插件音源",
-                subtitle: "点击右上角按钮安装音源，兼容 MusicFree 插件生态"
+                subtitle: "点击右上角拼图按钮安装音源，兼容 MusicFree 插件生态"
             )
         } else {
             VStack(spacing: 0) {
-                pluginPicker
-                resultList
+                Picker("", selection: $section) {
+                    Text("搜索").tag(Section.search)
+                    Text("歌单").tag(Section.playlists)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+
+                switch section {
+                case .search:
+                    pluginPicker
+                    searchResults
+                case .playlists:
+                    playlistList
+                }
             }
         }
     }
@@ -125,7 +154,7 @@ struct PluginsRootView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.vertical, 6)
         }
     }
 
@@ -149,7 +178,7 @@ struct PluginsRootView: View {
     }
 
     @ViewBuilder
-    private var resultList: some View {
+    private var searchResults: some View {
         if model.isSearching && model.items.isEmpty {
             Spacer()
             ProgressView()
@@ -180,6 +209,63 @@ struct PluginsRootView: View {
                 .padding(.bottom, 80)
             }
         }
+    }
+
+    @ViewBuilder
+    private var playlistList: some View {
+        let playlists = ImportedPlaylistStore.shared.playlists
+        if playlists.isEmpty {
+            Spacer()
+            EmptyStateView(
+                icon: "music.note.list",
+                title: "还没有导入歌单",
+                subtitle: "点击右上角下载图标，从你的 WebDAV 导入 MusicFree 备份歌单"
+            )
+            Spacer()
+        } else {
+            List {
+                ForEach(playlists) { playlist in
+                    Button {
+                        play(playlist)
+                    } label: {
+                        HStack {
+                            Image(systemName: "music.note.list")
+                                .foregroundStyle(Theme.accent)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(playlist.name).font(.body.weight(.medium))
+                                Text("\(playlist.itemCount) 首 · \(playlist.source)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            ImportedPlaylistStore.shared.remove(playlist)
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    private func play(_ playlist: ImportedPlaylist) {
+        let items = ImportedPlaylistStore.shared.loadItems(of: playlist)
+        guard !items.isEmpty else {
+            ToastCenter.shared.show(String(localized: "歌单为空或解析失败"))
+            return
+        }
+        let queue = items.map { Track(pluginItem: $0) }
+        PlayerService.shared.play(
+            tracks: queue,
+            source: .plugins,
+            startAt: queue[0],
+            context: .plugins(name: playlist.name)
+        )
     }
 }
 
@@ -228,7 +314,7 @@ struct PluginManagerView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var manager = PluginManager.shared
     @State private var urlText = ""
-    @State private var installingURL: String?
+    @State private var installingName: String?
     @State private var installError: String?
 
     var body: some View {
@@ -288,13 +374,13 @@ struct PluginManagerView: View {
         Section {
             ForEach(PluginManager.presetSources, id: \.id) { preset in
                 Button {
-                    Task { await install(url: preset.url) }
+                    Task { await install(preset) }
                 } label: {
                     HStack {
                         Text(preset.name)
                             .foregroundStyle(.primary)
                         Spacer()
-                        if installingURL == preset.url {
+                        if installingName == preset.name {
                             ProgressView()
                         } else {
                             Image(systemName: "arrow.down.circle")
@@ -302,7 +388,7 @@ struct PluginManagerView: View {
                         }
                     }
                 }
-                .disabled(installingURL != nil)
+                .disabled(installingName != nil)
             }
         } header: {
             Text("音源商店")
@@ -323,7 +409,7 @@ struct PluginManagerView: View {
             } label: {
                 Text("从地址安装")
             }
-            .disabled(urlText.isEmpty || installingURL != nil)
+            .disabled(urlText.isEmpty || installingName != nil)
         } header: {
             Text("自定义音源")
         }
@@ -336,16 +422,180 @@ struct PluginManagerView: View {
         )
     }
 
-    private func install(url: String) async {
-        guard installingURL == nil else { return }
-        installingURL = url
+    private func install(_ preset: PluginManager.PresetSource) async {
+        guard installingName == nil else { return }
+        installingName = preset.name
         installError = nil
-        defer { installingURL = nil }
+        defer { installingName = nil }
         do {
-            try await manager.install(from: url)
+            try await manager.install(fromMirrors: preset.mirrors)
             urlText = ""
         } catch {
             installError = error.localizedDescription
+        }
+    }
+
+    private func install(url: String) async {
+        guard installingName == nil else { return }
+        installingName = url
+        installError = nil
+        defer { installingName = nil }
+        do {
+            try await manager.install(fromMirrors: [url])
+            urlText = ""
+        } catch {
+            installError = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - WebDAV import sheet
+
+struct WebDAVImportView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("webdav.server") private var server = ""
+    @AppStorage("webdav.username") private var username = ""
+    @AppStorage("webdav.password") private var password = ""
+
+    @State private var entries: [WebDAVEntry] = []
+    @State private var path = ""
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var importingName: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("https://dav.jianguoyun.com/dav/", text: $server)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    TextField("用户名", text: $username)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    SecureField("密码（应用授权密码）", text: $password)
+                } header: {
+                    Text("WebDAV 设置")
+                } footer: {
+                    Text("支持坚果云等 WebDAV 服务。把 MusicFree 导出的歌单 JSON 备份到任意目录后在此导入。")
+                }
+
+                Section {
+                    Button {
+                        Task { await connect() }
+                    } label: {
+                        HStack {
+                            Text(path.isEmpty ? "连接并浏览" : "刷新当前目录")
+                            Spacer()
+                            if isLoading { ProgressView() }
+                        }
+                    }
+                    .disabled(isLoading || server.isEmpty || username.isEmpty || password.isEmpty)
+
+                    if !entries.isEmpty {
+                        ForEach(entries) { entry in
+                            entryRow(entry)
+                        }
+                    }
+                } header: {
+                    Text(path.isEmpty ? "根目录" : path)
+                } footer: {
+                    if let errorMessage {
+                        Text(errorMessage).foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("WebDAV 导入歌单")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func entryRow(_ entry: WebDAVEntry) -> some View {
+        if entry.isDirectory {
+            Button {
+                Task { await connect(into: entry) }
+            } label: {
+                Label(entry.name, systemImage: "folder")
+                    .foregroundStyle(.primary)
+            }
+        } else {
+            Button {
+                Task { await importPlaylist(entry) }
+            } label: {
+                HStack {
+                    Label(entry.name, systemImage: "doc.text")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if importingName == entry.name {
+                        ProgressView()
+                    } else {
+                        Text(entry.size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .disabled(importingName != nil)
+        }
+    }
+
+    private func connect(into directory: WebDAVEntry? = nil) async {
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        do {
+            var nextPath = path
+            if let directory {
+                if !nextPath.isEmpty, !nextPath.hasSuffix("/") { nextPath += "/" }
+                let name = directory.name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? directory.name
+                nextPath += name
+            }
+            let list = try await WebDAVClient.list(
+                server: server.trimmingCharacters(in: .whitespaces),
+                username: username,
+                password: password,
+                path: nextPath
+            )
+            path = nextPath
+            entries = list
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func importPlaylist(_ entry: WebDAVEntry) async {
+        guard importingName == nil else { return }
+        importingName = entry.name
+        errorMessage = nil
+        defer { importingName = nil }
+        do {
+            let data = try await WebDAVClient.download(
+                urlString: entry.urlString,
+                username: username,
+                password: password
+            )
+            guard let rawItems = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+                errorMessage = String(localized: "不是有效的 MusicFree 歌单文件（应为歌曲 JSON 数组）")
+                return
+            }
+            let items = rawItems.compactMap { PluginMusicItem(normalizing: $0, platform: "") }
+            guard !items.isEmpty else {
+                errorMessage = String(localized: "文件里没有可识别的歌曲")
+                return
+            }
+            let name = (entry.name as NSString).deletingPathExtension
+            try ImportedPlaylistStore.shared.importItems(items, name: name, source: "WebDAV")
+            ToastCenter.shared.show(String(localized: "已导入歌单「\(name)」（\(items.count) 首）"))
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

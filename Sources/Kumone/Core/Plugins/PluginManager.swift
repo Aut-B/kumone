@@ -22,16 +22,30 @@ final class PluginManager: ObservableObject {
     struct PresetSource: Identifiable, Hashable {
         let id = UUID()
         let name: String
-        let url: String
+        /// Ordered candidate URLs; the first reachable one wins.
+        let mirrors: [String]
+    }
+
+    private static func githubMirrors(_ rawURL: String) -> [String] {
+        [
+            rawURL,
+            rawURL.replacingOccurrences(of: "raw.githubusercontent.com/", with: "cdn.jsdelivr.net/gh/")
+                .replacingOccurrences(of: "/refs/heads/", with: "@")
+                .replacingOccurrences(of: "@main", with: "@main"),
+            "https://ghfast.top/" + rawURL,
+            "https://gh-proxy.com/" + rawURL,
+        ]
     }
 
     /// Preset store — user-provided sources plus well-known community plugins.
+    /// GitHub-hosted entries carry raw/jsdelivr/ghproxy mirrors so mainland
+    /// networks that block raw.githubusercontent.com can still install.
     static let presetSources: [PresetSource] = [
-        .init(name: "网易云音乐 (ThomasBy2025)", url: "https://raw.githubusercontent.com/ThomasBy2025/musicfree/refs/heads/main/plugins/wy.js"),
-        .init(name: "网易云音乐 (元力)", url: "https://13413.kstore.vip/yuanli/wy.js"),
-        .init(name: "QQ 音乐 (元力)", url: "https://13413.kstore.vip/yuanli/qq.js"),
-        .init(name: "酷我音乐 (元力)", url: "https://13413.kstore.vip/yuanli/kw.js"),
-        .init(name: "哔哩哔哩", url: "https://raw.githubusercontent.com/zhuguibiao/m-plugins/main/bilibili.js"),
+        .init(name: "网易云音乐 (ThomasBy2025)", mirrors: githubMirrors("https://raw.githubusercontent.com/ThomasBy2025/musicfree/refs/heads/main/plugins/wy.js")),
+        .init(name: "网易云音乐 (元力)", mirrors: ["https://13413.kstore.vip/yuanli/wy.js"]),
+        .init(name: "QQ 音乐 (元力)", mirrors: ["https://13413.kstore.vip/yuanli/qq.js"]),
+        .init(name: "酷我音乐 (元力)", mirrors: ["https://13413.kstore.vip/yuanli/kw.js"]),
+        .init(name: "哔哩哔哩", mirrors: githubMirrors("https://raw.githubusercontent.com/zhuguibiao/m-plugins/main/bilibili.js")),
     ]
 
     @Published private(set) var plugins: [InstalledPlugin] = []
@@ -86,25 +100,51 @@ final class PluginManager: ObservableObject {
 
     // MARK: - Install / remove / toggle
 
+    /// Installs a plugin from a single URL.
     @discardableResult
     func install(from urlString: String) async throws -> InstalledPlugin {
-        guard let url = URL(string: urlString), url.scheme != nil else {
+        try await install(fromMirrors: [urlString])
+    }
+
+    /// Installs a plugin, trying each mirror URL in order until one works.
+    @discardableResult
+    func install(fromMirrors mirrors: [String]) async throws -> InstalledPlugin {
+        guard !mirrors.isEmpty else {
             throw PluginEngineError.script(String(localized: "无效的插件地址"))
         }
         isInstalling = true
         defer { isInstalling = false }
 
-        // Download the plugin source.
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 15
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200,
-              let code = String(data: data, encoding: .utf8), code.count > 100 else {
-            throw PluginEngineError.script(String(localized: "插件下载失败（请检查地址）"))
+        var lastError: Error = PluginEngineError.script(String(localized: "插件下载失败"))
+        var failedCount = 0
+        for urlString in mirrors {
+            guard let url = URL(string: urlString), url.scheme != nil else { continue }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 20
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                      let code = String(data: data, encoding: .utf8), code.count > 100 else {
+                    lastError = PluginEngineError.script(
+                        String(localized: "下载失败（HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)）：\(url.host ?? urlString)"))
+                    failedCount += 1
+                    continue
+                }
+                let installed = try await finishInstall(code: code, sourceURL: urlString, fallbackName: url.lastPathComponent)
+                self.lastError = nil
+                return installed
+            } catch {
+                lastError = error
+                failedCount += 1
+            }
         }
+        let detail = failedCount > 1 ? String(localized: "已尝试 \(failedCount) 个下载地址") : ""
+        throw PluginEngineError.script("\(lastError.localizedDescription) \(detail)")
+    }
 
+    private func finishInstall(code: String, sourceURL: String, fallbackName: String) async throws -> InstalledPlugin {
         // Mount to validate and learn its platform name.
-        let mount = try await engine.mount(code: code, installName: url.lastPathComponent)
+        let mount = try await engine.mount(code: code, installName: fallbackName)
         let hash = SHA256.hash(data: Data(code.utf8)).map { String(format: "%02x", $0) }.joined()
 
         // Persist the code file.
@@ -119,7 +159,7 @@ final class PluginManager: ObservableObject {
             platform: mount.platform,
             name: mount.platform,
             version: nil,
-            sourceURL: urlString,
+            sourceURL: sourceURL,
             enabled: true,
             fileName: fileName,
             hash: hash
@@ -127,7 +167,6 @@ final class PluginManager: ObservableObject {
         plugins.removeAll { $0.platform == mount.platform }
         plugins.append(installed)
         persistRegistry()
-        lastError = nil
         return installed
     }
 
@@ -186,7 +225,7 @@ final class PluginManager: ObservableObject {
         }
         let isEnd = result["isEnd"] as? Bool ?? true
         let rawItems = result["data"] as? [[String: Any]] ?? []
-        let items = rawItems.compactMap { normalizeItem($0, platform: platform) }
+        let items = rawItems.compactMap { PluginMusicItem(normalizing: $0, platform: platform) }
         return (isEnd, items)
     }
 
@@ -211,26 +250,4 @@ final class PluginManager: ObservableObject {
         return PluginMediaSource(url: url, headers: headers)
     }
 
-    private func normalizeItem(_ dict: [String: Any], platform: String) -> PluginMusicItem? {
-        guard let itemID = dict["id"] as? String, !itemID.isEmpty else { return nil }
-        let title = (dict["title"] as? String) ?? (dict["name"] as? String) ?? itemID
-        let artist = (dict["artist"] as? String) ?? String(localized: "未知歌手")
-        let album = (dict["album"] as? String) ?? String(localized: "未知专辑")
-        let artwork = (dict["artwork"] as? String) ?? (dict["picUrl"] as? String)
-        let durationSeconds = (dict["duration"] as? NSNumber)?.doubleValue ?? 0
-        let rawJSON = (try? JSONSerialization.data(withJSONObject: dict)).flatMap {
-            String(data: $0, encoding: .utf8)
-        } ?? "{}"
-        return PluginMusicItem(
-            id: "\(platform)|\(itemID)",
-            platform: platform,
-            itemID: itemID,
-            title: title,
-            artist: artist,
-            album: album,
-            artwork: artwork,
-            durationMS: Int(durationSeconds * 1000),
-            rawJSON: rawJSON
-        )
-    }
 }
