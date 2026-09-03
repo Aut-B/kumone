@@ -603,18 +603,10 @@ final class PlayerService: ObservableObject {
         }
 
         // JS plugin tracks: resolve through the plugin's getMediaSource instead.
-        if let plugin = track.plugin {
-            let item = PluginMusicItem(
-                id: "\(plugin.platform)|\(plugin.itemID)",
-                platform: plugin.platform,
-                itemID: plugin.itemID,
-                title: track.name,
-                artist: track.artistNames,
-                album: track.album.name,
-                artwork: track.album.picUrl,
-                durationMS: track.durationMS,
-                rawJSON: plugin.rawJSON
-            )
+        if let plugin = track.plugin,
+           let itemData = plugin.rawJSON.data(using: .utf8),
+           let itemDict = (try? JSONSerialization.jsonObject(with: itemData)) as? [String: Any],
+           let item = PluginMusicItem(normalizing: itemDict, platform: plugin.platform) {
             let source = await PluginManager.shared.getMediaSource(
                 platform: plugin.platform,
                 item: item,
