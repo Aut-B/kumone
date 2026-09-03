@@ -140,12 +140,66 @@ final class PlayerService: ObservableObject {
     }
 
     @Published private(set) var shuffleEnabled = false
-    @Published var volume: Float = 1 {
+
+    /// Playback speed multiplier (0.5 ... 2.0).
+    @Published var rate: Double = 1.0 {
         didSet {
-            engine.volume = volume
-            UserDefaults.standard.set(volume, forKey: "player.volume")
+            engine.defaultRate = Float(rate)
+            if isPlaying {
+                engine.playImmediately(atRate: Float(rate))
+            }
+            UserDefaults.standard.set(rate, forKey: "player.rate")
         }
     }
+
+    /// When the sleep timer fires (nil = off).
+    @Published private(set) var sleepTimerEndsAt: Date?
+    private var sleepTimerTask: Task<Void, Never>?
+
+    /// Keep playing while other apps play audio (mixWithOthers).
+    func applyAudioMixPreference() {
+        #if os(iOS)
+        do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .default,
+                policy: .longFormAudio,
+                options: SettingsManager.shared.mixWithOthers ? [.mixWithOthers] : []
+            )
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("Failed to apply audio mix preference: \(error)")
+        }
+        #endif
+    }
+
+    /// Schedules auto-pause after `minutes`.
+    func startSleepTimer(minutes: Int) {
+        sleepTimerTask?.cancel()
+        let endsAt = Date().addingTimeInterval(TimeInterval(minutes) * 60)
+        sleepTimerEndsAt = endsAt
+        sleepTimerTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(minutes * 60))
+            guard !Task.isCancelled, let self else { return }
+            self.pause()
+            self.sleepTimerEndsAt = nil
+            self.sleepTimerTask = nil
+        }
+        ToastCenter.shared.show(String(localized: "将于 \(Self.sleepFormatter.string(from: endsAt)) 停止播放"))
+    }
+
+    func stopSleepTimer() {
+        sleepTimerTask?.cancel()
+        sleepTimerTask = nil
+        sleepTimerEndsAt = nil
+        ToastCenter.shared.show(String(localized: "已关闭定时停止"))
+    }
+
+    private static let sleepFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 
     @Published private(set) var isFMMode = false
     @Published private(set) var fmUpcoming: [Track] = []
@@ -191,6 +245,8 @@ final class PlayerService: ObservableObject {
         engine.volume = volume
         repeatMode = UserDefaults.standard.string(forKey: "player.repeat")
             .flatMap(RepeatMode.init) ?? .off
+        rate = UserDefaults.standard.object(forKey: "player.rate") as? Double ?? 1.0
+        engine.defaultRate = Float(rate)
 
         #if os(iOS)
         do {

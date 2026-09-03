@@ -167,6 +167,7 @@ struct NowPlayingView: View {
                 colors: [.white.opacity(0.12), .clear],
                 center: .topLeading, startRadius: 0, endRadius: 700
             )
+            PlayerAmbienceOverlay()
             LinearGradient(
                 colors: [.clear, .black.opacity(0.35)],
                 startPoint: .top, endPoint: .bottom
@@ -630,9 +631,20 @@ struct NowPlayingView: View {
     private func artworkView(size: CGFloat) -> some View {
         Group {
             if let artworkImage {
-                Image(platformImage: artworkImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+                if settings.circularCover && settings.circularCoverSpin {
+                    TimelineView(.animation(paused: !player.isPlaying)) { timeline in
+                        let degrees = timeline.date.timeIntervalSinceReferenceDate
+                            .truncatingRemainder(dividingBy: 24) / 24 * 360
+                        Image(platformImage: artworkImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .rotationEffect(.degrees(degrees))
+                    }
+                } else {
+                    Image(platformImage: artworkImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                }
             } else {
                 Rectangle()
                     .fill(.white.opacity(0.06))
@@ -644,7 +656,7 @@ struct NowPlayingView: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(settings.circularCover ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 18, style: .continuous)))
         .shadow(color: .black.opacity(0.45), radius: 36, y: 18)
         .scaleEffect(player.isPlaying ? 1 : 0.95)
         .animation(AppAnimation.bouncy, value: player.isPlaying)
@@ -809,7 +821,7 @@ struct NowPlayingView: View {
         if let lyrics = player.lyrics, !lyrics.isEmpty {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 26) {
+                    LazyVStack(alignment: .leading, spacing: settings.lyricSpacing) {
                         Color.clear.frame(height: 200)
                         ForEach(lyrics.lines) { line in
                             bigLyricLine(line, isActive: line.id == activeIndex)
@@ -869,6 +881,18 @@ struct NowPlayingView: View {
                     .foregroundStyle(.white.opacity(0.6))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if player.currentTrack?.isPluginTrack == true {
+            // Plugin tracks have no lyric source — show a stable placeholder
+            // instead of spinning forever.
+            VStack(spacing: 10) {
+                Image(systemName: "text.quote")
+                    .font(.system(size: 36, weight: .light))
+                    .foregroundStyle(.white.opacity(0.4))
+                Text("暂无歌词")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView()
                 .controlSize(.small)
@@ -889,7 +913,8 @@ struct NowPlayingView: View {
                 }
                 LyricMainText(
                     line: line, isActive: isActive,
-                    size: isActive ? 26 : 20, weight: isActive ? .bold : .semibold,
+                    size: isActive ? settings.lyricFontSize + 6 : settings.lyricFontSize,
+                    weight: isActive ? .bold : .semibold,
                     verbatim: settings.verbatimLyrics
                 )
                 if settings.showLyricsTranslation, let translation = line.translation {
@@ -1871,6 +1896,9 @@ private struct MinimalTrackInfoRow: View {
     @EnvironmentObject private var account: AccountStore
     @State private var showAddToPlaylist = false
     @State private var airPlayRequest = 0
+    @State private var showSleepTimer = false
+    @State private var showLocalPlaylist = false
+    @State private var showShare = false
     var metadataOnly = false
     var actionsOnly = false
 
@@ -1959,10 +1987,50 @@ private struct MinimalTrackInfoRow: View {
                 Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
 
+            Menu {
+                ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0], id: \.self) { rateOption in
+                    Button {
+                        player.rate = rateOption
+                    } label: {
+                        if abs(player.rate - rateOption) < 0.01 {
+                            Label(String(format: "%.2fx", rateOption), systemImage: "checkmark")
+                        } else {
+                            Text(String(format: "%.2fx", rateOption))
+                        }
+                    }
+                }
+            } label: {
+                Label("倍速播放", systemImage: "speedometer")
+            }
+
+            Button {
+                showSleepTimer = true
+            } label: {
+                if let endsAt = player.sleepTimerEndsAt {
+                    Label("定时停止（\(endsAt.formatted(date: .omitted, time: .shortened))）", systemImage: "timer")
+                } else {
+                    Label("定时停止", systemImage: "timer")
+                }
+            }
+
             Button {
                 showAddToPlaylist = true
             } label: {
                 Label("加入歌单…", systemImage: "music.note.list")
+            }
+
+            if track.isPluginTrack {
+                Button {
+                    showLocalPlaylist = true
+                } label: {
+                    Label("添加到本地歌单…", systemImage: "internaldrive")
+                }
+            }
+
+            Button {
+                showShare = true
+            } label: {
+                Label("分享歌曲", systemImage: "square.and.arrow.up")
             }
 
             Divider()
@@ -1992,6 +2060,37 @@ private struct MinimalTrackInfoRow: View {
             )
             .opacity(0.01)
         }
+        .confirmationDialog("定时停止播放", isPresented: $showSleepTimer, titleVisibility: .visible) {
+            Button("5 分钟后") { player.startSleepTimer(minutes: 5) }
+            Button("10 分钟后") { player.startSleepTimer(minutes: 10) }
+            Button("15 分钟后") { player.startSleepTimer(minutes: 15) }
+            Button("30 分钟后") { player.startSleepTimer(minutes: 30) }
+            Button("60 分钟后") { player.startSleepTimer(minutes: 60) }
+            if player.sleepTimerEndsAt != nil {
+                Button("关闭定时", role: .destructive) { player.stopSleepTimer() }
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .sheet(isPresented: $showLocalPlaylist) {
+            if let track = player.currentTrack {
+                LocalPlaylistPickerSheet(track: track)
+            }
+        }
+        .sheet(isPresented: $showShare) {
+            if let track = player.currentTrack {
+                ShareSheet(items: Self.shareItems(for: track))
+            }
+        }
+    }
+
+    static func shareItems(for track: Track) -> [Any] {
+        if track.isPluginTrack {
+            return ["\(track.name) - \(track.artistNames)\n（Kumone 插件音源）"]
+        }
+        return [
+            "\(track.name) - \(track.artistNames)",
+            "https://music.163.com/#/song?id=\(track.id)",
+        ]
     }
 }
 
@@ -2228,6 +2327,7 @@ private struct MinimalQueueRow: View {
 
 struct NowPlayingScrubber: View {
     @EnvironmentObject private var player: PlayerService
+    @EnvironmentObject private var settings: SettingsManager
     @ObservedObject private var clock = PlayerService.shared.clock
 
     @State private var isHovering = false
@@ -2244,36 +2344,17 @@ struct NowPlayingScrubber: View {
         VStack(spacing: 5) {
             GeometryReader { geo in
                 let width = geo.size.width
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(.white.opacity(0.25))
-                        .frame(height: 4)
-                    Capsule()
-                        .fill(.white)
-                        .frame(width: max(4, width * fraction), height: 4)
-                    Circle()
-                        .fill(.white)
-                        .frame(width: thumbDiameter, height: thumbDiameter)
-                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-                        .offset(x: width * fraction - thumbDiameter / 2)
-                        .opacity(isHovering || isDragging ? 1 : 0)
+                ZStack {
+                    switch settings.progressBarStyle {
+                    case 1: glowTrack(width: width)
+                    case 2: auroraTrack(width: width)
+                    case 3: waveTrack(width: width)
+                    default: flowingTrack(width: width)
+                    }
                 }
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            guard player.duration > 0 else { return }
-                            isDragging = true
-                            player.isScrubbing = true
-                            dragProgress = min(max(value.location.x / width, 0), 1) * player.duration
-                        }
-                        .onEnded { _ in
-                            player.seek(to: dragProgress)
-                            isDragging = false
-                            player.isScrubbing = false
-                        }
-                )
+                .gesture(scrubGesture(width: width))
             }
             .frame(height: 14)
             .onHover { hovering in
@@ -2290,8 +2371,121 @@ struct NowPlayingScrubber: View {
         }
     }
 
+    private func scrubGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard player.duration > 0 else { return }
+                isDragging = true
+                player.isScrubbing = true
+                dragProgress = min(max(value.location.x / width, 0), 1) * player.duration
+            }
+            .onEnded { _ in
+                player.seek(to: dragProgress)
+                isDragging = false
+                player.isScrubbing = false
+            }
+    }
+
     private var thumbDiameter: CGFloat {
         isDragging ? 13 : (isHovering ? 11 : 9)
+    }
+
+    /// 0 流光: slim bar with a bright top highlight and a travelling spark.
+    @ViewBuilder
+    private func flowingTrack(width: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            Capsule().fill(.white.opacity(0.25)).frame(height: 4)
+            Capsule().fill(.white).frame(width: max(4, width * fraction), height: 4)
+            Capsule()
+                .fill(LinearGradient(colors: [.white.opacity(0.9), .clear], startPoint: .top, endPoint: .bottom))
+                .frame(width: max(4, width * fraction), height: 2)
+                .offset(y: -1.5)
+            if fraction > 0.02 {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 3.5, height: 3.5)
+                    .shadow(color: .white, radius: 4)
+                    .offset(x: width * fraction - 2)
+            }
+            thumb(width: width)
+        }
+    }
+
+    /// 1 辉光: full-width gradient rail with a soft glow under the fill.
+    @ViewBuilder
+    private func glowTrack(width: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            Capsule()
+                .fill(LinearGradient(colors: [.white.opacity(0.3), .white.opacity(0.1)], startPoint: .leading, endPoint: .trailing))
+                .frame(height: 5)
+            Capsule()
+                .fill(.white)
+                .frame(width: max(4, width * fraction), height: 5)
+                .shadow(color: .white.opacity(0.8), radius: 5)
+            Capsule()
+                .fill(.white.opacity(0.35))
+                .blur(radius: 6)
+                .frame(width: max(4, width * fraction), height: 8)
+                .offset(y: 5)
+            thumb(width: width)
+        }
+    }
+
+    /// 2 极光: hairline with an oversized soft knob.
+    @ViewBuilder
+    private func auroraTrack(width: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            Capsule().fill(.white.opacity(0.15)).frame(height: 1.5)
+            Capsule().fill(.white).frame(width: max(2, width * fraction), height: 1.5)
+            Circle()
+                .fill(.white)
+                .frame(width: isDragging ? 15 : 11, height: isDragging ? 15 : 11)
+                .shadow(color: .white.opacity(0.6), radius: 6)
+                .offset(x: width * fraction - (isDragging ? 7.5 : 5.5))
+        }
+    }
+
+    /// 3 波浪: a sine-wave ribbon filling with progress.
+    @ViewBuilder
+    private func waveTrack(width: CGFloat) -> some View {
+        Canvas { context, size in
+            let midY = size.height / 2
+            let fillX = size.width * fraction
+            let amplitude: CGFloat = 2.2
+            let wavelength: CGFloat = 26
+            var path = Path()
+            path.move(to: CGPoint(x: 0, y: midY))
+            for x in stride(from: CGFloat(0), through: fillX + 1, by: 1) {
+                let y = midY + sin(x / wavelength * .pi * 2) * amplitude
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+            var dimPath = Path()
+            dimPath.move(to: CGPoint(x: 0, y: midY))
+            for x in stride(from: CGFloat(0), through: size.width, by: 2) {
+                let y = midY + sin(x / wavelength * .pi * 2) * amplitude
+                dimPath.addLine(to: CGPoint(x: x, y: y))
+            }
+            context.stroke(dimPath, with: .color(.white.opacity(0.2)), lineWidth: 1.5)
+            context.stroke(path, with: .color(.white), lineWidth: 2)
+        }
+        .overlay(alignment: .leading) {
+            if fraction > 0 {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: .white, radius: 3)
+                    .offset(x: width * fraction - 3)
+            }
+        }
+    }
+
+    private func thumb(width: CGFloat) -> some View {
+        Circle()
+            .fill(.white)
+            .frame(width: thumbDiameter, height: thumbDiameter)
+            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+            .offset(x: width * fraction - thumbDiameter / 2)
+            .opacity(isHovering || isDragging ? 1 : 0)
     }
 }
 
@@ -2348,5 +2542,156 @@ struct MiniLyricsView: View {
             .padding(.horizontal, 28)
             .id(line?.id)
             .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+}
+
+// MARK: - Ambient glow / DJ pulse (ported from Beans-Music)
+
+/// Breathing radial glow + optional DJ beat rings, painted behind the player
+/// content. Time-driven and cheap (single Canvas per frame, paused with music).
+struct PlayerAmbienceOverlay: View {
+    @EnvironmentObject private var player: PlayerService
+    @EnvironmentObject private var settings: SettingsManager
+
+    var body: some View {
+        if settings.playerBreath > 0.01 || settings.djVisual {
+            TimelineView(.animation(paused: !player.isPlaying)) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                Canvas { context, size in
+                    let center = CGPoint(x: size.width * 0.5, y: size.height * 0.32)
+                    if settings.playerBreath > 0.01 {
+                        let breathe = 0.85 + 0.15 * sin(t * 1.1)
+                        let radius = size.width * 0.42 * CGFloat(breathe * settings.playerBreath)
+                        context.fill(
+                            Path(ellipseIn: CGRect(
+                                x: center.x - radius, y: center.y - radius,
+                                width: radius * 2, height: radius * 2
+                            )),
+                            with: .radialGradient(
+                                Gradient(colors: [.white.opacity(0.15), .white.opacity(0.04), .clear]),
+                                center: center, startRadius: 0, endRadius: radius
+                            )
+                        )
+                    }
+                    if settings.djVisual {
+                        let beat = (t.truncatingRemainder(dividingBy: 0.55)) / 0.55
+                        let ringRadius = size.width * 0.24 * (0.25 + 0.75 * beat)
+                        let alpha = (1 - beat) * settings.djIntensity
+                        let ring = Path(ellipseIn: CGRect(
+                            x: center.x - ringRadius, y: center.y - ringRadius,
+                            width: ringRadius * 2, height: ringRadius * 2
+                        ))
+                        context.stroke(ring, with: .color(.white.opacity(0.3 * alpha)), lineWidth: 2)
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+            .ignoresSafeArea()
+        }
+    }
+}
+
+// MARK: - Share sheet
+
+#if os(iOS)
+/// UIActivityViewController wrapper for sharing track info.
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+#endif
+
+// MARK: - Local playlist picker (plugin tracks)
+
+/// Picks (or creates) a local playlist to append the current plugin track to.
+struct LocalPlaylistPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let track: Track
+
+    @State private var newPlaylistName = ""
+    @State private var showCreate = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    ForEach(ImportedPlaylistStore.shared.playlists) { playlist in
+                        Button {
+                            add(to: playlist)
+                        } label: {
+                            HStack {
+                                Image(systemName: "music.note.list")
+                                    .foregroundStyle(Theme.accent)
+                                Text(playlist.name)
+                                Spacer()
+                                Text("\(playlist.itemCount)")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("选择本地歌单")
+                }
+                Section {
+                    Button {
+                        showCreate = true
+                    } label: {
+                        Label("新建歌单", systemImage: "plus")
+                    }
+                }
+            }
+            .navigationTitle("添加到本地歌单")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("取消") { dismiss() }
+                }
+            }
+            .alert("新建歌单", isPresented: $showCreate) {
+                TextField("歌单名称", text: $newPlaylistName)
+                Button("创建并添加") {
+                    createAndAdd()
+                }
+                Button("取消", role: .cancel) {}
+            }
+        }
+    }
+
+    private func add(to playlist: ImportedPlaylist) {
+        let item = PluginMusicItem(
+            normalizing: [
+                "id": track.plugin?.itemID ?? String(track.id),
+                "platform": track.plugin?.platform ?? "",
+                "title": track.name,
+                "artist": track.artistNames,
+                "album": track.album.name,
+                "duration": track.duration,
+            ],
+            platform: track.plugin?.platform ?? ""
+        )
+        guard let item else { return }
+        do {
+            try ImportedPlaylistStore.shared.addItem(item, to: playlist)
+            ToastCenter.shared.show(String(localized: "已添加到「\(playlist.name)」"))
+            dismiss()
+        } catch {
+            ToastCenter.shared.show(String(localized: "这首歌已经在歌单里了"))
+        }
+    }
+
+    private func createAndAdd() {
+        let name = newPlaylistName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            let playlist = try ImportedPlaylistStore.shared.createPlaylist(name: name)
+            add(to: playlist)
+        } catch {
+            ToastCenter.shared.show(String(localized: "创建歌单失败"))
+        }
     }
 }

@@ -92,7 +92,35 @@ enum WebDAVClient {
             if entry.urlString == urlString { return }
             entries.append(entry)
         }
-        return entries.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+        // Some servers return scheme-less hrefs ("/dav/musicfree/"); resolve
+        // them against the requested collection URL so navigation always
+        // yields an absolute URL.
+        let resolved = entries.map { entry -> WebDAVEntry in
+            if let existing = robustURL(entry.urlString), existing.scheme != nil {
+                return entry
+            }
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: true)
+            let href = entry.urlString
+            if href.hasPrefix("/") {
+                components?.path = href
+                components?.query = nil
+                components?.fragment = nil
+            } else {
+                var basePath = components?.path ?? "/"
+                if !basePath.hasSuffix("/") { basePath += "/" }
+                components?.path = basePath + href
+                components?.query = nil
+                components?.fragment = nil
+            }
+            let absolute = components?.string ?? (url.absoluteString + entry.urlString)
+            return WebDAVEntry(
+                name: entry.name,
+                urlString: absolute,
+                isDirectory: entry.isDirectory,
+                size: entry.size
+            )
+        }
+        return resolved.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
     }
 
     /// Lists the root of a server. `server` must end with the collection
@@ -248,6 +276,37 @@ final class ImportedPlaylistStore: ObservableObject {
     /// Imports parsed MusicFree playlist items under a name.
     func importItems(_ items: [PluginMusicItem], name: String, source: String) throws {
         let fileName = UUID().uuidString + ".json"
+        try writeItems(items, fileName: fileName)
+        playlists.removeAll { $0.name == name }
+        playlists.insert(ImportedPlaylist(name: name, fileName: fileName, itemCount: items.count, source: source), at: 0)
+        persist()
+    }
+
+    /// Creates an empty local playlist for plugin tracks.
+    @discardableResult
+    func createPlaylist(name: String) throws -> ImportedPlaylist {
+        let fileName = UUID().uuidString + ".json"
+        try writeItems([], fileName: fileName)
+        let playlist = ImportedPlaylist(name: name, fileName: fileName, itemCount: 0, source: String(localized: "本地"))
+        playlists.insert(playlist, at: 0)
+        persist()
+        return playlist
+    }
+
+    /// Appends a plugin track to a local playlist (deduplicates by id).
+    func addItem(_ item: PluginMusicItem, to playlist: ImportedPlaylist) throws {
+        var items = loadItems(of: playlist)
+        guard !items.contains(where: { $0.id == item.id }) else {
+            throw WebDAVError.malformedResponse
+        }
+        items.append(item)
+        try writeItems(items, fileName: playlist.fileName)
+        guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        playlists[index].itemCount = items.count
+        persist()
+    }
+
+    private func writeItems(_ items: [PluginMusicItem], fileName: String) throws {
         let payload: [[String: Any]] = items.map {
             var dict: [String: Any] = [
                 "id": $0.itemID,
@@ -264,9 +323,6 @@ final class ImportedPlaylistStore: ObservableObject {
             throw WebDAVError.malformedResponse
         }
         try data.write(to: directory.appendingPathComponent(fileName), options: .atomic)
-        playlists.removeAll { $0.name == name }
-        playlists.insert(ImportedPlaylist(name: name, fileName: fileName, itemCount: items.count, source: source), at: 0)
-        persist()
     }
 
     /// Loads the stored items of an imported playlist.

@@ -105,6 +105,59 @@ final class SettingsManager: ObservableObject {
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
         static let desktopLyricsCentered = "settings.desktopLyricsCentered"
+        // Player customisation (ported from Beans-Music)
+        static let progressBarStyle = "settings.progressBarStyle"   // 0流光 1辉光 2极光 3波浪
+        static let playerBreath = "settings.playerBreath"           // 0...1 呼吸光晕强度
+        static let djVisual = "settings.djVisual"                   // DJ 节奏脉冲
+        static let djIntensity = "settings.djIntensity"             // 0...1
+        static let mixWithOthers = "settings.mixWithOthers"         // 与其他音频同时播放
+        static let lyricFontSize = "settings.lyricFontSize"         // 12...28
+        static let lyricSpacing = "settings.lyricSpacing"           // 14...40
+        static let circularCover = "settings.circularCover"
+        static let circularCoverSpin = "settings.circularCoverSpin"
+    }
+
+    /// Progress bar style: 0 流光 / 1 辉光 / 2 极光 / 3 波浪.
+    @Published var progressBarStyle: Int {
+        didSet { UserDefaults.standard.set(progressBarStyle, forKey: Keys.progressBarStyle) }
+    }
+
+    /// Breathing ambient glow behind the player, 0 (off) ... 1 (full).
+    @Published var playerBreath: Double {
+        didSet { UserDefaults.standard.set(playerBreath, forKey: Keys.playerBreath) }
+    }
+
+    /// DJ-style beat pulse rings (time-driven, decorative).
+    @Published var djVisual: Bool {
+        didSet { UserDefaults.standard.set(djVisual, forKey: Keys.djVisual) }
+    }
+
+    @Published var djIntensity: Double {
+        didSet { UserDefaults.standard.set(djIntensity, forKey: Keys.djIntensity) }
+    }
+
+    /// Keep playing while other apps play audio.
+    @Published var mixWithOthers: Bool {
+        didSet {
+            UserDefaults.standard.set(mixWithOthers, forKey: Keys.mixWithOthers)
+            PlayerService.shared.applyAudioMixPreference()
+        }
+    }
+
+    @Published var lyricFontSize: Double {
+        didSet { UserDefaults.standard.set(lyricFontSize, forKey: Keys.lyricFontSize) }
+    }
+
+    @Published var lyricSpacing: Double {
+        didSet { UserDefaults.standard.set(lyricSpacing, forKey: Keys.lyricSpacing) }
+    }
+
+    @Published var circularCover: Bool {
+        didSet { UserDefaults.standard.set(circularCover, forKey: Keys.circularCover) }
+    }
+
+    @Published var circularCoverSpin: Bool {
+        didSet { UserDefaults.standard.set(circularCoverSpin, forKey: Keys.circularCoverSpin) }
     }
 
     @Published var audioQuality: AudioQuality {
@@ -176,5 +229,14 @@ final class SettingsManager: ObservableObject {
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
         desktopLyricsCentered = defaults.object(forKey: Keys.desktopLyricsCentered) as? Bool ?? false
+        progressBarStyle = defaults.object(forKey: Keys.progressBarStyle) as? Int ?? 0
+        playerBreath = defaults.object(forKey: Keys.playerBreath) as? Double ?? 0.6
+        djVisual = defaults.object(forKey: Keys.djVisual) as? Bool ?? false
+        djIntensity = defaults.object(forKey: Keys.djIntensity) as? Double ?? 0.5
+        mixWithOthers = defaults.object(forKey: Keys.mixWithOthers) as? Bool ?? false
+        lyricFontSize = defaults.object(forKey: Keys.lyricFontSize) as? Double ?? 20
+        lyricSpacing = defaults.object(forKey: Keys.lyricSpacing) as? Double ?? 24
+        circularCover = defaults.object(forKey: Keys.circularCover) as? Bool ?? false
+        circularCoverSpin = defaults.object(forKey: Keys.circularCoverSpin) as? Bool ?? false
     }
 }

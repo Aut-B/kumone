@@ -20,6 +20,12 @@ struct SettingsView: View {
                 Text("无版权 / 下架歌曲自动从第三方音源（酷我、酷狗等）匹配播放")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                NavigationLink("播放器设置") {
+                    PlayerSettingsSheet()
+                }
+                Text("进度条样式、背景光晕、DJ 灯效、封面样式与歌词显示（灵感来自 Beans）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("外观") {
