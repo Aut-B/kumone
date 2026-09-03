@@ -301,7 +301,56 @@ final class PluginManager: ObservableObject {
         let headers = (result["headers"] as? [String: Any])?.reduce(into: [String: String]()) { dict, pair in
             if let value = pair.value as? String { dict[pair.key] = value }
         }
+        // Native bilibili fallback: the plugin's JS resolution has several
+        // fragile branches (empty dash.audio arrays, strict quality indexing).
+        // When it fails and the item carries a bvid, resolve directly.
+        if url == nil, let bvid = itemObject["bvid"] as? String {
+            let native = await Self.nativeBilibiliMediaURL(bvid: bvid)
+            if let nativeURL = native.url {
+                return PluginMediaSource(url: nativeURL, headers: native.headers)
+            }
+        }
         return PluginMediaSource(url: url, headers: headers)
+    }
+
+    /// Direct B站 resolution: view → cid → playurl → first audio stream.
+    static func nativeBilibiliMediaURL(bvid: String) async -> (url: URL?, headers: [String: String]?) {
+        let browserHeaders = [
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36",
+            "Referer": "https://www.bilibili.com/",
+        ]
+        var viewRequest = URLRequest(url: URL(string: "https://api.bilibili.com/x/web-interface/view?bvid=\(bvid)")!)
+        viewRequest.timeoutInterval = 10
+        browserHeaders.forEach { viewRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
+        guard let (viewData, _) = try? await URLSession.shared.data(for: viewRequest),
+              let viewJSON = (try? JSONSerialization.jsonObject(with: viewData)) as? [String: Any],
+              let detail = viewJSON["data"] as? [String: Any],
+              let cid = (detail["cid"] as? NSNumber)?.stringValue ?? detail["cid"] as? String else {
+            return (nil, nil)
+        }
+        var playRequest = URLRequest(url: URL(string: "https://api.bilibili.com/x/player/playurl?bvid=\(bvid)&cid=\(cid)&fnval=16&platform=html5")!)
+        playRequest.timeoutInterval = 10
+        browserHeaders.forEach { playRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
+        guard let (playData, _) = try? await URLSession.shared.data(for: playRequest),
+              let playJSON = (try? JSONSerialization.jsonObject(with: playData)) as? [String: Any],
+              let data = playJSON["data"] as? [String: Any] else {
+            return (nil, nil)
+        }
+        // Prefer DASH audio (best quality), fall back to durl.
+        var urlString: String?
+        if let dash = data["dash"] as? [String: Any],
+           let audios = dash["audio"] as? [[String: Any]],
+           let first = audios.first {
+            urlString = first["baseUrl"] as? String
+        }
+        if urlString == nil, let durl = data["durl"] as? [[String: Any]], let first = durl.first {
+            urlString = first["url"] as? String
+        }
+        guard let urlString, !urlString.isEmpty,
+              let url = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://")) else {
+            return (nil, nil)
+        }
+        return (url, browserHeaders)
     }
 
 }
