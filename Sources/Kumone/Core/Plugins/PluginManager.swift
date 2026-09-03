@@ -279,9 +279,19 @@ final class PluginManager: ObservableObject {
               let itemObject = (try? JSONSerialization.jsonObject(with: itemData)) as? [String: Any] else {
             return PluginMediaSource(url: nil, headers: nil)
         }
-        guard let value = try? await engine.call(
-            platform: platform, method: "getMediaSource", args: [itemObject, quality], timeout: 30
-        ), let result = value as? [String: Any] else {
+        // Resolve with one retry: transient JS/http hiccups are common.
+        var value: Any?
+        for attempt in 0..<2 {
+            value = try? await engine.call(
+                platform: platform, method: "getMediaSource", args: [itemObject, quality], timeout: 30
+            )
+            if let result = value as? [String: Any],
+               let urlString = result["url"] as? String, !urlString.isEmpty {
+                break
+            }
+            if attempt == 0 { try? await Task.sleep(for: .milliseconds(400)) }
+        }
+        guard let result = value as? [String: Any] else {
             return PluginMediaSource(url: nil, headers: nil)
         }
         var url: URL?

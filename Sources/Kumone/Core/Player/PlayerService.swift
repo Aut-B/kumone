@@ -162,6 +162,10 @@ final class PlayerService: ObservableObject {
     @Published private(set) var sleepTimerEndsAt: Date?
     private var sleepTimerTask: Task<Void, Never>?
 
+    /// Plugin tracks carry no lyric source — UI hides the lyrics page
+    /// instead of spinning forever.
+    @Published private(set) var hasNoLyrics = false
+
     /// Keep playing while other apps play audio (mixWithOthers).
     func applyAudioMixPreference() {
         #if os(iOS)
@@ -627,6 +631,7 @@ final class PlayerService: ObservableObject {
         servedQuality = nil
         unblockSource = nil
         isTrial = false
+        hasNoLyrics = track.isPluginTrack
         lyrics = nil
         scrobbled = false
         startScrobbled = false
@@ -691,7 +696,9 @@ final class PlayerService: ObservableObject {
         }
 
         // NetEase refused — try third-party sources (UnblockNeteaseMusic-style).
-        if resolvedURL == nil || data?.freeTrialInfo != nil, SettingsManager.shared.enableUnblock {
+        // NEVER for plugin tracks: their name-based matching can resolve to a
+        // different song entirely (wrong music), which is worse than failing.
+        if track.plugin == nil, resolvedURL == nil || data?.freeTrialInfo != nil, SettingsManager.shared.enableUnblock {
             if let unblocked = await UnblockService.resolve(track) {
                 guard generation == resolveGeneration else { return }
                 resolvedURL = unblocked.url

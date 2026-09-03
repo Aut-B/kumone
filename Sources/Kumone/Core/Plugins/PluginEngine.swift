@@ -46,6 +46,9 @@ final class PluginEngine {
 
     private var requestLog: [RequestLogEntry] = []
 
+    /// JS call failures ("platform.method: error"), newest first.
+    private var callLog: [String] = []
+
     /// Snapshot of the recent request log (call from any thread).
     func snapshotRequestLog() async -> [RequestLogEntry] {
         await withCheckedContinuation { continuation in
@@ -53,6 +56,20 @@ final class PluginEngine {
                 continuation.resume(returning: requestLog)
             }
         }
+    }
+
+    /// Snapshot of the recent JS call failures.
+    func snapshotCallLog() async -> [String] {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                continuation.resume(returning: callLog)
+            }
+        }
+    }
+
+    private func appendCallLog(_ message: String) {
+        callLog.insert("[\(Date().formatted(date: .omitted, time: .standard))] \(message)", at: 0)
+        if callLog.count > 40 { callLog.removeLast(callLog.count - 40) }
     }
 
     /// Where per-plugin userVariables JSON lives. Set by PluginManager before use.
@@ -361,7 +378,11 @@ final class PluginEngine {
             throw PluginEngineError.script("call result parse failed")
         }
         guard object["ok"] as? Bool == true else {
-            throw PluginEngineError.script((object["error"] as? String) ?? String(localized: "插件返回错误"))
+            let message = (object["error"] as? String) ?? String(localized: "插件返回错误")
+            queue.async { [self] in
+                appendCallLog("\(platform).\(method): \(message)")
+            }
+            throw PluginEngineError.script(message)
         }
         return object["value"]
     }

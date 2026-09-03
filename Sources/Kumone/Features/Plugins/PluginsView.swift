@@ -544,12 +544,12 @@ struct WebDAVImportView: View {
                     Button("完成") { dismiss() }
                 }
             }
-            .alert("备份包含 \(backupPlugins.count) 个插件", isPresented: $showBackupPluginsOffer) {
+            .alert("备份包含 \(backupPluginURLs.count) 个插件", isPresented: $showBackupPluginsOffer) {
                 Button("全部安装") {
                     Task { await installBackupPlugins() }
                 }
                 Button("跳过", role: .cancel) {
-                    backupPlugins = []
+                    backupPluginURLs = []
                     dismiss()
                 }
             } message: {
@@ -650,9 +650,10 @@ struct WebDAVImportView: View {
                 return
             }
 
-            // Format 2: MusicFree backup = { playlists: [...], plugins: {...}, ... }.
+            // Format 2: real MusicFree backup = { musicSheets: [...], plugins: [{srcUrl, version}] }.
             if let backup = object as? [String: Any] {
-                let sheets = backup["playlists"] as? [[String: Any]] ?? []
+                let sheets = (backup["musicSheets"] as? [[String: Any]])
+                    ?? (backup["playlists"] as? [[String: Any]]) ?? []
                 var importedCount = 0
                 for (index, sheet) in sheets.enumerated() {
                     let title = (sheet["title"] as? String) ?? String(localized: "备份歌单 \(index + 1)")
@@ -662,28 +663,26 @@ struct WebDAVImportView: View {
                     try ImportedPlaylistStore.shared.importItems(items, name: title, source: "WebDAV备份")
                     importedCount += items.count
                 }
-                // Collect bundled plugin code for optional installation.
-                var plugins: [(name: String, code: String)] = []
-                if let dict = backup["plugins"] as? [String: [String: Any]] {
-                    for (name, value) in dict {
-                        if let code = value["code"] as? String { plugins.append((name, code)) }
-                    }
-                } else if let array = backup["plugins"] as? [[String: Any]] {
+                // Backup plugins are URLs; install via the mirror-fallback path.
+                var pluginURLs: [String] = []
+                if let array = backup["plugins"] as? [[String: Any]] {
                     for value in array {
-                        if let name = value["name"] as? String, let code = value["code"] as? String {
-                            plugins.append((name, code))
-                        }
+                        if let srcUrl = value["srcUrl"] as? String { pluginURLs.append(srcUrl) }
+                    }
+                } else if let dict = backup["plugins"] as? [String: [String: Any]] {
+                    for (_, value) in dict {
+                        if let srcUrl = value["srcUrl"] as? String { pluginURLs.append(srcUrl) }
                     }
                 }
-                if sheets.isEmpty && plugins.isEmpty {
+                if sheets.isEmpty && pluginURLs.isEmpty {
                     errorMessage = String(localized: "不认识的文件格式（既不是歌单也不是 MusicFree 备份）")
                     return
                 }
                 if importedCount > 0 {
                     ToastCenter.shared.show(String(localized: "已从备份导入 \(sheets.count) 个歌单（\(importedCount) 首）"))
                 }
-                if !plugins.isEmpty {
-                    backupPlugins = plugins
+                if !pluginURLs.isEmpty {
+                    backupPluginURLs = pluginURLs
                     showBackupPluginsOffer = true
                 } else {
                     dismiss()
@@ -697,14 +696,14 @@ struct WebDAVImportView: View {
         }
     }
 
-    @State private var backupPlugins: [(name: String, code: String)] = []
+    @State private var backupPluginURLs: [String] = []
     @State private var showBackupPluginsOffer = false
 
     private func installBackupPlugins() async {
         var installed = 0
-        for (name, code) in backupPlugins {
+        for urlString in backupPluginURLs {
             do {
-                try await PluginManager.shared.installFromCode(code, sourceName: name)
+                try await PluginManager.shared.install(fromMirrors: [urlString])
                 installed += 1
             } catch {
                 // Keep going with the rest.
@@ -713,7 +712,7 @@ struct WebDAVImportView: View {
         if installed > 0 {
             ToastCenter.shared.show(String(localized: "已从备份安装 \(installed) 个插件"))
         }
-        backupPlugins = []
+        backupPluginURLs = []
         showBackupPluginsOffer = false
         dismiss()
     }
@@ -724,9 +723,19 @@ struct WebDAVImportView: View {
 /// Shows the plugin engine's recent HTTP requests (for troubleshooting).
 struct PluginLogView: View {
     @State private var entries: [PluginEngine.RequestLogEntry] = []
+    @State private var callErrors: [String] = []
 
     var body: some View {
         List {
+            if !callErrors.isEmpty {
+                Section("JS 调用失败") {
+                    ForEach(callErrors, id: \.self) { line in
+                        Text(line)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
             if entries.isEmpty {
                 Text("还没有插件请求记录")
                     .foregroundStyle(.secondary)
@@ -761,6 +770,7 @@ struct PluginLogView: View {
         }
         .task {
             entries = await PluginEngine.shared.snapshotRequestLog()
+            callErrors = await PluginEngine.shared.snapshotCallLog()
         }
     }
 }

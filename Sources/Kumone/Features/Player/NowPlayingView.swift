@@ -52,7 +52,7 @@ struct NowPlayingView: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                if isCompact, showsClassicChrome(isCompact: isCompact) {
+                if isCompact, showsClassicChrome(isCompact: isCompact), !player.hasNoLyrics {
                     Button {
                         withAnimation(AppAnimation.standard) {
                             showLyricsOnMobile.toggle()
@@ -102,7 +102,9 @@ struct NowPlayingView: View {
             showQueueOnMobile = false
         }
         .onChange(of: player.currentTrack?.id) { _ in
-            if settings.nowPlayingMode == .minimal || settings.nowPlayingMode == .vinyl {
+            if player.hasNoLyrics
+                || settings.nowPlayingMode == .minimal
+                || settings.nowPlayingMode == .vinyl {
                 showLyricsOnMobile = false
             }
         }
@@ -341,7 +343,7 @@ struct NowPlayingView: View {
         let artworkDim = min(size.width - 64, size.height * 0.38, 300)
         return VStack(spacing: 20) {
             Spacer().frame(height: 44)
-            if showLyricsOnMobile {
+            if showLyricsOnMobile, !player.hasNoLyrics {
                 lyricsColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.opacity)
@@ -393,7 +395,7 @@ struct NowPlayingView: View {
                 if showQueueOnMobile {
                     CompactQueueContent()
                         .transition(.opacity)
-                } else {
+                } else if showLyricsOnMobile, !player.hasNoLyrics {
                     IOSImmersiveLyricsColumn()
                         .opacity(showLyricsOnMobile ? 1 : 0)
                         .allowsHitTesting(showLyricsOnMobile)
