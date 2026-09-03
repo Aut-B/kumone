@@ -388,7 +388,6 @@ struct PluginManagerView: View {
                         }
                     }
                 }
-                .disabled(installingName != nil)
             }
         } header: {
             Text("音源商店")
@@ -407,9 +406,15 @@ struct PluginManagerView: View {
             Button {
                 Task { await install(url: urlText) }
             } label: {
-                Text("从地址安装")
+                if installingName == urlText {
+                    HStack {
+                        ProgressView()
+                        Text("安装中…")
+                    }
+                } else {
+                    Text("从地址安装")
+                }
             }
-            .disabled(urlText.isEmpty || installingName != nil)
         } header: {
             Text("自定义音源")
         }
@@ -423,7 +428,10 @@ struct PluginManagerView: View {
     }
 
     private func install(_ preset: PluginManager.PresetSource) async {
-        guard installingName == nil else { return }
+        guard installingName == nil else {
+            installError = String(localized: "正在安装其他插件，请稍候")
+            return
+        }
         installingName = preset.name
         installError = nil
         defer { installingName = nil }
@@ -436,12 +444,20 @@ struct PluginManagerView: View {
     }
 
     private func install(url: String) async {
-        guard installingName == nil else { return }
-        installingName = url
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            installError = String(localized: "请先输入插件地址")
+            return
+        }
+        guard installingName == nil else {
+            installError = String(localized: "正在安装其他插件，请稍候")
+            return
+        }
+        installingName = trimmed
         installError = nil
         defer { installingName = nil }
         do {
-            try await manager.install(fromMirrors: [url])
+            try await manager.install(fromMirrors: [trimmed])
             urlText = ""
         } catch {
             installError = error.localizedDescription
@@ -475,6 +491,15 @@ struct WebDAVImportView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     SecureField("密码（应用授权密码）", text: $password)
+                    Button {
+                        Task { await connect() }
+                    } label: {
+                        HStack {
+                            Text("连接")
+                            Spacer()
+                            if isLoading { ProgressView() }
+                        }
+                    }
                 } header: {
                     Text("WebDAV 设置")
                 } footer: {
@@ -486,12 +511,11 @@ struct WebDAVImportView: View {
                         Task { await connect() }
                     } label: {
                         HStack {
-                            Text(path.isEmpty ? "连接并浏览" : "刷新当前目录")
+                            Text(path.isEmpty ? "刷新根目录" : "刷新当前目录")
                             Spacer()
                             if isLoading { ProgressView() }
                         }
                     }
-                    .disabled(isLoading || server.isEmpty || username.isEmpty || password.isEmpty)
 
                     if !entries.isEmpty {
                         ForEach(entries) { entry in
@@ -499,7 +523,7 @@ struct WebDAVImportView: View {
                         }
                     }
                 } header: {
-                    Text(path.isEmpty ? "根目录" : path)
+                    Text(path.isEmpty ? "根目录（连接后显示内容）" : path)
                 } footer: {
                     if let errorMessage {
                         Text(errorMessage).foregroundStyle(.red)
@@ -547,6 +571,12 @@ struct WebDAVImportView: View {
     }
 
     private func connect(into directory: WebDAVEntry? = nil) async {
+        guard !isLoading else { return }
+        let trimmedServer = server.trimmingCharacters(in: .whitespaces)
+        guard !trimmedServer.isEmpty, !username.isEmpty, !password.isEmpty else {
+            errorMessage = String(localized: "请先填写 WebDAV 地址、用户名和密码")
+            return
+        }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
@@ -558,7 +588,7 @@ struct WebDAVImportView: View {
                 nextPath += name
             }
             let list = try await WebDAVClient.list(
-                server: server.trimmingCharacters(in: .whitespaces),
+                server: trimmedServer,
                 username: username,
                 password: password,
                 path: nextPath

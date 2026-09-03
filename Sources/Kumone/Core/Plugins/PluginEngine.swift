@@ -32,6 +32,7 @@ final class PluginEngine {
     private let queue = DispatchQueue(label: "sb.moe.kumone.plugin-engine", qos: .userInitiated)
     private let session: URLSession
     private var runtimeLoaded = false
+    private var lastJSException: String?
 
     /// Where per-plugin userVariables JSON lives. Set by PluginManager before use.
     private var variablesDirectory: URL?
@@ -44,8 +45,10 @@ final class PluginEngine {
     private init() {
         context = JSContext()!
         context.name = "KumonePluginEngine"
-        context.exceptionHandler = { _, exception in
-            log.error("JS exception: \(exception?.toString() ?? "unknown", privacy: .public)")
+        context.exceptionHandler = { [weak self] _, exception in
+            let message = exception?.toString() ?? "unknown"
+            log.error("JS exception: \(message, privacy: .public)")
+            self?.queue.async { self?.lastJSException = message }
         }
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 12
@@ -279,12 +282,25 @@ final class PluginEngine {
     // MARK: - Public API
 
     /// Mounts plugin code, returning its declared platform and userVariables.
+    /// `__mf_mountPlugin` is a SYNCHRONOUS JS function returning a JSON
+    /// string — read its return value directly; the async-callback harness
+    /// would just time out.
     func mount(code: String, installName: String) async throws -> PluginMountResult {
         let script = "__mf_mountPlugin(\(jsString(code)), \(jsString(installName)))"
-        let resultJSON = try await evaluateWithCallback(script, timeout: 12)
+        let resultJSON: String = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+            queue.async { [self] in
+                guard runtimeLoaded else {
+                    continuation.resume(throwing: PluginEngineError.runtimeNotReady)
+                    return
+                }
+                let value = context.evaluateScript(script)?.toString() ?? ""
+                continuation.resume(returning: value)
+            }
+        }
         guard let data = resultJSON.data(using: .utf8),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            throw PluginEngineError.script("mount result parse failed")
+            let detail = lastJSException.map { "（\($0)）" } ?? ""
+            throw PluginEngineError.script("mount result parse failed\(detail)")
         }
         guard object["ok"] as? Bool == true,
               let platform = object["platform"] as? String, !platform.isEmpty else {

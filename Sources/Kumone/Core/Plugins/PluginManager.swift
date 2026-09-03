@@ -120,7 +120,7 @@ final class PluginManager: ObservableObject {
         for urlString in mirrors {
             guard let url = URL(string: urlString), url.scheme != nil else { continue }
             var request = URLRequest(url: url)
-            request.timeoutInterval = 20
+            request.timeoutInterval = 12
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200,
