@@ -140,6 +140,12 @@ final class PlayerService: ObservableObject {
     }
 
     @Published private(set) var shuffleEnabled = false
+    @Published var volume: Float = 1 {
+        didSet {
+            engine.volume = volume
+            UserDefaults.standard.set(volume, forKey: "player.volume")
+        }
+    }
 
     /// Playback speed multiplier (0.5 ... 2.0).
     @Published var rate: Double = 1.0 {
