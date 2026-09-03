@@ -32,10 +32,14 @@ final class PluginEngine {
     private let queue = DispatchQueue(label: "sb.moe.kumone.plugin-engine", qos: .userInitiated)
     private let session: URLSession
     private var runtimeLoaded = false
-    private var lastJSException: String?
+    private let state = EngineState()
 
     /// Where per-plugin userVariables JSON lives. Set by PluginManager before use.
     private var variablesDirectory: URL?
+
+    private final class EngineState {
+        var lastJSException: String?
+    }
 
     private final class CallState {
         var result: String?
@@ -45,15 +49,16 @@ final class PluginEngine {
     private init() {
         context = JSContext()!
         context.name = "KumonePluginEngine"
-        context.exceptionHandler = { [weak self] _, exception in
-            let message = exception?.toString() ?? "unknown"
-            log.error("JS exception: \(message, privacy: .public)")
-            self?.queue.async { self?.lastJSException = message }
-        }
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 12
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         session = URLSession(configuration: config)
+        let stateBox = state
+        context.exceptionHandler = { _, exception in
+            let message = exception?.toString() ?? "unknown"
+            log.error("JS exception: \(message, privacy: .public)")
+            stateBox.lastJSException = message
+        }
         loadRuntime()
     }
 
@@ -299,7 +304,7 @@ final class PluginEngine {
         }
         guard let data = resultJSON.data(using: .utf8),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            let detail = lastJSException.map { "（\($0)）" } ?? ""
+            let detail = state.lastJSException.map { "（\($0)）" } ?? ""
             throw PluginEngineError.script("mount result parse failed\(detail)")
         }
         guard object["ok"] as? Bool == true,
