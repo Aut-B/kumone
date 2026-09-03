@@ -4,6 +4,7 @@ struct PlayerBar: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
     @EnvironmentObject private var settings: SettingsManager
+    @State private var showPlayerSettings = false
 
     var body: some View {
         GeometryReader { proxy in

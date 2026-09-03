@@ -26,6 +26,13 @@ final class PluginsSearchModel: ObservableObject {
         isSearching = true
         errorMessage = nil
         defer { isSearching = false }
+        // Bilibili BV ids resolve exactly (native view API) so the result can
+        // never be a wrong video matched by keyword search.
+        if let bvItem = await PluginManager.shared.resolveBilibiliBV(query, platform: platform) {
+            items = [bvItem]
+            hasMore = false
+            return
+        }
         do {
             let result = try await PluginManager.shared.search(platform: platform, query: query, page: 1)
             items = result.items
@@ -537,6 +544,17 @@ struct WebDAVImportView: View {
                     Button("完成") { dismiss() }
                 }
             }
+            .alert("备份包含 \(backupPlugins.count) 个插件", isPresented: $showBackupPluginsOffer) {
+                Button("全部安装") {
+                    Task { await installBackupPlugins() }
+                }
+                Button("跳过", role: .cancel) {
+                    backupPlugins = []
+                    dismiss()
+                }
+            } message: {
+                Text("检测到 MusicFree 完整备份：歌单已导入，是否顺便安装备份里的插件？")
+            }
         }
     }
 
@@ -616,21 +634,133 @@ struct WebDAVImportView: View {
                 username: username,
                 password: password
             )
-            guard let rawItems = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
-                errorMessage = String(localized: "不是有效的 MusicFree 歌单文件（应为歌曲 JSON 数组）")
+            let object = try? JSONSerialization.jsonObject(with: data)
+
+            // Format 1: plain playlist = JSON array of music items.
+            if let rawItems = object as? [[String: Any]] {
+                let items = rawItems.compactMap { PluginMusicItem(normalizing: $0, platform: "") }
+                guard !items.isEmpty else {
+                    errorMessage = String(localized: "文件里没有可识别的歌曲")
+                    return
+                }
+                let name = (entry.name as NSString).deletingPathExtension
+                try ImportedPlaylistStore.shared.importItems(items, name: name, source: "WebDAV")
+                ToastCenter.shared.show(String(localized: "已导入歌单「\(name)」（\(items.count) 首）"))
+                dismiss()
                 return
             }
-            let items = rawItems.compactMap { PluginMusicItem(normalizing: $0, platform: "") }
-            guard !items.isEmpty else {
-                errorMessage = String(localized: "文件里没有可识别的歌曲")
+
+            // Format 2: MusicFree backup = { playlists: [...], plugins: {...}, ... }.
+            if let backup = object as? [String: Any] {
+                let sheets = backup["playlists"] as? [[String: Any]] ?? []
+                var importedCount = 0
+                for (index, sheet) in sheets.enumerated() {
+                    let title = (sheet["title"] as? String) ?? String(localized: "备份歌单 \(index + 1)")
+                    let musicList = sheet["musicList"] as? [[String: Any]] ?? []
+                    let items = musicList.compactMap { PluginMusicItem(normalizing: $0, platform: "") }
+                    if items.isEmpty { continue }
+                    try ImportedPlaylistStore.shared.importItems(items, name: title, source: "WebDAV备份")
+                    importedCount += items.count
+                }
+                // Collect bundled plugin code for optional installation.
+                var plugins: [(name: String, code: String)] = []
+                if let dict = backup["plugins"] as? [String: [String: Any]] {
+                    for (name, value) in dict {
+                        if let code = value["code"] as? String { plugins.append((name, code)) }
+                    }
+                } else if let array = backup["plugins"] as? [[String: Any]] {
+                    for value in array {
+                        if let name = value["name"] as? String, let code = value["code"] as? String {
+                            plugins.append((name, code))
+                        }
+                    }
+                }
+                if sheets.isEmpty && plugins.isEmpty {
+                    errorMessage = String(localized: "不认识的文件格式（既不是歌单也不是 MusicFree 备份）")
+                    return
+                }
+                if importedCount > 0 {
+                    ToastCenter.shared.show(String(localized: "已从备份导入 \(sheets.count) 个歌单（\(importedCount) 首）"))
+                }
+                if !plugins.isEmpty {
+                    backupPlugins = plugins
+                    showBackupPluginsOffer = true
+                } else {
+                    dismiss()
+                }
                 return
             }
-            let name = (entry.name as NSString).deletingPathExtension
-            try ImportedPlaylistStore.shared.importItems(items, name: name, source: "WebDAV")
-            ToastCenter.shared.show(String(localized: "已导入歌单「\(name)」（\(items.count) 首）"))
-            dismiss()
+
+            errorMessage = String(localized: "不是有效的 MusicFree 歌单或备份文件")
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    @State private var backupPlugins: [(name: String, code: String)] = []
+    @State private var showBackupPluginsOffer = false
+
+    private func installBackupPlugins() async {
+        var installed = 0
+        for (name, code) in backupPlugins {
+            do {
+                try await PluginManager.shared.installFromCode(code, sourceName: name)
+                installed += 1
+            } catch {
+                // Keep going with the rest.
+            }
+        }
+        if installed > 0 {
+            ToastCenter.shared.show(String(localized: "已从备份安装 \(installed) 个插件"))
+        }
+        backupPlugins = []
+        showBackupPluginsOffer = false
+        dismiss()
+    }
+}
+
+// MARK: - Plugin debug log
+
+/// Shows the plugin engine's recent HTTP requests (for troubleshooting).
+struct PluginLogView: View {
+    @State private var entries: [PluginEngine.RequestLogEntry] = []
+
+    var body: some View {
+        List {
+            if entries.isEmpty {
+                Text("还没有插件请求记录")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(entries.reversed()) { entry in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(entry.method) \(entry.status) · \(entry.size)B")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(entry.status >= 400 ? Color.red : Color.secondary)
+                        Text(entry.url)
+                            .font(.caption2)
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+        .navigationTitle("插件调试日志")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("复制全部") {
+                    let text = entries.reversed()
+                        .map { "\($0.method) \($0.status) \($0.size)B \($0.url)" }
+                        .joined(separator: "\n")
+                    Platform.copyToPasteboard(string: text)
+                    ToastCenter.shared.show(String(localized: "日志已复制"))
+                }
+                .disabled(entries.isEmpty)
+            }
+        }
+        .task {
+            entries = await PluginEngine.shared.snapshotRequestLog()
         }
     }
 }

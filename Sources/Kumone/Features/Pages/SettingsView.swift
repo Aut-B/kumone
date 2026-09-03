@@ -28,6 +28,15 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("插件音源") {
+                NavigationLink("插件调试日志") {
+                    PluginLogView()
+                }
+                Text("插件请求记录，排查音源问题时使用")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("外观") {
                 Picker("主题", selection: $settings.appearance) {
                     ForEach(AppAppearance.allCases) { appearance in

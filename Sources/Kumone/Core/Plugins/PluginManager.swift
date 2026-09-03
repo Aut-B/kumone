@@ -45,7 +45,8 @@ final class PluginManager: ObservableObject {
         .init(name: "网易云音乐 (元力)", mirrors: ["https://13413.kstore.vip/yuanli/wy.js"]),
         .init(name: "QQ 音乐 (元力)", mirrors: ["https://13413.kstore.vip/yuanli/qq.js"]),
         .init(name: "酷我音乐 (元力)", mirrors: ["https://13413.kstore.vip/yuanli/kw.js"]),
-        .init(name: "哔哩哔哩", mirrors: githubMirrors("https://raw.githubusercontent.com/zhuguibiao/m-plugins/main/bilibili.js")),
+        .init(name: "哔哩哔哩 (官方)", mirrors: githubMirrors("https://raw.githubusercontent.com/maotoumao/MusicFreePlugins/master/dist/bilibili/index.js")),
+        .init(name: "哔哩哔哩 (zhuguibiao)", mirrors: githubMirrors("https://raw.githubusercontent.com/zhuguibiao/m-plugins/main/bilibili.js")),
     ]
 
     @Published private(set) var plugins: [InstalledPlugin] = []
@@ -216,6 +217,49 @@ final class PluginManager: ObservableObject {
     }
 
     // MARK: - Search & playback resolution
+
+    /// Installs plugin code directly (e.g. from a MusicFree backup file).
+    func installFromCode(_ code: String, sourceName: String) async throws {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 100 else {
+            throw PluginEngineError.script(String(localized: "插件代码无效"))
+        }
+        _ = try await finishInstall(code: trimmed, sourceURL: sourceName, fallbackName: sourceName)
+        lastError = nil
+    }
+
+    /// Bilibili BV-id exact resolution: when the query IS a BV id, resolve the
+    /// video directly via the `view` API instead of keyword search, so the
+    /// result always matches the intended video.
+    func resolveBilibiliBV(_ query: String, platform: String) async -> PluginMusicItem? {
+        guard query.range(of: "^BV[0-9A-Za-z]{10}$", options: .regularExpression) != nil,
+              platform.lowercased().contains("bili") else { return nil }
+        guard let url = URL(string: "https://api.bilibili.com/x/web-interface/view?bvid=\(query)") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36",
+            forHTTPHeaderField: "User-Agent")
+        request.setValue("https://www.bilibili.com/", forHTTPHeaderField: "Referer")
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let detail = json["data"] as? [String: Any] else { return nil }
+        let title = (detail["title"] as? String) ?? query
+        let owner = ((detail["owner"] as? [String: Any])?["name"] as? String) ?? "哔哩哔哩"
+        let pic = detail["pic"] as? String
+        let durationSeconds = (detail["duration"] as? NSNumber)?.intValue ?? 0
+        var itemDict: [String: Any] = [
+            "id": query,
+            "platform": platform,
+            "bvid": query,
+            "title": title,
+            "artist": owner,
+            "album": "哔哩哔哩",
+            "duration": Double(durationSeconds),
+        ]
+        if let pic { itemDict["artwork"] = pic }
+        return PluginMusicItem(normalizing: itemDict, platform: platform)
+    }
 
     /// Searches a single plugin for music. `page` starts at 1.
     func search(platform: String, query: String, page: Int) async throws -> (isEnd: Bool, items: [PluginMusicItem]) {

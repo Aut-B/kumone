@@ -34,6 +34,27 @@ final class PluginEngine {
     private var runtimeLoaded = false
     private let state = EngineState()
 
+    /// Recent plugin HTTP requests, for the in-app debug log.
+    struct RequestLogEntry: Identifiable, Sendable {
+        let id = UUID()
+        let timestamp: Date
+        let method: String
+        let url: String
+        let status: Int
+        let size: Int
+    }
+
+    private var requestLog: [RequestLogEntry] = []
+
+    /// Snapshot of the recent request log (call from any thread).
+    func snapshotRequestLog() async -> [RequestLogEntry] {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                continuation.resume(returning: requestLog)
+            }
+        }
+    }
+
     /// Where per-plugin userVariables JSON lives. Set by PluginManager before use.
     private var variablesDirectory: URL?
 
@@ -199,6 +220,19 @@ final class PluginEngine {
                 String(data: $0, encoding: .utf8)
             } ?? "{}"
             self?.queue.async {
+                // Debug log: keep the last 80 requests.
+                if let http = response as? HTTPURLResponse {
+                    self?.requestLog.append(RequestLogEntry(
+                        timestamp: Date(),
+                        method: request.httpMethod ?? "GET",
+                        url: request.url?.absoluteString ?? "",
+                        status: http.statusCode,
+                        size: data?.count ?? 0
+                    ))
+                    if let count = self?.requestLog.count, count > 80 {
+                        self?.requestLog.removeFirst(count - 80)
+                    }
+                }
                 completion.call(withArguments: [json])
             }
         }
