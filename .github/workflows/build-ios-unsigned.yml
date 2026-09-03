@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-ios:
@@ -36,3 +36,13 @@ jobs:
           name: Kumone-iOS-plugins-unsigned
           path: Kumone-iOS-plugins.ipa
           retention-days: 14
+
+      - name: Publish dev release (IPA visible on Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-build-${{ github.run_number }}
+          name: Dev 构建 #${{ github.run_number }}
+          body: 自动化开发构建（插件音源版）。下载 Kumone-iOS-plugins.ipa 导入 LiveContainer。
+          files: Kumone-iOS-plugins.ipa
+          prerelease: true
+          fail_on_unmatched_files: true
