@@ -666,7 +666,9 @@ final class PlayerService: ObservableObject {
         // back to its decorative animation.
         let asset: AVURLAsset
         if let pluginHeaders, !pluginHeaders.isEmpty {
-            asset = AVURLAsset(url: url, options: [AVURLAssetHTTPHeaderFieldsKey: pluginHeaders])
+            // The ObjC constant AVURLAssetHTTPHeaderFieldsKey isn't exported to
+            // Swift in this SDK build; the raw key string is identical.
+            asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": pluginHeaders])
         } else {
             asset = AVURLAsset(url: url)
         }
@@ -783,7 +785,9 @@ final class PlayerService: ObservableObject {
 
     func resolve(_ context: PlayContext) async throws -> (tracks: [Track], source: PlaySource)? {
         switch context.kind {
-        case .fm:
+        case .fm, .plugins:
+            // FM has no static list; plugin queues restore from the persisted
+            // track payloads in restoreState() instead of a live API.
             return nil
         case .album:
             return (try await NeteaseAPI.album(id: context.id).songs, .album(context.id))

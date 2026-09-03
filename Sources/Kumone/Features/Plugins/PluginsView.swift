@@ -120,30 +120,32 @@ struct PluginsRootView: View {
     private var pluginPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(PluginManager.shared.plugins) { plugin in
-                    let isSelected = model.selectedPlatform == plugin.platform
-                    Button {
-                        model.selectedPlatform = plugin.platform
-                        model.items = []
-                        if !query.isEmpty {
-                            Task { await model.search(query: query) }
-                        }
-                    } label: {
-                        Text(plugin.name)
-                            .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                            .background(
-                                Capsule().fill(isSelected ? Color.accent.opacity(0.16) : Color.secondary.opacity(0.08))
-                            )
-                            .foregroundStyle(isSelected ? Color.accent : .primary)
-                    }
-                    .buttonStyle(.plain)
+                ForEach(PluginManager.shared.plugins, id: \.platform) { plugin in
+                    pluginChip(plugin)
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
         }
+    }
+
+    private func pluginChip(_ plugin: PluginManager.InstalledPlugin) -> some View {
+        let isSelected = model.selectedPlatform == plugin.platform
+        return Button {
+            model.selectedPlatform = plugin.platform
+            model.items = []
+            if !query.isEmpty {
+                Task { await model.search(query: query) }
+            }
+        } label: {
+            Text(plugin.name)
+                .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(Capsule().fill(isSelected ? Color.accent.opacity(0.16) : Color.secondary.opacity(0.08)))
+                .foregroundStyle(isSelected ? Color.accent : Color.primary)
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -197,7 +199,7 @@ private struct PluginTrackRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 VStack(alignment: .leading, spacing: 4) {
-                    MarqueeText(item.title, fontSize: 16, fontWeight: .semibold)
+                    MarqueeText(text: item.title, fontSize: 16, fontWeight: .semibold)
                         .lineLimit(1)
                     Text("\(item.artist) · \(item.album)")
                         .font(.caption)
@@ -232,79 +234,9 @@ struct PluginManagerView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    if manager.plugins.isEmpty {
-                        Text("尚未安装插件音源")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(manager.plugins) { plugin in
-                            HStack {
-                                Toggle(isOn: enabledBinding(for: plugin)) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(plugin.name).font(.headline)
-                                        if let source = plugin.sourceURL {
-                                            Text(source)
-                                                .font(.caption2)
-                                                .foregroundStyle(.tertiary)
-                                                .lineLimit(1)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        .onDelete { indices in
-                            for index in indices.sorted(by: >) {
-                                manager.remove(manager.plugins[index])
-                            }
-                        }
-                    }
-                } header: {
-                    Text("已安装")
-                } footer: {
-                    if let installError {
-                        Text(installError).foregroundStyle(.red)
-                    }
-                }
-
-                Section {
-                    ForEach(PluginManager.presetSources) { preset in
-                        Button {
-                            Task { await install(url: preset.url) }
-                        } label: {
-                            HStack {
-                                Text(preset.name)
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                                if installingURL == preset.url {
-                                    ProgressView()
-                                } else {
-                                    Image(systemName: "arrow.down.circle")
-                                        .foregroundStyle(Color.accent)
-                                }
-                            }
-                        }
-                        .disabled(installingURL != nil)
-                    }
-                } header: {
-                    Text("音源商店")
-                } footer: {
-                    Text("插件来自 MusicFree 生态，安装即代表你信任对应插件的作者。")
-                }
-
-                Section {
-                    TextField("https://example.com/plugin.js", text: $urlText)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    Button {
-                        Task { await install(url: urlText) }
-                    } label: {
-                        Text("从地址安装")
-                    }
-                    .disabled(urlText.isEmpty || installingURL != nil)
-                } header: {
-                    Text("自定义音源")
-                }
+                installedSection
+                presetSection
+                customSection
             }
             .navigationTitle("插件管理")
             .navigationBarTitleDisplayMode(.inline)
@@ -313,6 +245,87 @@ struct PluginManagerView: View {
                     Button("完成") { dismiss() }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var installedSection: some View {
+        Section {
+            if manager.plugins.isEmpty {
+                Text("尚未安装插件音源")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(manager.plugins, id: \.platform) { plugin in
+                    Toggle(isOn: enabledBinding(for: plugin)) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(plugin.name).font(.headline)
+                            if let source = plugin.sourceURL {
+                                Text(source)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+                .onDelete { indices in
+                    for index in indices.sorted(by: >) {
+                        manager.remove(manager.plugins[index])
+                    }
+                }
+            }
+        } header: {
+            Text("已安装")
+        } footer: {
+            if let installError {
+                Text(installError).foregroundStyle(.red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var presetSection: some View {
+        Section {
+            ForEach(PluginManager.presetSources) { preset in
+                Button {
+                    Task { await install(url: preset.url) }
+                } label: {
+                    HStack {
+                        Text(preset.name)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        if installingURL == preset.url {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.down.circle")
+                                .foregroundStyle(Color.accent)
+                        }
+                    }
+                }
+                .disabled(installingURL != nil)
+            }
+        } header: {
+            Text("音源商店")
+        } footer: {
+            Text("插件来自 MusicFree 生态，安装即代表你信任对应插件的作者。")
+        }
+    }
+
+    @ViewBuilder
+    private var customSection: some View {
+        Section {
+            TextField("https://example.com/plugin.js", text: $urlText)
+                .keyboardType(.URL)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Button {
+                Task { await install(url: urlText) }
+            } label: {
+                Text("从地址安装")
+            }
+            .disabled(urlText.isEmpty || installingURL != nil)
+        } header: {
+            Text("自定义音源")
         }
     }
 
