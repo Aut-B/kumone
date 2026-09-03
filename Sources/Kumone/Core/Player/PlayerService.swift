@@ -177,7 +177,9 @@ final class PlayerService: ObservableObject {
         syncedRealDurationTrackID = currentTrack?.id
         // Metadata duration is either wrong or unknown; the item wins.
         duration = real
-        NowPlayingManager.shared.updateMetadata(for: currentTrack, duration: real)
+        if let currentTrack {
+            NowPlayingManager.shared.updateMetadata(for: currentTrack, duration: real)
+        }
     }
 
     /// Keep playing while other apps play audio (mixWithOthers).
