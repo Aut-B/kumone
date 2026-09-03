@@ -142,8 +142,8 @@ struct PluginsRootView: View {
                 .font(.subheadline.weight(isSelected ? .semibold : .regular))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
-                .background(Capsule().fill(isSelected ? Color.accent.opacity(0.16) : Color.secondary.opacity(0.08)))
-                .foregroundStyle(isSelected ? Color.accent : Color.primary)
+                .background(Capsule().fill(isSelected ? Theme.accent.opacity(0.16) : Color.secondary.opacity(0.08)))
+                .foregroundStyle(isSelected ? Theme.accent : Color.primary)
         }
         .buttonStyle(.plain)
     }
@@ -286,7 +286,7 @@ struct PluginManagerView: View {
     @ViewBuilder
     private var presetSection: some View {
         Section {
-            ForEach(PluginManager.presetSources) { preset in
+            ForEach(PluginManager.presetSources, id: \.id) { preset in
                 Button {
                     Task { await install(url: preset.url) }
                 } label: {
@@ -298,7 +298,7 @@ struct PluginManagerView: View {
                             ProgressView()
                         } else {
                             Image(systemName: "arrow.down.circle")
-                                .foregroundStyle(Color.accent)
+                                .foregroundStyle(Theme.accent)
                         }
                     }
                 }
