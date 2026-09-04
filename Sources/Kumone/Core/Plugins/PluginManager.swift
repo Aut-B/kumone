@@ -347,8 +347,9 @@ final class PluginManager: ObservableObject {
         if let urlString = data?.url, !urlString.isEmpty {
             return URL(string: urlString.replacingOccurrences(of: "http://", with: "https://"))
         }
-        let fallback = Track(fallbackNeteaseID: songID, name: title, artist: artist)
-        return await UnblockService.resolve(fallback)?.url
+        // Native only — the user is logged into Kumone's own Netease account;
+        // third-party matching was a worse experience than the built-in one.
+        return nil
     }
 
     private func isNeteasePlatform(_ platform: String) -> Bool {

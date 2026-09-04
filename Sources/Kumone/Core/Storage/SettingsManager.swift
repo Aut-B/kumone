@@ -115,6 +115,12 @@ final class SettingsManager: ObservableObject {
         static let lyricSpacing = "settings.lyricSpacing"           // 14...40
         static let circularCover = "settings.circularCover"
         static let circularCoverSpin = "settings.circularCoverSpin"
+        // Beans-style effects
+        static let progressAccentHex = "settings.progressAccentHex"   // "" = follow accent
+        static let lyricBlurAmount = "settings.lyricBlurAmount"       // 0...10
+        static let lyricTiltX = "settings.lyricTiltX"                 // -30...30
+        static let lyricTiltY = "settings.lyricTiltY"                 // -20...20
+        static let lyricGlow = "settings.lyricGlow"                   // 0...5
     }
 
     /// Progress bar style: 0 流光 / 1 辉光 / 2 极光 / 3 波浪.
@@ -158,6 +164,27 @@ final class SettingsManager: ObservableObject {
 
     @Published var circularCoverSpin: Bool {
         didSet { UserDefaults.standard.set(circularCoverSpin, forKey: Keys.circularCoverSpin) }
+    }
+
+    /// Custom progress-bar color (hex RRGGBB); empty follows the theme accent.
+    @Published var progressAccentHex: String {
+        didSet { UserDefaults.standard.set(progressAccentHex, forKey: Keys.progressAccentHex) }
+    }
+
+    @Published var lyricBlurAmount: Double {
+        didSet { UserDefaults.standard.set(lyricBlurAmount, forKey: Keys.lyricBlurAmount) }
+    }
+
+    @Published var lyricTiltX: Double {
+        didSet { UserDefaults.standard.set(lyricTiltX, forKey: Keys.lyricTiltX) }
+    }
+
+    @Published var lyricTiltY: Double {
+        didSet { UserDefaults.standard.set(lyricTiltY, forKey: Keys.lyricTiltY) }
+    }
+
+    @Published var lyricGlow: Double {
+        didSet { UserDefaults.standard.set(lyricGlow, forKey: Keys.lyricGlow) }
     }
 
     @Published var audioQuality: AudioQuality {
@@ -238,5 +265,10 @@ final class SettingsManager: ObservableObject {
         lyricSpacing = defaults.object(forKey: Keys.lyricSpacing) as? Double ?? 24
         circularCover = defaults.object(forKey: Keys.circularCover) as? Bool ?? false
         circularCoverSpin = defaults.object(forKey: Keys.circularCoverSpin) as? Bool ?? false
+        progressAccentHex = defaults.string(forKey: Keys.progressAccentHex) ?? ""
+        lyricBlurAmount = defaults.object(forKey: Keys.lyricBlurAmount) as? Double ?? 4
+        lyricTiltX = defaults.object(forKey: Keys.lyricTiltX) as? Double ?? 8
+        lyricTiltY = defaults.object(forKey: Keys.lyricTiltY) as? Double ?? 0
+        lyricGlow = defaults.object(forKey: Keys.lyricGlow) as? Double ?? 2.5
     }
 }

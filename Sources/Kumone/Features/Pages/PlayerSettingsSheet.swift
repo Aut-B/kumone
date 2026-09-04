@@ -16,6 +16,7 @@ struct PlayerSettingsSheet: View {
         Form {
             playCard
             lyricsCard
+            lyricEffectsCard
             coverCard
         }
         .navigationTitle("播放器设置")
@@ -85,7 +86,16 @@ struct PlayerSettingsSheet: View {
             Text("打开后听歌的同时可以播放其他 App 的声音")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            ColorPicker("进度条颜色（清空恢复主题色）", selection: progressColorBinding)
         }
+    }
+
+    private var progressColorBinding: Binding<Color> {
+        Binding(
+            get: { Color(hex: settings.progressAccentHex) ?? Theme.accent },
+            set: { settings.progressAccentHex = $0.hexString() }
+        )
     }
 
     // MARK: - 歌词显示
@@ -110,6 +120,38 @@ struct PlayerSettingsSheet: View {
         }
     }
 
+    // MARK: - 歌词特效（Beans 同款烈度）
+
+    @ViewBuilder
+    private var lyricEffectsCard: some View {
+        Section("歌词特效") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("非当前行模糊 \(Int(settings.lyricBlurAmount))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Slider(value: $settings.lyricBlurAmount, in: 0...10, step: 0.5)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("左右 3D 倾斜 \(Int(settings.lyricTiltX))°")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Slider(value: $settings.lyricTiltX, in: -30...30, step: 1)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("上下 3D 倾斜 \(Int(settings.lyricTiltY))°")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Slider(value: $settings.lyricTiltY, in: -20...20, step: 1)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("当前行发光 \(Int(settings.lyricGlow))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Slider(value: $settings.lyricGlow, in: 0...5, step: 0.5)
+            }
+        }
+    }
+
     // MARK: - 封面
 
     @ViewBuilder
@@ -123,5 +165,32 @@ struct PlayerSettingsSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+// MARK: - Color helpers
+
+extension Color {
+    /// Parses "RRGGBB" (optionally "#RRGGBB").
+    init?(hex: String) {
+        var value = hex.trimmingCharacters(in: .whitespaces)
+        if value.hasPrefix("#") { value.removeFirst() }
+        guard value.count == 6, let rgb = UInt32(value, radix: 16) else { return nil }
+        self.init(
+            red: Double((rgb >> 16) & 0xFF) / 255,
+            green: Double((rgb >> 8) & 0xFF) / 255,
+            blue: Double(rgb & 0xFF) / 255
+        )
+    }
+
+    func hexString() -> String {
+        #if canImport(UIKit)
+        let ui = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        ui.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
+        #else
+        return ""
+        #endif
     }
 }

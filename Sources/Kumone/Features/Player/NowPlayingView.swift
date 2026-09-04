@@ -928,7 +928,16 @@ struct NowPlayingView: View {
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .blur(radius: isActive ? 0 : 0.6)
+            .blur(radius: isActive ? 0 : max(0.6, settings.lyricBlurAmount))
+            .rotation3DEffect(
+                .degrees(isActive ? settings.lyricTiltX : settings.lyricTiltX * 0.3),
+                axis: (x: CGFloat(settings.lyricTiltY / 90), y: 1, z: 0),
+                perspective: 0.4
+            )
+            .shadow(
+                color: .white.opacity(isActive ? 0.06 * settings.lyricGlow : 0),
+                radius: settings.lyricGlow * 4
+            )
             .scaleEffect(isActive ? 1.02 : 1, anchor: .leading)
         }
         .buttonStyle(.plain)
@@ -2392,12 +2401,17 @@ struct NowPlayingScrubber: View {
         isDragging ? 13 : (isHovering ? 11 : 9)
     }
 
+    /// Progress color: custom setting or white on the player backdrop.
+    private var accent: Color {
+        Color(hex: settings.progressAccentHex) ?? .white
+    }
+
     /// 0 流光: slim bar with a bright top highlight and a travelling spark.
     @ViewBuilder
     private func flowingTrack(width: CGFloat) -> some View {
         ZStack(alignment: .leading) {
             Capsule().fill(.white.opacity(0.25)).frame(height: 4)
-            Capsule().fill(.white).frame(width: max(4, width * fraction), height: 4)
+            Capsule().fill(accent).frame(width: max(4, width * fraction), height: 4)
             Capsule()
                 .fill(LinearGradient(colors: [.white.opacity(0.9), .clear], startPoint: .top, endPoint: .bottom))
                 .frame(width: max(4, width * fraction), height: 2)
@@ -2421,9 +2435,9 @@ struct NowPlayingScrubber: View {
                 .fill(LinearGradient(colors: [.white.opacity(0.3), .white.opacity(0.1)], startPoint: .leading, endPoint: .trailing))
                 .frame(height: 5)
             Capsule()
-                .fill(.white)
+                .fill(accent)
                 .frame(width: max(4, width * fraction), height: 5)
-                .shadow(color: .white.opacity(0.8), radius: 5)
+                .shadow(color: accent.opacity(0.8), radius: 5)
             Capsule()
                 .fill(.white.opacity(0.35))
                 .blur(radius: 6)
@@ -2438,7 +2452,7 @@ struct NowPlayingScrubber: View {
     private func auroraTrack(width: CGFloat) -> some View {
         ZStack(alignment: .leading) {
             Capsule().fill(.white.opacity(0.15)).frame(height: 1.5)
-            Capsule().fill(.white).frame(width: max(2, width * fraction), height: 1.5)
+            Capsule().fill(accent).frame(width: max(2, width * fraction), height: 1.5)
             Circle()
                 .fill(.white)
                 .frame(width: isDragging ? 15 : 11, height: isDragging ? 15 : 11)
@@ -2468,7 +2482,7 @@ struct NowPlayingScrubber: View {
                 dimPath.addLine(to: CGPoint(x: x, y: y))
             }
             context.stroke(dimPath, with: .color(.white.opacity(0.2)), lineWidth: 1.5)
-            context.stroke(path, with: .color(.white), lineWidth: 2)
+            context.stroke(path, with: .color(accent), lineWidth: 2)
         }
         .overlay(alignment: .leading) {
             if fraction > 0 {
@@ -2483,7 +2497,7 @@ struct NowPlayingScrubber: View {
 
     private func thumb(width: CGFloat) -> some View {
         Circle()
-            .fill(.white)
+            .fill(accent)
             .frame(width: thumbDiameter, height: thumbDiameter)
             .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
             .offset(x: width * fraction - thumbDiameter / 2)
@@ -2563,27 +2577,46 @@ struct PlayerAmbienceOverlay: View {
                     let center = CGPoint(x: size.width * 0.5, y: size.height * 0.32)
                     if settings.playerBreath > 0.01 {
                         let breathe = 0.85 + 0.15 * sin(t * 1.1)
-                        let radius = size.width * 0.42 * CGFloat(breathe * settings.playerBreath)
+                        let strength = CGFloat(breathe * settings.playerBreath)
+                        let radius = size.width * 0.55 * strength
+                        let secondaryCenter = CGPoint(x: size.width * 0.72, y: size.height * 0.22)
+                        let secondaryRadius = size.width * 0.3 * strength
                         context.fill(
                             Path(ellipseIn: CGRect(
                                 x: center.x - radius, y: center.y - radius,
                                 width: radius * 2, height: radius * 2
                             )),
                             with: .radialGradient(
-                                Gradient(colors: [.white.opacity(0.15), .white.opacity(0.04), .clear]),
+                                Gradient(colors: [.white.opacity(0.34), .white.opacity(0.09), .clear]),
                                 center: center, startRadius: 0, endRadius: radius
+                            )
+                        )
+                        context.fill(
+                            Path(ellipseIn: CGRect(
+                                x: secondaryCenter.x - secondaryRadius, y: secondaryCenter.y - secondaryRadius,
+                                width: secondaryRadius * 2, height: secondaryRadius * 2
+                            )),
+                            with: .radialGradient(
+                                Gradient(colors: [.white.opacity(0.18), .clear]),
+                                center: secondaryCenter, startRadius: 0, endRadius: secondaryRadius
                             )
                         )
                     }
                     if settings.djVisual {
                         let beat = (t.truncatingRemainder(dividingBy: 0.55)) / 0.55
-                        let ringRadius = size.width * 0.24 * (0.25 + 0.75 * beat)
+                        let ringRadius = size.width * 0.28 * (0.2 + 0.8 * beat)
                         let alpha = (1 - beat) * settings.djIntensity
                         let ring = Path(ellipseIn: CGRect(
                             x: center.x - ringRadius, y: center.y - ringRadius,
                             width: ringRadius * 2, height: ringRadius * 2
                         ))
-                        context.stroke(ring, with: .color(.white.opacity(0.3 * alpha)), lineWidth: 2)
+                        context.stroke(ring, with: .color(.white.opacity(0.6 * alpha)), lineWidth: 3)
+                        let inner = ringRadius * 0.55
+                        let ring2 = Path(ellipseIn: CGRect(
+                            x: center.x - inner, y: center.y - inner,
+                            width: inner * 2, height: inner * 2
+                        ))
+                        context.stroke(ring2, with: .color(.white.opacity(0.4 * alpha)), lineWidth: 2)
                     }
                 }
             }
