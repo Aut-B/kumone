@@ -73,6 +73,26 @@ struct Track: Codable, Hashable, Identifiable {
         case plugin
     }
 
+    /// Minimal Track for native Netease fallback resolution of plugin items
+    /// whose id is a NetEase song id (pyncmd/unblock matching).
+    init(fallbackNeteaseID: Int, name: String, artist: String) {
+        id = fallbackNeteaseID
+        self.name = name
+        artists = [ArtistRef(id: 0, name: artist)]
+        album = AlbumRef(id: 0, name: "", picUrl: nil)
+        durationMS = 0
+        alias = []
+        transNames = []
+        fee = 0
+        mvID = 0
+        trackNo = 0
+        disc = nil
+        noCopyright = false
+        isCloud = false
+        embeddedPrivilege = nil
+        plugin = nil
+    }
+
     /// Builds a Track wrapper around a plugin search result.
     init(pluginItem: PluginMusicItem) {
         let digest = SHA256.hash(data: Data(pluginItem.id.utf8))

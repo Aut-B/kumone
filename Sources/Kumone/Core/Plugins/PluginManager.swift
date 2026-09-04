@@ -313,7 +313,27 @@ final class PluginManager: ObservableObject {
         let headers = (result["headers"] as? [String: Any])?.reduce(into: [String: String]()) { dict, pair in
             if let value = pair.value as? String { dict[pair.key] = value }
         }
+        // Netease-family fallback: plugin JS first, then Kumone's native eapi
+        // (item id IS the song id), then pyncmd/unblock for gray tracks.
+        if url == nil, isNeteasePlatform(platform),
+           let songID = Int(itemObject["id"] as? String ?? "") {
+            if let data = try? await NeteaseAPI.songURL(ids: [songID], level: quality).first,
+               let urlString = data.url, !urlString.isEmpty {
+                url = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://"))
+            }
+            if url == nil {
+                let fallback = Track(fallbackNeteaseID: songID, name: item.title, artist: item.artist)
+                if let unblocked = await UnblockService.resolve(fallback) {
+                    url = unblocked.url
+                }
+            }
+        }
         return PluginMediaSource(url: url, headers: headers)
+    }
+
+    private func isNeteasePlatform(_ platform: String) -> Bool {
+        let lower = platform.lowercased()
+        return lower.contains("网易") || lower.contains("netease") || lower.contains("163")
     }
 
     /// Direct B站 resolution: view → cid → playurl → first audio stream.
