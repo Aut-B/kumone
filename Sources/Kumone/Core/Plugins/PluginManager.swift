@@ -279,6 +279,15 @@ final class PluginManager: ObservableObject {
               let itemObject = (try? JSONSerialization.jsonObject(with: itemData)) as? [String: Any] else {
             return PluginMediaSource(url: nil, headers: nil)
         }
+        // Bilibili: resolve natively FIRST. The native path (view -> cid ->
+        // playurl -> audio) is proven on-device independent of the JS engine;
+        // the plugin's JS only handles search.
+        if let bvid = itemObject["bvid"] as? String {
+            let native = await Self.nativeBilibiliMediaURL(bvid: bvid)
+            if let nativeURL = native.url {
+                return PluginMediaSource(url: nativeURL, headers: native.headers)
+            }
+        }
         // Resolve with one retry: transient JS/http hiccups are common.
         var value: Any?
         for attempt in 0..<2 {
@@ -300,15 +309,6 @@ final class PluginManager: ObservableObject {
         }
         let headers = (result["headers"] as? [String: Any])?.reduce(into: [String: String]()) { dict, pair in
             if let value = pair.value as? String { dict[pair.key] = value }
-        }
-        // Native bilibili fallback: the plugin's JS resolution has several
-        // fragile branches (empty dash.audio arrays, strict quality indexing).
-        // When it fails and the item carries a bvid, resolve directly.
-        if url == nil, let bvid = itemObject["bvid"] as? String {
-            let native = await Self.nativeBilibiliMediaURL(bvid: bvid)
-            if let nativeURL = native.url {
-                return PluginMediaSource(url: nativeURL, headers: native.headers)
-            }
         }
         return PluginMediaSource(url: url, headers: headers)
     }
