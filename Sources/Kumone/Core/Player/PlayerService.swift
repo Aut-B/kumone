@@ -650,6 +650,11 @@ final class PlayerService: ObservableObject {
     private func startPlaying(_ track: Track, indexUnchanged: Bool = false) {
         scrobbleIfNeeded(completed: false)
         currentTrack = track
+        // Kill the previous item IMMEDIATELY: otherwise the old audio keeps
+        // playing while the new URL resolves (or after it fails), and the
+        // scrubber keeps showing the old song's progress.
+        engine.pause()
+        engine.replaceCurrentItem(with: nil)
         progress = 0
         duration = track.duration
         servedQuality = nil

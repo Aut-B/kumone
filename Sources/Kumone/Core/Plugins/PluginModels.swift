@@ -40,8 +40,11 @@ struct PluginMusicItem: Identifiable, Hashable, Sendable {
         artist = (dict["artist"] as? String) ?? String(localized: "未知歌手")
         album = (dict["album"] as? String) ?? String(localized: "未知专辑")
         artwork = (dict["artwork"] as? String) ?? (dict["picUrl"] as? String)
-        let durationSeconds = (dict["duration"] as? NSNumber)?.doubleValue ?? 0
-        durationMS = Int(durationSeconds * 1000)
+        let durationValue = (dict["duration"] as? NSNumber)?.doubleValue ?? 0
+        // MusicFree spec says seconds, but some plugins (wy.js) return
+        // milliseconds. No song legitimately exceeds 100000 seconds (~28h),
+        // so anything above that must be milliseconds.
+        durationMS = durationValue > 100_000 ? Int(durationValue) : Int(durationValue * 1000)
         rawJSON = (try? JSONSerialization.data(withJSONObject: dict)).flatMap {
             String(data: $0, encoding: .utf8)
         } ?? "{}"

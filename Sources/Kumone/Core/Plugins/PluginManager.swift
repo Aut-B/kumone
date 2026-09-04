@@ -281,8 +281,11 @@ final class PluginManager: ObservableObject {
         }
         // Bilibili: resolve natively FIRST. The native path (view -> cid ->
         // playurl -> audio) is proven on-device independent of the JS engine;
-        // the plugin's JS only handles search.
-        if let bvid = itemObject["bvid"] as? String {
+        // the plugin's JS only handles search. Older saved playlists may lack
+        // `bvid` — for BV ids the item id IS the bvid.
+        let bvid = (itemObject["bvid"] as? String)
+            ?? ((itemObject["id"] as? String).flatMap { $0.hasPrefix("BV") ? $0 : nil })
+        if let bvid {
             let native = await Self.nativeBilibiliMediaURL(bvid: bvid)
             if let nativeURL = native.url {
                 return PluginMediaSource(url: nativeURL, headers: native.headers)

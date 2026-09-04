@@ -81,6 +81,7 @@ struct PluginsRootView: View {
     @State private var showManager = false
     @State private var showWebDAV = false
     @State private var section: Section = .search
+    @State private var selectedPlaylist: ImportedPlaylist?
 
     var body: some View {
         content
@@ -115,6 +116,9 @@ struct PluginsRootView: View {
             }
             .sheet(isPresented: $showWebDAV) {
                 WebDAVImportView()
+            }
+            .sheet(item: $selectedPlaylist) { playlist in
+                ImportedPlaylistDetailView(playlist: playlist)
             }
             .onAppear {
                 model.selectFirst()
@@ -233,7 +237,7 @@ struct PluginsRootView: View {
             List {
                 ForEach(playlists) { playlist in
                     Button {
-                        play(playlist)
+                        selectedPlaylist = playlist
                     } label: {
                         HStack {
                             Image(systemName: "music.note.list")
@@ -245,6 +249,10 @@ struct PluginsRootView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
                     }
                     .swipeActions {
@@ -259,18 +267,77 @@ struct PluginsRootView: View {
             .listStyle(.plain)
         }
     }
+}
 
-    private func play(_ playlist: ImportedPlaylist) {
-        let items = ImportedPlaylistStore.shared.loadItems(of: playlist)
-        guard !items.isEmpty else {
-            ToastCenter.shared.show(String(localized: "歌单为空或解析失败"))
-            return
+/// Detail view for an imported playlist: pick one song, or play from one.
+struct ImportedPlaylistDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+    let playlist: ImportedPlaylist
+    @State private var items: [PluginMusicItem] = []
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    Button {
+                        play(from: index)
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 10) {
+                            CachedAsyncImage(url: item.artwork.flatMap(URL.init(string:))) {
+                                Rectangle().fill(Color.secondary.opacity(0.12))
+                            }
+                            .frame(width: 42, height: 42)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(.subheadline.weight(.medium))
+                                    .lineLimit(1)
+                                Text(item.artist)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            if item.durationMS > 0 {
+                                Text(Duration.milliseconds(item.durationMS).formatted(.time(pattern: .minuteSecond)))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(playlist.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        play(from: 0)
+                        dismiss()
+                    } label: {
+                        Image(systemName: "play.circle")
+                    }
+                    .accessibilityLabel("播放全部")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
         }
+        .onAppear {
+            items = ImportedPlaylistStore.shared.loadItems(of: playlist)
+        }
+    }
+
+    private func play(from index: Int) {
+        guard !items.isEmpty else { return }
         let queue = items.map { Track(pluginItem: $0) }
+        let start = queue[min(index, queue.count - 1)]
         PlayerService.shared.play(
             tracks: queue,
             source: .plugins,
-            startAt: queue[0],
+            startAt: start,
             context: .plugins(name: playlist.name)
         )
     }

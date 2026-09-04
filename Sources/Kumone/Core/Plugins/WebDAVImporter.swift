@@ -307,17 +307,21 @@ final class ImportedPlaylistStore: ObservableObject {
     }
 
     private func writeItems(_ items: [PluginMusicItem], fileName: String) throws {
-        let payload: [[String: Any]] = items.map {
-            var dict: [String: Any] = [
-                "id": $0.itemID,
-                "platform": $0.platform,
-                "title": $0.title,
-                "artist": $0.artist,
-                "album": $0.album,
-                "duration": Double($0.durationMS) / 1000,
+        // Store the FULL original item (bvid/cid/qualities live in rawJSON) —
+        // a reduced dict loses the fields playback resolution needs.
+        let payload: [[String: Any]] = items.map { item in
+            if let data = item.rawJSON.data(using: .utf8),
+               let full = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                return full
+            }
+            return [
+                "id": item.itemID,
+                "platform": item.platform,
+                "title": item.title,
+                "artist": item.artist,
+                "album": item.album,
+                "duration": Double(item.durationMS) / 1000,
             ]
-            if let artwork = $0.artwork { dict["artwork"] = artwork }
-            return dict
         }
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else {
             throw WebDAVError.malformedResponse
