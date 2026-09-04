@@ -293,7 +293,7 @@ struct ImportedPlaylistDetailView: View {
                                 Text(item.title)
                                     .font(.subheadline.weight(.medium))
                                     .lineLimit(1)
-                                Text(item.artist)
+                                Text("\(item.artist) · \(item.platform)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)

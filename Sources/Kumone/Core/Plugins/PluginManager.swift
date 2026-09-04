@@ -47,6 +47,20 @@ final class PluginManager: ObservableObject {
         .init(name: "酷我音乐 (元力)", mirrors: ["https://13413.kstore.vip/yuanli/kw.js"]),
         .init(name: "哔哩哔哩 (官方)", mirrors: githubMirrors("https://raw.githubusercontent.com/maotoumao/MusicFreePlugins/master/dist/bilibili/index.js")),
         .init(name: "哔哩哔哩 (zhuguibiao)", mirrors: githubMirrors("https://raw.githubusercontent.com/zhuguibiao/m-plugins/main/bilibili.js")),
+        // From the user's MusicFree backup — the sources their playlists rely on.
+        .init(name: "网易云音乐 (备份同款)", mirrors: githubMirrors("https://raw.githubusercontent.com/ThomasBy2025/musicfree/refs/heads/main/plugins/wy.js")),
+        .init(name: "歌词千寻", mirrors: ["https://gitee.com/maotoumao/MusicFreePlugins/raw/v0.1/dist/geciqianxun/index.js"]),
+        .init(name: "歌词王", mirrors: ["https://gitee.com/maotoumao/MusicFreePlugins/raw/v0.1/dist/geciwang/index.js"]),
+        .init(name: "QQ (海棠)", mirrors: ["http://music.haitangw.net/cqapi/qq.js"]),
+        .init(name: "酷狗 (海棠)", mirrors: ["http://music.haitangw.net/cqapi/kg.js"]),
+        .init(name: "酷我 (海棠)", mirrors: ["http://music.haitangw.net/cqapi/kw.js"]),
+        .init(name: "小米音乐 (海棠)", mirrors: ["http://music.haitangw.net/cqapi/xiaomi.js"]),
+        .init(name: "小蜗音乐", mirrors: ["https://gitee.com/kevinr/tvbox/raw/master/musicfree/plugins/xiaowo.js"]),
+        .init(name: "AT 音源", mirrors: ["https://gitee.com/kevinr/tvbox/raw/master/musicfree/plugins/at.js"]),
+        .init(name: "酷狗 (teyonds)", mirrors: ["http://cdn.teyonds.com/music/kg"]),
+        .init(name: "QQ (teyonds)", mirrors: ["http://cdn.teyonds.com/music/qq"]),
+        .init(name: "酷我 (teyonds)", mirrors: ["http://cdn.teyonds.com/music/kw"]),
+        .init(name: "网易云电台", mirrors: ["https://fastly.jsdelivr.net/gh/GuGuMur/MusicFreePlugin-NeteaseRadio@master/dist/plugin.js"]),
     ]
 
     @Published private(set) var plugins: [InstalledPlugin] = []
@@ -291,34 +305,37 @@ final class PluginManager: ObservableObject {
                 return PluginMediaSource(url: nativeURL, headers: native.headers)
             }
         }
-        // Resolve with one retry: transient JS/http hiccups are common.
-        var value: Any?
-        for attempt in 0..<2 {
-            value = try? await engine.call(
-                platform: platform, method: "getMediaSource", args: [itemObject, quality], timeout: 30
-            )
-            if let result = value as? [String: Any],
-               let urlString = result["url"] as? String, !urlString.isEmpty {
-                break
-            }
-            if attempt == 0 { try? await Task.sleep(for: .milliseconds(400)) }
-        }
-        guard let result = value as? [String: Any] else {
-            return PluginMediaSource(url: nil, headers: nil)
+        // Resolve with the item's own plugin first (exact routing), then —
+        // for imported items whose platform name may not match any mounted
+        // plugin — try every other enabled plugin in order.
+        var result: [String: Any]?
+        let orderedPlatforms = [platform]
+            + plugins.filter { $0.enabled && $0.platform != platform }.map(\.platform)
+        for candidate in orderedPlatforms {
+            guard let value = try? await engine.call(
+                platform: candidate, method: "getMediaSource", args: [itemObject, quality], timeout: 15
+            ), let dict = value as? [String: Any],
+            let urlString = dict["url"] as? String, !urlString.isEmpty else { continue }
+            result = dict
+            break
         }
         var url: URL?
-        if let urlString = result["url"] as? String, !urlString.isEmpty {
+        if let result, let urlString = result["url"] as? String, !urlString.isEmpty {
             url = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://"))
         }
-        let headers = (result["headers"] as? [String: Any])?.reduce(into: [String: String]()) { dict, pair in
+        let headers = (result?["headers"] as? [String: Any])?.reduce(into: [String: String]()) { dict, pair in
             if let value = pair.value as? String { dict[pair.key] = value }
         }
-        // Netease-family fallback: plugin JS first, then Kumone's native eapi
-        // (item id IS the song id), then pyncmd/unblock for gray tracks.
+        // Netease-family fallback: Kumone's native eapi (item id IS the song
+        // id, valid level names) then unblock matching for gray tracks.
         if url == nil, isNeteasePlatform(platform),
            let songID = Int(itemObject["id"] as? String ?? "") {
-            if let data = try? await NeteaseAPI.songURL(ids: [songID], level: quality).first,
-               let urlString = data.url, !urlString.isEmpty {
+            let level = SettingsManager.shared.audioQuality.rawValue
+            var data = try? await NeteaseAPI.songURL(ids: [songID], level: level).first
+            if data?.url == nil {
+                data = try? await NeteaseAPI.songURL(ids: [songID], level: "standard").first
+            }
+            if let urlString = data?.url, !urlString.isEmpty {
                 url = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://"))
             }
             if url == nil {
