@@ -305,15 +305,22 @@ final class PluginManager: ObservableObject {
                 return PluginMediaSource(url: nativeURL, headers: native.headers)
             }
         }
-        // Resolve with the item's own plugin first (exact routing), then —
-        // for imported items whose platform name may not match any mounted
-        // plugin — try every other enabled plugin in order.
+        // Netease-family: resolve natively FIRST — fast and correct (the item
+        // id IS the Netease song id); no JS involvement, no long waits.
+        if isNeteasePlatform(platform) {
+            if let nativeURL = await Self.nativeNeteaseURL(itemObject: itemObject, title: item.title, artist: item.artist) {
+                return PluginMediaSource(url: nativeURL, headers: nil)
+            }
+        }
+        // Other platforms: the item's own plugin first, then a BOUNDED set of
+        // other enabled plugins (short timeouts so a song never hangs).
         var result: [String: Any]?
-        let orderedPlatforms = [platform]
-            + plugins.filter { $0.enabled && $0.platform != platform }.map(\.platform)
-        for candidate in orderedPlatforms {
+        let others = plugins.filter { $0.enabled && $0.platform != platform }.map(\.platform)
+        let candidates = [platform] + others.prefix(4)
+        for (index, candidate) in candidates.enumerated() {
+            let timeout: TimeInterval = index == 0 ? 12 : 8
             guard let value = try? await engine.call(
-                platform: candidate, method: "getMediaSource", args: [itemObject, quality], timeout: 15
+                platform: candidate, method: "getMediaSource", args: [itemObject, quality], timeout: timeout
             ), let dict = value as? [String: Any],
             let urlString = dict["url"] as? String, !urlString.isEmpty else { continue }
             result = dict
@@ -326,26 +333,22 @@ final class PluginManager: ObservableObject {
         let headers = (result?["headers"] as? [String: Any])?.reduce(into: [String: String]()) { dict, pair in
             if let value = pair.value as? String { dict[pair.key] = value }
         }
-        // Netease-family fallback: Kumone's native eapi (item id IS the song
-        // id, valid level names) then unblock matching for gray tracks.
-        if url == nil, isNeteasePlatform(platform),
-           let songID = Int(itemObject["id"] as? String ?? "") {
-            let level = SettingsManager.shared.audioQuality.rawValue
-            var data = try? await NeteaseAPI.songURL(ids: [songID], level: level).first
-            if data?.url == nil {
-                data = try? await NeteaseAPI.songURL(ids: [songID], level: "standard").first
-            }
-            if let urlString = data?.url, !urlString.isEmpty {
-                url = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://"))
-            }
-            if url == nil {
-                let fallback = Track(fallbackNeteaseID: songID, name: item.title, artist: item.artist)
-                if let unblocked = await UnblockService.resolve(fallback) {
-                    url = unblocked.url
-                }
-            }
-        }
         return PluginMediaSource(url: url, headers: headers)
+    }
+
+    /// Native Netease resolution: eapi songURL (valid levels) then unblock.
+    private static func nativeNeteaseURL(itemObject: [String: Any], title: String, artist: String) async -> URL? {
+        guard let songID = Int(itemObject["id"] as? String ?? "") else { return nil }
+        let level = SettingsManager.shared.audioQuality.rawValue
+        var data = try? await NeteaseAPI.songURL(ids: [songID], level: level).first
+        if data?.url == nil {
+            data = try? await NeteaseAPI.songURL(ids: [songID], level: "standard").first
+        }
+        if let urlString = data?.url, !urlString.isEmpty {
+            return URL(string: urlString.replacingOccurrences(of: "http://", with: "https://"))
+        }
+        let fallback = Track(fallbackNeteaseID: songID, name: title, artist: artist)
+        return await UnblockService.resolve(fallback)?.url
     }
 
     private func isNeteasePlatform(_ platform: String) -> Bool {
