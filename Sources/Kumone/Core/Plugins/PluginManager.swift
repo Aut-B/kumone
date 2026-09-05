@@ -312,19 +312,15 @@ final class PluginManager: ObservableObject {
                 return PluginMediaSource(url: nativeURL, headers: nil)
             }
         }
-        // Other platforms: the item's own plugin first, then a BOUNDED set of
-        // other enabled plugins (short timeouts so a song never hangs).
+        // Other platforms: the item's OWN plugin only. Cross-plugin fallback
+        // produced wrong-source audio (e.g. a 酷我 stream answering for a
+        // different platform's item — the "flash of wrong music" bug).
         var result: [String: Any]?
-        let others = plugins.filter { $0.enabled && $0.platform != platform }.map(\.platform)
-        let candidates = [platform] + others.prefix(4)
-        for (index, candidate) in candidates.enumerated() {
-            let timeout: TimeInterval = index == 0 ? 12 : 8
-            guard let value = try? await engine.call(
-                platform: candidate, method: "getMediaSource", args: [itemObject, quality], timeout: timeout
-            ), let dict = value as? [String: Any],
-            let urlString = dict["url"] as? String, !urlString.isEmpty else { continue }
+        if let value = try? await engine.call(
+            platform: platform, method: "getMediaSource", args: [itemObject, quality], timeout: 15
+        ), let dict = value as? [String: Any],
+        let urlString = dict["url"] as? String, !urlString.isEmpty {
             result = dict
-            break
         }
         var url: URL?
         if let result, let urlString = result["url"] as? String, !urlString.isEmpty {

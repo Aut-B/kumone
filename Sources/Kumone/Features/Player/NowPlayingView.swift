@@ -1135,6 +1135,16 @@ private struct IOSImmersiveLyricsColumn: View {
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .blur(radius: isActive ? 0 : max(0.6, settings.lyricBlurAmount))
+            .rotation3DEffect(
+                .degrees(isActive ? settings.lyricTiltX : settings.lyricTiltX * 0.3),
+                axis: (x: CGFloat(settings.lyricTiltY / 90), y: 1, z: 0),
+                perspective: 0.4
+            )
+            .shadow(
+                color: .white.opacity(isActive ? 0.06 * settings.lyricGlow : 0),
+                radius: settings.lyricGlow * 4
+            )
             .scaleEffect(isActive ? 1.07 : 0.82, anchor: .leading)
         }
         .buttonStyle(.plain)
@@ -2604,7 +2614,8 @@ struct PlayerAmbienceOverlay: View {
                     }
                     if settings.djVisual {
                         let beat = (t.truncatingRemainder(dividingBy: 0.55)) / 0.55
-                        let ringRadius = size.width * 0.28 * (0.2 + 0.8 * beat)
+                        let eased = 1 - pow(1 - beat, 2)
+                        let ringRadius = size.width * 0.28 * (0.2 + 0.8 * eased)
                         let alpha = (1 - beat) * settings.djIntensity
                         let ring = Path(ellipseIn: CGRect(
                             x: center.x - ringRadius, y: center.y - ringRadius,
@@ -2617,6 +2628,21 @@ struct PlayerAmbienceOverlay: View {
                             width: inner * 2, height: inner * 2
                         ))
                         context.stroke(ring2, with: .color(.white.opacity(0.4 * alpha)), lineWidth: 2)
+                    }
+                    // Floating dust particles (Beans-style), 22 of them.
+                    for i in 0..<22 {
+                        let fi = CGFloat(i)
+                        let px = size.width * (0.1 + 0.8 * ((fi * 37).truncatingRemainder(dividingBy: 100) / 100))
+                        let py = size.height * (0.15 + 0.7 * ((fi * 61).truncatingRemainder(dividingBy: 100) / 100))
+                        let driftX = sin(t * 0.4 + fi * 1.7) * 18
+                        let driftY = cos(t * 0.3 + fi * 2.3) * 24
+                        let radius = 1.2 + (fi.truncatingRemainder(dividingBy: 3)) * 0.8
+                        let twinkle = 0.25 + 0.2 * sin(t * 0.9 + fi)
+                        let dot = Path(ellipseIn: CGRect(
+                            x: px + driftX - radius, y: py + driftY - radius,
+                            width: radius * 2, height: radius * 2
+                        ))
+                        context.fill(dot, with: .color(.white.opacity(twinkle)))
                     }
                 }
             }

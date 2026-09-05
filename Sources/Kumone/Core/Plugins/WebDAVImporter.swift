@@ -143,6 +143,21 @@ enum WebDAVClient {
         }
         return data
     }
+
+    /// Uploads (PUT) a file over WebDAV.
+    static func upload(data: Data, urlString: String, username: String, password: String) async throws {
+        guard let url = robustURL(urlString) else { throw WebDAVError.badServer }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.timeoutInterval = 60
+        request.setValue("Basic \(Data("\(username):\(password)".utf8).base64EncodedString())", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw WebDAVError.downloadFailed((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+    }
 }
 
 /// SAX-ish parser for the WebDAV multistatus response.

@@ -272,6 +272,7 @@ struct PluginsRootView: View {
 /// Detail view for an imported playlist: pick one song, or play from one.
 struct ImportedPlaylistDetailView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var player: PlayerService
     let playlist: ImportedPlaylist
     @State private var items: [PluginMusicItem] = []
 
@@ -311,7 +312,7 @@ struct ImportedPlaylistDetailView: View {
             .navigationTitle(playlist.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItemGroup(placement: .topBarLeading) {
                     Button {
                         play(from: 0)
                         dismiss()
@@ -319,6 +320,13 @@ struct ImportedPlaylistDetailView: View {
                         Image(systemName: "play.circle")
                     }
                     .accessibilityLabel("播放全部")
+                    Button {
+                        addCurrent()
+                    } label: {
+                        Image(systemName: "plus.circle")
+                    }
+                    .accessibilityLabel("把正在播放的歌曲加进这个歌单")
+                    .disabled(player.currentTrack?.isPluginTrack != true)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
@@ -340,6 +348,31 @@ struct ImportedPlaylistDetailView: View {
             startAt: start,
             context: .plugins(name: playlist.name)
         )
+    }
+
+    /// Appends the currently playing plugin track to this playlist.
+    private func addCurrent() {
+        guard let track = player.currentTrack, let plugin = track.plugin else { return }
+        guard let item = PluginMusicItem(
+            normalizing: [
+                "id": plugin.itemID,
+                "platform": plugin.platform,
+                "bvid": plugin.itemID.hasPrefix("BV") ? plugin.itemID : "",
+                "title": track.name,
+                "artist": track.artistNames,
+                "album": track.album.name,
+                "duration": track.duration,
+                "artwork": track.album.picUrl ?? "",
+            ],
+            platform: plugin.platform
+        ) else { return }
+        do {
+            try ImportedPlaylistStore.shared.addItem(item, to: playlist)
+            items = ImportedPlaylistStore.shared.loadItems(of: playlist)
+            ToastCenter.shared.show(String(localized: "已添加到「\(playlist.name)」"))
+        } catch {
+            ToastCenter.shared.show(String(localized: "这首歌已经在歌单里了"))
+        }
     }
 }
 
@@ -550,6 +583,7 @@ struct WebDAVImportView: View {
     @State private var entries: [WebDAVEntry] = []
     @State private var path = ""
     @State private var isLoading = false
+    @State private var isExporting = false
     @State private var errorMessage: String?
     @State private var importingName: String?
 
@@ -607,6 +641,12 @@ struct WebDAVImportView: View {
             .navigationTitle("WebDAV 导入歌单")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("导出备份") {
+                        Task { await exportBackup() }
+                    }
+                    .disabled(ImportedPlaylistStore.shared.playlists.isEmpty || isExporting)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
                 }
@@ -765,6 +805,48 @@ struct WebDAVImportView: View {
 
     @State private var backupPluginURLs: [String] = []
     @State private var showBackupPluginsOffer = false
+
+    /// Exports all imported playlists as a MusicFree-format backup JSON and
+    /// uploads it to the WebDAV root (KumoneBackup.json) — re-import on any
+    /// device via this same sheet.
+    private func exportBackup() async {
+        let trimmedServer = server.trimmingCharacters(in: .whitespaces)
+        guard !trimmedServer.isEmpty, !username.isEmpty, !password.isEmpty else {
+            errorMessage = String(localized: "请先填写 WebDAV 地址、用户名和密码")
+            return
+        }
+        isExporting = true
+        defer { isExporting = false }
+        let sheets: [[String: Any]] = ImportedPlaylistStore.shared.playlists.map { playlist in
+            let items = ImportedPlaylistStore.shared.loadItems(of: playlist)
+            return [
+                "title": playlist.name,
+                "musicList": items.map { item -> [String: Any] in
+                    if let data = item.rawJSON.data(using: .utf8),
+                       let full = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                        return full
+                    }
+                    return ["id": item.itemID, "platform": item.platform, "title": item.title,
+                            "artist": item.artist, "album": item.album,
+                            "duration": Double(item.durationMS) / 1000]
+                },
+            ]
+        }
+        let backup: [String: Any] = ["musicSheets": sheets, "plugins": []]
+        guard let data = try? JSONSerialization.data(withJSONObject: backup, options: [.prettyPrinted]) else {
+            errorMessage = String(localized: "备份序列化失败")
+            return
+        }
+        var target = trimmedServer
+        if !target.hasSuffix("/") { target += "/" }
+        target += "KumoneBackup.json"
+        do {
+            try await WebDAVClient.upload(data: data, urlString: target, username: username, password: password)
+            ToastCenter.shared.show(String(localized: "备份已上传：KumoneBackup.json"))
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 
     private func installBackupPlugins() async {
         var installed = 0
