@@ -632,7 +632,7 @@ struct WebDAVImportView: View {
                 } header: {
                     Text("WebDAV 设置")
                 } footer: {
-                    Text("支持坚果云等 WebDAV 服务。把 MusicFree 导出的歌单 JSON 备份到任意目录后在此导入。")
+                    Text("支持坚果云等 WebDAV 服务。把 MusicFree 导出的歌单 JSON 备份到任意目录后在此导入。「导出备份」会把插件歌单与混装歌单一起写进 KumoneBackup.json。")
                 }
 
                 Section {
@@ -666,7 +666,10 @@ struct WebDAVImportView: View {
                     Button("导出备份") {
                         Task { await exportBackup() }
                     }
-                    .disabled(ImportedPlaylistStore.shared.playlists.isEmpty || isExporting)
+                    .disabled(
+                        (ImportedPlaylistStore.shared.playlists.isEmpty
+                            && MixedPlaylistStore.shared.playlists.isEmpty) || isExporting
+                    )
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
@@ -779,6 +782,9 @@ struct WebDAVImportView: View {
             }
 
             // Format 2: real MusicFree backup = { musicSheets: [...], plugins: [{srcUrl, version}] }.
+            // Kumone's own backup adds `mixedSheets` (see exportBackup) — an
+            // older build simply ignores that key, and an older backup has no
+            // such key, so the two stay compatible.
             if let backup = object as? [String: Any] {
                 let sheets = (backup["musicSheets"] as? [[String: Any]])
                     ?? (backup["playlists"] as? [[String: Any]]) ?? []
@@ -791,6 +797,24 @@ struct WebDAVImportView: View {
                     try ImportedPlaylistStore.shared.importItems(items, name: title, source: "WebDAV备份")
                     importedCount += items.count
                 }
+
+                // Mixed playlists: their entries are `Track` JSON, not plugin
+                // items, so they restore through their own store.
+                let mixedSheets = backup["mixedSheets"] as? [[String: Any]] ?? []
+                var mixedCount = 0
+                var mixedTrackCount = 0
+                for (index, sheet) in mixedSheets.enumerated() {
+                    let title = (sheet["title"] as? String) ?? String(localized: "混装歌单 \(index + 1)")
+                    let musicList = sheet["musicList"] as? [[String: Any]] ?? []
+                    guard let encoded = try? JSONSerialization.data(withJSONObject: musicList),
+                          let restored = try? JSONDecoder().decode([Track].self, from: encoded),
+                          !restored.isEmpty else { continue }
+                    let landed = try MixedPlaylistStore.shared.restorePlaylist(name: title, tracks: restored)
+                    if landed > 0 {
+                        mixedCount += 1
+                        mixedTrackCount += landed
+                    }
+                }
                 // Backup plugins are URLs; install via the mirror-fallback path.
                 var pluginURLs: [String] = []
                 if let array = backup["plugins"] as? [[String: Any]] {
@@ -802,12 +826,15 @@ struct WebDAVImportView: View {
                         if let srcUrl = value["srcUrl"] as? String { pluginURLs.append(srcUrl) }
                     }
                 }
-                if sheets.isEmpty && pluginURLs.isEmpty {
+                if sheets.isEmpty && mixedSheets.isEmpty && pluginURLs.isEmpty {
                     errorMessage = String(localized: "不认识的文件格式（既不是歌单也不是 MusicFree 备份）")
                     return
                 }
-                if importedCount > 0 {
-                    ToastCenter.shared.show(String(localized: "已从备份导入 \(sheets.count) 个歌单（\(importedCount) 首）"))
+                var parts: [String] = []
+                if importedCount > 0 { parts.append(String(localized: "\(sheets.count) 个插件歌单（\(importedCount) 首）")) }
+                if mixedTrackCount > 0 { parts.append(String(localized: "\(mixedCount) 个混装歌单（\(mixedTrackCount) 首）")) }
+                if !parts.isEmpty {
+                    ToastCenter.shared.show(String(localized: "已从备份导入 ") + parts.joined(separator: String(localized: "、")))
                 }
                 if !pluginURLs.isEmpty {
                     backupPluginURLs = pluginURLs
@@ -853,7 +880,23 @@ struct WebDAVImportView: View {
                 },
             ]
         }
-        let backup: [String: Any] = ["musicSheets": sheets, "plugins": []]
+        // Mixed playlists travel in the same file under their own key, so one
+        // WebDAV backup restores both kinds. A NetEase entry is stored in its
+        // native `Track` shape so it survives the round trip intact.
+        let mixedSheets: [[String: Any]] = MixedPlaylistStore.shared.playlists.compactMap { playlist in
+            let tracks = MixedPlaylistStore.shared.tracks(of: playlist)
+            guard !tracks.isEmpty,
+                  let encoded = try? JSONEncoder().encode(tracks),
+                  let list = (try? JSONSerialization.jsonObject(with: encoded)) as? [[String: Any]] else {
+                return nil
+            }
+            return ["title": playlist.name, "musicList": list]
+        }
+        let backup: [String: Any] = [
+            "musicSheets": sheets,
+            "mixedSheets": mixedSheets,
+            "plugins": [],
+        ]
         guard let data = try? JSONSerialization.data(withJSONObject: backup, options: [.prettyPrinted]) else {
             errorMessage = String(localized: "备份序列化失败")
             return

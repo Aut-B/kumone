@@ -321,6 +321,26 @@ final class ImportedPlaylistStore: ObservableObject {
         persist()
     }
 
+    /// Appends many items at once, writing the file a single time.
+    ///
+    /// Used when a whole mixed playlist is copied over: calling `addItem` per
+    /// entry would re-read and re-write the JSON for every song. Existing
+    /// entries (same `id`) are skipped instead of throwing, so re-running an
+    /// export is harmless. Returns how many were actually appended.
+    @discardableResult
+    func addItems(_ newItems: [PluginMusicItem], to playlist: ImportedPlaylist) throws -> Int {
+        var items = loadItems(of: playlist)
+        let existing = Set(items.map(\.id))
+        let additions = newItems.filter { !existing.contains($0.id) }
+        guard !additions.isEmpty else { return 0 }
+        items.append(contentsOf: additions)
+        try writeItems(items, fileName: playlist.fileName)
+        guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return 0 }
+        playlists[index].itemCount = items.count
+        persist()
+        return additions.count
+    }
+
     private func writeItems(_ items: [PluginMusicItem], fileName: String) throws {
         // Store the FULL original item (bvid/cid/qualities live in rawJSON) —
         // a reduced dict loses the fields playback resolution needs.

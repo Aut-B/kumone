@@ -97,6 +97,59 @@ final class MixedPlaylistStore: ObservableObject {
         playlists.first { $0.id == id }
     }
 
+    /// Copies this playlist into a plugin playlist, dropping NetEase entries.
+    ///
+    /// A plugin playlist file only stores plugin items (id/platform/rawJSON),
+    /// so a NetEase song has no representation there at all. The caller is
+    /// told how many were skipped so it can say so rather than silently
+    /// dropping half the list.
+    ///
+    /// Returns `(imported, skipped)`.
+    @discardableResult
+    func exportPluginItems(from playlist: MixedPlaylist, to target: ImportedPlaylist) throws -> (imported: Int, skipped: Int) {
+        let source = tracks(of: playlist)
+        let items = pluginItems(in: source)
+        // One write for the whole batch; entries already present are skipped.
+        let imported = try ImportedPlaylistStore.shared.addItems(items, to: target)
+        return (imported, source.count - items.count)
+    }
+
+    /// The plugin items of a mixed playlist, in list order. Used when the
+    /// playlist is mirrored into a plugin playlist.
+    func pluginItems(of playlist: MixedPlaylist) -> [PluginMusicItem] {
+        pluginItems(in: tracks(of: playlist))
+    }
+
+    /// Extracts the plugin entries from an already-loaded track list.
+    ///
+    /// Prefers `plugin.rawJSON`, which is the item exactly as the plugin
+    /// returned it — `bvid`/`cid`/`qualities` live there and playback
+    /// resolution needs them. The `Track` fields alone are not enough to play
+    /// the song back, so the reconstructed dict is only a fallback for items
+    /// whose raw JSON failed to parse.
+    private func pluginItems(in source: [Track]) -> [PluginMusicItem] {
+        source.compactMap { track -> PluginMusicItem? in
+            guard let plugin = track.plugin else { return nil }
+            if let data = plugin.rawJSON.data(using: .utf8),
+               let full = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let item = PluginMusicItem(normalizing: full, platform: plugin.platform) {
+                return item
+            }
+            return PluginMusicItem(
+                normalizing: [
+                    "id": plugin.itemID,
+                    "platform": plugin.platform,
+                    "title": track.name,
+                    "artist": track.artistNames,
+                    "album": track.album.name,
+                    "duration": track.duration,
+                    "artwork": track.album.picUrl ?? "",
+                ],
+                platform: plugin.platform
+            )
+        }
+    }
+
     @discardableResult
     func createPlaylist(name: String) -> MixedPlaylist {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -162,6 +215,31 @@ final class MixedPlaylistStore: ObservableObject {
     func add(_ track: Track, toPlaylistWithID id: Int) throws {
         guard let playlist = playlist(id: id) else { throw MixedPlaylistError.missingPlaylist }
         try add(track, to: playlist)
+    }
+
+    /// Replaces (or creates) a playlist from a backup payload.
+    ///
+    /// Used by the WebDAV restore path. Entries arrive as decoded `Track`
+    /// values, so the NetEase/plugin split is already resolved by
+    /// `Track`'s own decoder. De-duplicates within the incoming list by the
+    /// cross-world identity key, so a corrupted backup with repeats still
+    /// yields a usable playlist.
+    ///
+    /// Returns how many tracks landed.
+    @discardableResult
+    func restorePlaylist(name: String, tracks incoming: [Track]) throws -> Int {
+        var seen = Set<String>()
+        let unique = incoming.filter { seen.insert(Self.identity(of: $0)).inserted }
+        guard !unique.isEmpty else { return 0 }
+
+        // Reuse the existing same-named playlist so a re-import refreshes it
+        // instead of piling up duplicates.
+        let target = playlists.first { $0.name == name } ?? createPlaylist(name: name)
+        try writeTracksOrThrow(unique, fileName: target.fileName)
+        guard let index = playlists.firstIndex(where: { $0.id == target.id }) else { return 0 }
+        playlists[index].itemCount = unique.count
+        persist()
+        return unique.count
     }
 
     func removeTrack(at index: Int, from playlist: MixedPlaylist) {

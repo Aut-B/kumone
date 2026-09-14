@@ -140,6 +140,35 @@ struct MixedPlaylistDetailView: View {
 
     @ObservedObject private var store = MixedPlaylistStore.shared
     @State private var tracks: [Track] = []
+    /// Presents the "copy into a plugin playlist" flow.
+    @State private var exportTarget: ExportTarget? = nil
+
+    /// What the export flow is doing: either it needs a destination, or the
+    /// copy already ran and the result is worth reporting.
+    private enum ExportTarget: Identifiable {
+        case pick(ImportableSnapshot)
+        case report(ImportableSnapshot, ImportedPlaylist, imported: Int, skipped: Int)
+
+        var id: String {
+            switch self {
+            case .pick(let snapshot): return "pick-\(snapshot.playlistID)"
+            case .report(let snapshot, _, _, _): return "report-\(snapshot.playlistID)"
+            }
+        }
+    }
+
+    /// Everything the copy needs, captured up front so the sheet does not have
+    /// to read the store while the playlist is being mutated. The id is
+    /// carried so the copy targets the exact playlist even if two share a name.
+    struct ImportableSnapshot: Identifiable {
+        let playlistID: Int
+        let playlistName: String
+        let items: [PluginMusicItem]
+        let total: Int
+
+        var id: Int { playlistID }
+        var skipped: Int { total - items.count }
+    }
 
     private var playlist: MixedPlaylist? { store.playlist(id: playlistID) }
 
@@ -207,6 +236,34 @@ struct MixedPlaylistDetailView: View {
                         EditButton()
                             .disabled(rows.isEmpty)
                     }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            beginExport()
+                        } label: {
+                            Image(systemName: "square.and.arrow.down.on.square")
+                        }
+                        .disabled(rows.isEmpty)
+                        .accessibilityLabel("导入到插件歌单")
+                    }
+                }
+                .sheet(item: $exportTarget) { target in
+                    switch target {
+                    case .pick(let snapshot):
+                        PluginPlaylistExportSheet(
+                            snapshot: snapshot,
+                            onFinish: { playlist, imported, skipped in
+                                exportTarget = .report(snapshot, playlist, imported: imported, skipped: skipped)
+                            },
+                            onCancel: { exportTarget = nil }
+                        )
+                    case .report(_, let playlist, let imported, let skipped):
+                        PluginPlaylistExportResultSheet(
+                            playlistName: playlist.name,
+                            imported: imported,
+                            skipped: skipped,
+                            onDone: { exportTarget = nil }
+                        )
+                    }
                 }
                 .onAppear { reload() }
             } else {
@@ -243,6 +300,26 @@ struct MixedPlaylistDetailView: View {
     private func sourceTag(for track: Track) -> String {
         guard let plugin = track.plugin else { return String(localized: "网易云") }
         return plugin.platform
+    }
+
+    /// Snapshots the playlist, then asks where the plugin items should go.
+    ///
+    /// Nothing is written until a destination is chosen — a NetEase-only list
+    /// has nothing to copy and is refused before the sheet even opens.
+    private func beginExport() {
+        guard let playlist else { return }
+        let items = store.pluginItems(of: playlist)
+        guard !items.isEmpty else {
+            ToastCenter.shared.show(String(localized: "这个歌单里没有插件音源的歌，无法导入插件歌单"))
+            return
+        }
+        let snapshot = ImportableSnapshot(
+            playlistID: playlist.id,
+            playlistName: playlist.name,
+            items: items,
+            total: store.tracks(of: playlist).count
+        )
+        exportTarget = .pick(snapshot)
     }
 }
 
@@ -334,5 +411,143 @@ struct MixedPlaylistPickerSheet: View {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         add(to: store.createPlaylist(name: name))
+    }
+}
+
+// MARK: - Copy a mixed playlist into a plugin playlist
+
+/// Picks the plugin playlist to receive a mixed playlist's plugin items.
+///
+/// Only plugin entries can cross over: a plugin playlist file has no way to
+/// describe a NetEase song, so those are listed as "will be skipped" rather
+/// than silently dropped.
+private struct PluginPlaylistExportSheet: View {
+    let snapshot: MixedPlaylistDetailView.ImportableSnapshot
+    let onFinish: (ImportedPlaylist, Int, Int) -> Void
+    let onCancel: () -> Void
+
+    @ObservedObject private var store = ImportedPlaylistStore.shared
+    @State private var newName = ""
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if store.playlists.isEmpty {
+                        Text("还没有插件歌单，先在下面新建一个")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(store.playlists) { playlist in
+                            Button {
+                                run(exportingTo: playlist)
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "music.note.list")
+                                        .foregroundStyle(Theme.accent)
+                                        .frame(width: 26)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(playlist.name)
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text("\(playlist.itemCount) 首 · \(playlist.source)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("选择插件歌单")
+                } footer: {
+                    if let errorMessage {
+                        Text(errorMessage).foregroundStyle(.red)
+                    } else {
+                        Text(summaryFooter)
+                    }
+                }
+
+                Section {
+                    TextField("歌单名称", text: $newName)
+                    Button("新建并导入") { createAndRun() }
+                        .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                } header: {
+                    Text("新建插件歌单")
+                }
+            }
+            .navigationTitle("导入到插件歌单")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消") { onCancel() }
+                }
+            }
+        }
+    }
+
+    private var summaryFooter: String {
+        let base = String(localized: "将导入「\(snapshot.playlistName)」中的 \(snapshot.items.count) 首插件音源歌曲。")
+        guard snapshot.skipped > 0 else { return base }
+        return base + String(localized: "另有 \(snapshot.skipped) 首网易云的歌无法放进插件歌单，会被跳过。")
+    }
+
+    private func run(exportingTo playlist: ImportedPlaylist) {
+        guard let source = MixedPlaylistStore.shared.playlist(id: snapshot.playlistID) else {
+            errorMessage = String(localized: "歌单不存在")
+            return
+        }
+        do {
+            let result = try MixedPlaylistStore.shared.exportPluginItems(from: source, to: playlist)
+            onFinish(playlist, result.imported, result.skipped)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func createAndRun() {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            let playlist = try store.createPlaylist(name: name)
+            run(exportingTo: playlist)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+/// Reports what the copy actually did.
+private struct PluginPlaylistExportResultSheet: View {
+    let playlistName: String
+    let imported: Int
+    let skipped: Int
+    let onDone: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    LabeledContent("已导入", value: "\(imported) 首")
+                    if skipped > 0 {
+                        LabeledContent("已跳过", value: "\(skipped) 首")
+                    }
+                } footer: {
+                    if skipped > 0 {
+                        Text("跳过的 \(skipped) 首是网易云歌曲，插件歌单存不下它们——它们仍完整保留在混装歌单里。")
+                    } else {
+                        Text("这个歌单会随插件歌单的 WebDAV 备份一起同步。")
+                    }
+                }
+            }
+            .navigationTitle("导入完成")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { onDone() }
+                }
+            }
+        }
     }
 }
