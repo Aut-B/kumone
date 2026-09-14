@@ -8,10 +8,21 @@ import os.log
 ///
 /// Provider order mirrors UnblockNeteaseMusic/server:
 /// 1. pyncmd — GD Studio API, resolves by the ORIGINAL NetEase id (best fidelity)
-/// 2. kuwo   — fuzzy search + duration match (±5 s), then convert_url
-/// 3. kugou  — fuzzy search + duration match, tracker URL
+/// 2. kugou  — fuzzy search + duration match (±5 s), tracker URL     [opt-in]
+/// 3. kuwo   — fuzzy search + duration match, then convert_url       [opt-in]
+///
+/// Only pyncmd is used by default. It resolves by the *original* NetEase id, so
+/// it always hands back the exact same recording. kugou / kuwo match on song name
+/// plus a ±5 s duration window, which means they can silently return a cover, a
+/// live take or a "请在酷我音乐APP播放" promo clip instead of the real audio —
+/// so they are gated behind the user-facing fallback switch (default off).
 enum UnblockService {
     private static let log = Logger(subsystem: "im.missuo.kumone", category: "unblock")
+
+    /// Must stay identical to `SettingsManager.Keys.unblockFallback`.
+    /// Read straight from UserDefaults because `SettingsManager` is @MainActor
+    /// while this helper is not.
+    static let fallbackDefaultsKey = "settings.enableUnblockFallback"
 
     struct Resolved {
         let url: URL
@@ -22,6 +33,8 @@ enum UnblockService {
         if let url = await pyncmd(track) {
             return Resolved(url: url, source: "pyncmd")
         }
+        // Exact match failed — only continue if the user opted into fuzzy sources.
+        guard UserDefaults.standard.bool(forKey: fallbackDefaultsKey) else { return nil }
         // kugou before kuwo: kuwo's convert_url increasingly serves a
         // "请在酷我音乐APP播放" promo clip instead of the real audio, so keep it
         // as the last resort rather than the first fallback (#44).
@@ -64,14 +77,21 @@ enum UnblockService {
     // MARK: - pyncmd
 
     private static func pyncmd(_ track: Track) async -> URL? {
-        let urlString = "https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id=\(track.id)&br=320"
-        guard let data = await get(urlString),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let br = obj["br"] as? Int, br > 0,
-              let urlValue = obj["url"] as? String,
-              let url = URL(string: urlValue.replacingOccurrences(of: "http://", with: "https://"))
-        else { return nil }
-        return url
+        // Ask for the best tier first, then a lower one: GD Studio answers
+        // `{"url":"","br":0}` (or 503 when throttled) for a tier it can't serve,
+        // and stepping down recovers tracks that only exist below 320 kbps.
+        for bitrate in [320, 192] {
+            let urlString = "https://music-api.gdstudio.xyz/api.php"
+                + "?types=url&source=netease&id=\(track.id)&br=\(bitrate)"
+            guard let data = await get(urlString),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let br = obj["br"] as? Int, br > 0,
+                  let urlValue = obj["url"] as? String, !urlValue.isEmpty,
+                  let url = URL(string: urlValue.replacingOccurrences(of: "http://", with: "https://"))
+            else { continue }
+            return url
+        }
+        return nil
     }
 
     // MARK: - kuwo

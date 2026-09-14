@@ -17,7 +17,12 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("灰色歌曲解锁", isOn: $settings.enableUnblock)
-                Text("无版权 / 下架歌曲自动从第三方音源（酷我、酷狗等）匹配播放")
+                Text("无版权 / 下架歌曲按网易云原始 ID 从 pyncmd 精确匹配播放")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("允许酷狗 / 酷我兜底", isOn: $settings.enableUnblockFallback)
+                    .disabled(!settings.enableUnblock)
+                Text("默认关闭。开启后仅当 pyncmd 查无此曲时才回退到酷狗 / 酷我——它们按歌名和时长模糊匹配，可能匹配成翻唱或别的歌")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 NavigationLink("播放器设置") {

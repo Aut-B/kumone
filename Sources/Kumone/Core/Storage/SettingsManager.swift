@@ -102,6 +102,8 @@ final class SettingsManager: ObservableObject {
         static let volume = "settings.volume"
         static let fmMode = "settings.fmMode"
         static let unblock = "settings.enableUnblock"
+        /// Keep in sync with `UnblockService.fallbackDefaultsKey`.
+        static let unblockFallback = "settings.enableUnblockFallback"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
         static let desktopLyricsCentered = "settings.desktopLyricsCentered"
@@ -235,6 +237,13 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(enableUnblock, forKey: Keys.unblock) }
     }
 
+    /// Allow the fuzzy 酷狗 / 酷我 fallback when pyncmd has no copy of a track.
+    /// Off by default: pyncmd resolves by the original NetEase id, while those two
+    /// match on name + duration and can return the wrong recording.
+    @Published var enableUnblockFallback: Bool {
+        didSet { UserDefaults.standard.set(enableUnblockFallback, forKey: Keys.unblockFallback) }
+    }
+
     /// Floating desktop lyrics window (LyricsX-style).
     @Published var showDesktopLyrics: Bool {
         didSet { UserDefaults.standard.set(showDesktopLyrics, forKey: Keys.desktopLyrics) }
@@ -281,6 +290,7 @@ final class SettingsManager: ObservableObject {
             ?? (defaults.bool(forKey: Keys.showRomaji) ? .romaji : .off)
         verbatimLyrics = defaults.object(forKey: Keys.verbatimLyrics) as? Bool ?? true
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
+        enableUnblockFallback = defaults.object(forKey: Keys.unblockFallback) as? Bool ?? false
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
         desktopLyricsCentered = defaults.object(forKey: Keys.desktopLyricsCentered) as? Bool ?? false
