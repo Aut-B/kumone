@@ -60,11 +60,15 @@ jobs:
           done
           echo "deployment target: iOS $MIN"
 
+          # Build 3 is Objective-C against the real UIKit/Foundation, hence the
+          # -framework flags; the previous pure-C build only needed libSystem.
           clang -target "arm64-apple-ios$MIN" \
                 -isysroot "$SDK" \
-                -dynamiclib -O2 -fno-common \
+                -dynamiclib -O2 -fno-common -fobjc-exceptions \
+                -framework Foundation -framework UIKit \
+                -Wno-deprecated-declarations \
                 -install_name @rpath/VVeboMultiFix.dylib \
-                -o VVeboMultiFix.dylib VVeboMultiFix.c
+                -o VVeboMultiFix.dylib VVeboMultiFix.m
 
           echo "--- ld's own (linker) signature ---"
           codesign --display --verbose=4 VVeboMultiFix.dylib 2>&1 | head -20 || true
