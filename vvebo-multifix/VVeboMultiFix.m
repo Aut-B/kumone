@@ -62,11 +62,15 @@
  *                                                   launch watchdog, sandbox)
  *        - reaches "launch sequence complete"    -> it actually worked
  *
- * The log lands next to LiveContainer's own Documents directory, which
- * LiveContainer publishes to the Files app (UIFileSharingEnabled +
- * LSSupportsOpeningDocumentsInPlace in LiveContainer/Info.plist):
+ * The log is written to EVERY candidate directory at once, and the log itself
+ * names the copies it managed to create plus the errno of every candidate that
+ * refused.  Where those directories are, and which of them the user can open,
+ * is a long story -- see VVOpenLogs().  The short version: whether a file is
+ * visible depends on LiveContainer settings, so the recorder does not rely on
+ * it alone.  VVHarvestPreviousLog() also copies the tail of the previous run to
+ * the system pasteboard, which no app sandbox can hide:
  *
- *      Files app -> On My iPhone -> LiveContainer -> VVeboMultiFix.log
+ *      after the failure, open Notes (or any text field) and paste.
  *
  * Nothing here changes behaviour on a normal (in-process) launch: every guard
  * checks VVIsLiveProcess() first and falls straight through to the original
@@ -89,6 +93,7 @@
 #import <pthread.h>
 #import <sys/time.h>
 #import <sys/types.h>
+#import <sys/stat.h>
 #import <mach/mach.h>
 #import <mach/task_info.h>
 
@@ -118,6 +123,18 @@ static int   gNFD = 0;
 static char  gLogPath[VV_MAXLOG][PATH_MAX];
 static struct timeval gT0;
 static pthread_mutex_t gLogLock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Candidates we could NOT open, with the errno, so the copies that did come up
+   can report where the others would have been. */
+#define VV_MAXMISS 20
+static char  gMissPath[VV_MAXMISS][PATH_MAX];
+static int   gMissErr[VV_MAXMISS];
+static int   gNMiss = 0;
+
+/* Tail of the previous run, captured before this run truncates those files. */
+static char  gPrevTail[4096];
+static int   gPrevTailLen = 0;
+static char  gPrevSource[PATH_MAX];
 
 static void vvWriteAll(const char *buf, size_t len) {
     for (int i = 0; i < gNFD; i++) {
@@ -181,52 +198,147 @@ static const char *vvDesc(id obj) {
 
 /* ==================================================== log file + std streams */
 
-static void vvOpenAt(const char *pattern, const char *home) {
-    char path[PATH_MAX];
-    int fd;
+/* Where a log is worth writing is not obvious, so we do not choose: every
+   candidate directory is opened and every line goes to all of them.
 
-    if (!home || !*home) return;
-    snprintf(path, sizeof(path), pattern, home);
+   The candidates, and who can actually see them:
+
+     $HOME/Documents
+         the guest's own container.  Reachable through the Files app
+         ("On My iPhone -> LiveContainer") only while the app is *private*:
+         LCBootstrap.m:427 puts a private app under
+         LiveContainer/Documents/Data/Application/<uuid>, but LCBootstrap.m:419
+         puts a *shared* app under
+         <app group>/LiveContainer/Data/Application/<uuid> -- and app group
+         containers are invisible to the Files app.  VVebo is a shared app,
+         which is why build 3 (wrote into the appex sandbox) and build 4 (wrote
+         here) both produced a log nobody could open.
+
+     $LC_HOME_PATH/Documents
+         LiveContainer's own container, and visible, because LiveContainer
+         declares UIFileSharingEnabled and LSSupportsOpeningDocumentsInPlace.
+         The child may only write it when LiveContainer hands it a
+         security-scoped bookmark -- i.e. when the developer-mode setting
+         "Allow Private Data access from LiveProcess" is on
+         (AppSceneViewController.m:71).
+
+     $LP_HOME_PATH/Documents, $TMPDIR
+         always writable, never visible.  Last resorts.
+
+   "Always writable" and "visible to the user" are mutually exclusive here, so
+   the log cannot be the only way out: VVHarvestPreviousLog() also copies the
+   tail of the previous run onto the system pasteboard, which no app sandbox
+   can hide. */
+
+static void vvOpenAt(const char *pattern, const char *root) {
+    char path[PATH_MAX];
+    int fd, err;
+
+    if (!root || !*root) return;
+    snprintf(path, sizeof(path), pattern, root);
     fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd >= 0 && gNFD < VV_MAXLOG) {
-        gFD[gNFD] = fd;
-        snprintf(gLogPath[gNFD], PATH_MAX, "%s", path);
-        gNFD++;
+    if (fd >= 0) {
+        if (gNFD < VV_MAXLOG) {
+            gFD[gNFD] = fd;
+            snprintf(gLogPath[gNFD], PATH_MAX, "%s", path);
+            gNFD++;
+        } else {
+            close(fd);
+        }
+        return;
+    }
+    err = errno;
+    if (gNMiss < VV_MAXMISS) {
+        snprintf(gMissPath[gNMiss], PATH_MAX, "%s", path);
+        gMissErr[gNMiss] = err;
+        gNMiss++;
     }
 }
 
+/* Read back the tail of the previous run -- and do it before VVOpenLogs(),
+   which opens every one of those files with O_TRUNC.  This is the part that
+   makes the recorder usable from inside LiveContainer's multitask child at all:
+   the clipboard belongs to the system, not to this sandbox, so it survives a
+   child that dies with no user-visible container whatsoever. */
+static void vvHarvestAt(const char *pattern, const char *root, time_t *bestTime, long *bestSize) {
+    char path[PATH_MAX];
+    char buf[4096];
+    struct stat st;
+    long want, got, skip;
+    int fd;
+
+    if (!root || !*root) return;
+    snprintf(path, sizeof(path), pattern, root);
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 16) return;
+    if (st.st_mtime < *bestTime) return;
+    if (st.st_mtime == *bestTime && (long)st.st_size <= *bestSize) return;
+
+    want = (long)st.st_size;
+    if (want > (long)sizeof(buf)) want = (long)sizeof(buf);
+
+    fd = open(path, O_RDONLY);
+    if (fd < 0) return;
+    got = pread(fd, buf, (size_t)want, (off_t)(st.st_size - want));
+    close(fd);
+    if (got <= 0) return;
+
+    /* Drop the leading partial line, but only if we actually cut the file. */
+    skip = 0;
+    if (want < (long)st.st_size) {
+        for (long i = 0; i < got; i++) {
+            if (buf[i] == '\n') { skip = i + 1; break; }
+        }
+    }
+
+    memcpy(gPrevTail, buf + skip, (size_t)(got - skip));
+    gPrevTailLen = (int)(got - skip);
+    gPrevTail[gPrevTailLen] = '\0';
+    snprintf(gPrevSource, PATH_MAX, "%s", path);
+    *bestTime = st.st_mtime;
+    *bestSize = (long)st.st_size;
+}
+
+static void VVHarvestPreviousLog(void) {
+    const char *roots[5];
+    time_t bestTime = 0;
+    long bestSize = 0;
+    int i;
+
+    roots[0] = getenv("LC_HOME_PATH");
+    roots[1] = getenv("HOME");
+    roots[2] = getenv("LP_HOME_PATH");
+    roots[3] = NSTemporaryDirectory().UTF8String;
+    roots[4] = NULL;
+
+    for (i = 0; roots[i]; i++) {
+        vvHarvestAt("%s/Documents/VVeboMultiFix.log", roots[i], &bestTime, &bestSize);
+        vvHarvestAt("%s/VVeboMultiFix.log", roots[i], &bestTime, &bestSize);
+    }
+    vvHarvestAt("%s/../../../Documents/VVeboMultiFix.log", getenv("HOME"),
+                &bestTime, &bestSize);
+}
+
 static void VVOpenLogs(void) {
-    const char *homes[3];
+    const char *roots[5];
     int i;
 
     gettimeofday(&gT0, NULL);
 
-    /* Order matters, and the order is not the obvious one.
+    roots[0] = getenv("LC_HOME_PATH");
+    roots[1] = getenv("HOME");
+    roots[2] = getenv("LP_HOME_PATH");
+    roots[3] = NSTemporaryDirectory().UTF8String;
+    roots[4] = NULL;
 
-       HOME is rewritten by LCBootstrap.m:476 (setenv("HOME", newHomePath)) to the
-       *guest* container, and that happens BEFORE the guest bundle is dlopen()ed,
-       i.e. before this constructor ever runs.  For a private app newHomePath is
-       LiveContainer/Documents/Data/Application/<uuid> -- a directory the Files app
-       can actually open.  That is where a log is worth anything, so HOME goes
-       first.
-
-       LP_HOME_PATH (LiveProcess/main.m:59) is the LiveProcess extension's OWN
-       sandbox.  It is just as writable, which is exactly the trap build 3 fell
-       into: every copy landed there and the user had no way to reach a single
-       one.  It stays as the last resort, together with LC_HOME_PATH, which is
-       LiveContainer's own container and only writable when the guest holds a
-       security-scoped bookmark for it. */
-    homes[0] = getenv("HOME");
-    homes[1] = getenv("LC_HOME_PATH");
-    homes[2] = getenv("LP_HOME_PATH");
-
-    for (i = 0; i < 3; i++) {
-        /* both spellings: LC's published Documents, and the container root in
-           case the directory layout differs on this LiveContainer build */
-        vvOpenAt("%s/Documents/VVeboMultiFix.log", homes[i]);
-        vvOpenAt("%s/VVeboMultiFix.log", homes[i]);
+    for (i = 0; roots[i]; i++) {
+        /* both spellings: the published Documents directory, and the container
+           root in case the layout differs on this LiveContainer build */
+        vvOpenAt("%s/Documents/VVeboMultiFix.log", roots[i]);
+        vvOpenAt("%s/VVeboMultiFix.log", roots[i]);
     }
-    vvOpenAt("%s/VVeboMultiFix.log", NSTemporaryDirectory().UTF8String);
+    /* Shared apps only: <app group>/LiveContainer/Documents, three levels up
+       from the guest HOME.  Invisible to the Files app, kept for completeness. */
+    vvOpenAt("%s/../../../Documents/VVeboMultiFix.log", getenv("HOME"));
 
     if (gNFD == 0) return;
 
@@ -239,9 +351,35 @@ static void VVOpenLogs(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    VVLog("=========== VVeboMultiFix build 4 (log lands in the guest container) ===========");
+    VVLog("=========== VVeboMultiFix build 5 ===========");
     for (i = 0; i < gNFD; i++) {
-        VVLog("log copy #%d -> %s", i, gLogPath[i]);
+        VVLog("  copy    #%d -> %s", i, gLogPath[i]);
+    }
+    for (i = 0; i < gNMiss; i++) {
+        VVLog("  refused #%d -> %s (errno=%d %s)", i, gMissPath[i],
+              gMissErr[i], strerror(gMissErr[i]));
+    }
+    if (gPrevTailLen > 0) {
+        VVLog("previous run left %d bytes at %s", gPrevTailLen, gPrevSource);
+    } else {
+        VVLog("previous run left nothing readable behind");
+    }
+}
+
+/* The one channel LiveContainer cannot hide from the user. */
+static void VVPublishPrevToPasteboard(void) {
+    if (gPrevTailLen <= 0) return;
+
+    @try {
+        [UIPasteboard generalPasteboard].string =
+            [NSString stringWithFormat:
+                @"=== VVeboMultiFix build 5: tail of the PREVIOUS run ===\n"
+                @"source: %s\n"
+                @"===========8<===========\n%s",
+                gPrevSource, gPrevTail];
+        VVLog("previous-run tail (%d B) put on the pasteboard", gPrevTailLen);
+    } @catch (NSException *e) {
+        VVLog("!! pasteboard publish threw: %s", e.name.UTF8String ?: "?");
     }
 }
 
@@ -795,11 +933,19 @@ static void VVInstallGuards(void) {
 __attribute__((constructor))
 static void VVeboMultiFixInit(void) {
     @autoreleasepool {
+        /* Read the previous run's tail FIRST: VVOpenLogs() truncates every one
+           of those files. */
+        VVHarvestPreviousLog();
+
         /* From here on VVLog() is a no-op if we found nowhere to write, but the
            guards still get installed: they may be all this app needs. */
         VVOpenLogs();
 
         VVLog("constructor fired; liveProcess=%d", VVIsLiveProcess());
+
+        /* Before anything that could go down: hand the user the previous run's
+           tail through the clipboard. */
+        VVPublishPrevToPasteboard();
 
         VVInstallSignalHandlers();
         VVLog("signal handlers installed (ABRT/SEGV/BUS/ILL/TRAP/FPE/SYS)");
