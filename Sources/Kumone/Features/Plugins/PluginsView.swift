@@ -82,6 +82,8 @@ struct PluginsRootView: View {
     @State private var showWebDAV = false
     @State private var section: Section = .search
     @State private var selectedPlaylist: ImportedPlaylist?
+    /// Plugin item picked for "添加到混装歌单" from a search result.
+    @State private var mixedTarget: PluginMusicItem? = nil
 
     var body: some View {
         content
@@ -119,6 +121,9 @@ struct PluginsRootView: View {
             }
             .sheet(item: $selectedPlaylist) { playlist in
                 ImportedPlaylistDetailView(playlist: playlist)
+            }
+            .sheet(item: $mixedTarget) { item in
+                MixedPlaylistPickerSheet(track: Track(pluginItem: item))
             }
             .onAppear {
                 model.selectFirst()
@@ -206,9 +211,11 @@ struct PluginsRootView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                        PluginTrackRow(item: item) {
-                            model.play(at: index)
-                        }
+                        PluginTrackRow(
+                            item: item,
+                            onTap: { model.play(at: index) },
+                            onAddToMixed: { mixedTarget = item }
+                        )
                     }
                     if model.hasMore {
                         ProgressView()
@@ -275,6 +282,8 @@ struct ImportedPlaylistDetailView: View {
     @EnvironmentObject private var player: PlayerService
     let playlist: ImportedPlaylist
     @State private var items: [PluginMusicItem] = []
+    /// Plugin item picked for "添加到混装歌单" from this list.
+    @State private var mixedTarget: PluginMusicItem? = nil
 
     var body: some View {
         NavigationStack {
@@ -307,7 +316,14 @@ struct ImportedPlaylistDetailView: View {
                             }
                         }
                     }
+                    .contextMenu {
+                        Button("播放") { play(from: index) }
+                        Button("添加到混装歌单…") { mixedTarget = item }
+                    }
                 }
+            }
+            .sheet(item: $mixedTarget) { item in
+                MixedPlaylistPickerSheet(track: Track(pluginItem: item))
             }
             .navigationTitle(playlist.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -381,6 +397,7 @@ struct ImportedPlaylistDetailView: View {
 private struct PluginTrackRow: View {
     let item: PluginMusicItem
     let onTap: () -> Void
+    let onAddToMixed: () -> Void
 
     var body: some View {
         Button(action: onTap) {
@@ -412,6 +429,10 @@ private struct PluginTrackRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("播放") { onTap() }
+            Button("添加到混装歌单…") { onAddToMixed() }
+        }
     }
 }
 

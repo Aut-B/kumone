@@ -668,6 +668,18 @@ struct IOSLibraryView: View {
                 }
             }
 
+            // Deliberately outside the login gate: a mixed playlist is local and
+            // holds plugin tracks too, so it is useful without an account.
+            Section {
+                NavigationLink(value: Destination.mixedPlaylists) {
+                    Label("混装歌单", systemImage: "square.stack.3d.up.fill")
+                }
+            } header: {
+                Text("本地")
+            } footer: {
+                Text("把网易云的歌和插件音源的歌放进同一个歌单里连着听。")
+            }
+
             Section {
                 PlayerClearanceSpacer()
                     .listRowBackground(Color.clear)

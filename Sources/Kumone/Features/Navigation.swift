@@ -70,6 +70,10 @@ enum Destination: Hashable {
     case collections
     case cloud
     case search(String)
+    /// The list of locally built mixed playlists.
+    case mixedPlaylists
+    /// One locally built mixed playlist, by its `MixedPlaylistStore` id.
+    case mixedPlaylist(Int)
 }
 
 /// Registers all shared navigation destinations on a stack.
@@ -96,6 +100,10 @@ struct DestinationsModifier: ViewModifier {
                     CollectionsView()
                 case .cloud:
                     CloudView()
+                case .mixedPlaylists:
+                    MixedPlaylistsView()
+                case .mixedPlaylist(let id):
+                    MixedPlaylistDetailView(playlistID: id)
                 case .search(let query):
                     SearchView(query: query)
                 }

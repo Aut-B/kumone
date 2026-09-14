@@ -66,11 +66,12 @@ struct RecentsView: View {
                     track: record.song,
                     index: index + 1,
                     style: .compact,
-                    trailingText: String(localized: "\(record.playCount) 次")
-                ) {
-                    player.play(tracks: records.map(\.song), source: .none, startAt: record.song,
-                                   context: .recents)
-                }
+                    trailingText: String(localized: "\(record.playCount) 次"),
+                    onPlay: {
+                        player.play(tracks: records.map(\.song), source: .none, startAt: record.song,
+                                    context: .recents)
+                    }
+                )
             }
         }
     }

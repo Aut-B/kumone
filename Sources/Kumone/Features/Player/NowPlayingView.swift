@@ -1222,7 +1222,17 @@ private struct ImmersiveArtworkFramePreferenceKey: PreferenceKey {
 private struct CompactTrackHeader: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
-    @State private var showAddToPlaylist = false
+
+    /// One enum-driven sheet, so the mixed-playlist picker and the NetEase
+    /// playlist picker don't compete for the same presentation slot.
+    private enum HeaderSheet: Identifiable {
+        case neteasePlaylist
+        case mixedPlaylist
+
+        var id: Int { hashValue }
+    }
+
+    @State private var activeSheet: HeaderSheet? = nil
 
     let showsExpandedArtwork: Bool
     /// Tap handler for the compact cover (used to collapse lyrics back to
@@ -1271,17 +1281,21 @@ private struct CompactTrackHeader: View {
             if let track = player.currentTrack {
                 let liked = account.isLiked(track.id)
                 HStack(spacing: 0) {
-                    Button {
-                        Task { await account.toggleLike(trackID: track.id) }
-                    } label: {
-                        Image(systemName: liked ? "heart.fill" : "heart")
-                            .font(.system(size: 21, weight: .medium))
-                            .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
-                            .frame(width: 44, height: 44)
+                    // Plugin items have no NetEase id; the heart would post a
+                    // hashed id to the NetEase API.
+                    if track.plugin == nil {
+                        Button {
+                            Task { await account.toggleLike(trackID: track.id) }
+                        } label: {
+                            Image(systemName: liked ? "heart.fill" : "heart")
+                                .font(.system(size: 21, weight: .medium))
+                                .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.pressable)
+                        .accessibilityLabel(liked ? "取消收藏" : "收藏")
+                        .accessibilityIdentifier("immersiveFavoriteButton")
                     }
-                    .buttonStyle(.pressable)
-                    .accessibilityLabel(liked ? "取消收藏" : "收藏")
-                    .accessibilityIdentifier("immersiveFavoriteButton")
 
                     Menu {
                         Button {
@@ -1290,21 +1304,31 @@ private struct CompactTrackHeader: View {
                             Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
                         }
 
-                        Button {
-                            showAddToPlaylist = true
-                        } label: {
-                            Label("加入歌单…", systemImage: "music.note.list")
+                        if track.plugin == nil {
+                            Button {
+                                activeSheet = .neteasePlaylist
+                            } label: {
+                                Label("加入网易云歌单…", systemImage: "music.note.list")
+                            }
                         }
 
-                        Divider()
-
                         Button {
-                            Platform.copyToPasteboard(
-                                string: "https://music.163.com/#/song?id=\(track.id)"
-                            )
-                            ToastCenter.shared.show(String(localized: "链接已复制"))
+                            activeSheet = .mixedPlaylist
                         } label: {
-                            Label("复制链接", systemImage: "link")
+                            Label("添加到混装歌单…", systemImage: "square.stack.3d.up")
+                        }
+
+                        if track.plugin == nil {
+                            Divider()
+
+                            Button {
+                                Platform.copyToPasteboard(
+                                    string: "https://music.163.com/#/song?id=\(track.id)"
+                                )
+                                ToastCenter.shared.show(String(localized: "链接已复制"))
+                            } label: {
+                                Label("复制链接", systemImage: "link")
+                            }
                         }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -1320,9 +1344,14 @@ private struct CompactTrackHeader: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .sheet(isPresented: $showAddToPlaylist) {
+        .sheet(item: $activeSheet) { sheet in
             if let track = player.currentTrack {
-                AddToPlaylistSheet(track: track)
+                switch sheet {
+                case .neteasePlaylist:
+                    AddToPlaylistSheet(track: track)
+                case .mixedPlaylist:
+                    MixedPlaylistPickerSheet(track: track)
+                }
             }
         }
     }
@@ -1948,11 +1977,23 @@ private struct MinimalLyricCentersKey: PreferenceKey {
 private struct MinimalTrackInfoRow: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
-    @State private var showAddToPlaylist = false
+    /// One enum-driven sheet for every "more" action.
+    ///
+    /// These used to be three separate `.sheet(isPresented:)` modifiers on the
+    /// same view; folding them into one stops the new mixed-playlist picker from
+    /// competing with them for the same presentation slot.
+    private enum MoreSheet: Identifiable {
+        case neteasePlaylist
+        case pluginPlaylist
+        case mixedPlaylist
+        case share
+
+        var id: Int { hashValue }
+    }
+
     @State private var airPlayRequest = 0
     @State private var showSleepTimer = false
-    @State private var showLocalPlaylist = false
-    @State private var showShare = false
+    @State private var moreSheet: MoreSheet? = nil
     var metadataOnly = false
     var actionsOnly = false
 
@@ -1981,9 +2022,18 @@ private struct MinimalTrackInfoRow: View {
                 }
             }
         }
-        .sheet(isPresented: $showAddToPlaylist) {
+        .sheet(item: $moreSheet) { sheet in
             if let track = player.currentTrack {
-                AddToPlaylistSheet(track: track)
+                switch sheet {
+                case .neteasePlaylist:
+                    AddToPlaylistSheet(track: track)
+                case .pluginPlaylist:
+                    LocalPlaylistPickerSheet(track: track)
+                case .mixedPlaylist:
+                    MixedPlaylistPickerSheet(track: track)
+                case .share:
+                    ShareSheet(items: Self.shareItems(for: track))
+                }
             }
         }
     }
@@ -2012,19 +2062,24 @@ private struct MinimalTrackInfoRow: View {
         .accessibilityIdentifier("immersiveTrackMetadata")
     }
 
+    @ViewBuilder
     private func favoriteButton(for track: Track) -> some View {
-        let liked = account.isLiked(track.id)
-        return Button {
-            Task { await account.toggleLike(trackID: track.id) }
-        } label: {
-            Image(systemName: liked ? "heart.fill" : "heart")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
-                .frame(width: 44, height: 44)
+        // Plugin items have no NetEase id — favouriting one would post a hashed
+        // id to the NetEase API, so the heart is hidden for them.
+        if track.plugin == nil {
+            let liked = account.isLiked(track.id)
+            Button {
+                Task { await account.toggleLike(trackID: track.id) }
+            } label: {
+                Image(systemName: liked ? "heart.fill" : "heart")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.pressable)
+            .accessibilityLabel(liked ? "取消收藏" : "收藏")
+            .accessibilityIdentifier("immersiveFavoriteButton")
         }
-        .buttonStyle(.pressable)
-        .accessibilityLabel(liked ? "取消收藏" : "收藏")
-        .accessibilityIdentifier("immersiveFavoriteButton")
     }
 
     private func moreMenu(for track: Track) -> some View {
@@ -2067,35 +2122,45 @@ private struct MinimalTrackInfoRow: View {
                 }
             }
 
-            Button {
-                showAddToPlaylist = true
-            } label: {
-                Label("加入歌单…", systemImage: "music.note.list")
-            }
-
-            if track.isPluginTrack {
+            if !track.isPluginTrack {
                 Button {
-                    showLocalPlaylist = true
+                    moreSheet = .neteasePlaylist
                 } label: {
-                    Label("添加到本地歌单…", systemImage: "internaldrive")
+                    Label("加入网易云歌单…", systemImage: "music.note.list")
                 }
             }
 
             Button {
-                showShare = true
+                moreSheet = .mixedPlaylist
+            } label: {
+                Label("添加到混装歌单…", systemImage: "square.stack.3d.up")
+            }
+
+            if track.isPluginTrack {
+                Button {
+                    moreSheet = .pluginPlaylist
+                } label: {
+                    Label("添加到插件歌单…", systemImage: "internaldrive")
+                }
+            }
+
+            Button {
+                moreSheet = .share
             } label: {
                 Label("分享歌曲", systemImage: "square.and.arrow.up")
             }
 
-            Divider()
+            if !track.isPluginTrack {
+                Divider()
 
-            Button {
-                Platform.copyToPasteboard(
-                    string: "https://music.163.com/#/song?id=\(track.id)"
-                )
-                ToastCenter.shared.show(String(localized: "链接已复制"))
-            } label: {
-                Label("复制链接", systemImage: "link")
+                Button {
+                    Platform.copyToPasteboard(
+                        string: "https://music.163.com/#/song?id=\(track.id)"
+                    )
+                    ToastCenter.shared.show(String(localized: "链接已复制"))
+                } label: {
+                    Label("复制链接", systemImage: "link")
+                }
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -2124,16 +2189,6 @@ private struct MinimalTrackInfoRow: View {
                 Button("关闭定时", role: .destructive) { player.stopSleepTimer() }
             }
             Button("取消", role: .cancel) {}
-        }
-        .sheet(isPresented: $showLocalPlaylist) {
-            if let track = player.currentTrack {
-                LocalPlaylistPickerSheet(track: track)
-            }
-        }
-        .sheet(isPresented: $showShare) {
-            if let track = player.currentTrack {
-                ShareSheet(items: Self.shareItems(for: track))
-            }
         }
     }
 
@@ -2729,7 +2784,9 @@ struct LocalPlaylistPickerSheet: View {
                         }
                     }
                 } header: {
-                    Text("选择本地歌单")
+                    Text("选择插件歌单")
+                } footer: {
+                    Text("插件歌单只放插件音源的歌。想把网易云的歌也放进来，请用「添加到混装歌单」。")
                 }
                 Section {
                     Button {
@@ -2739,7 +2796,7 @@ struct LocalPlaylistPickerSheet: View {
                     }
                 }
             }
-            .navigationTitle("添加到本地歌单")
+            .navigationTitle("添加到插件歌单")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

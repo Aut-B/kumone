@@ -27,6 +27,12 @@ struct TrackRow: View {
     var removableFromPlaylistID: Int?
     var onRemoved: (() -> Void)?
     var onRecommendationReduced: ((Track) -> Void)?
+    /// Small chip before the duration telling the two kinds apart inside a
+    /// mixed playlist ("网易云" / a plugin's platform name).
+    var sourceTag: String?
+    /// Set when the row lives inside a local mixed playlist — enables a local
+    /// delete (the NetEase-backed one needs a playlist id it doesn't have).
+    var onRemoveLocal: (() -> Void)?
     let onPlay: () -> Void
 
     @EnvironmentObject private var player: PlayerService
@@ -36,8 +42,25 @@ struct TrackRow: View {
     @ScaledMetric(relativeTo: .body) private var compactRowHeight: CGFloat = 64
     @ScaledMetric(relativeTo: .body) private var compactAlbumRowHeight: CGFloat = 50
     @State private var isHovering = false
-    @State private var showAddToPlaylist = false
+
+    /// Which picker sheet the row is presenting.
+    ///
+    /// One enum-driven sheet instead of two `.sheet(isPresented:)` modifiers:
+    /// a row can be shown many times over, and stacked sheet modifiers on the
+    /// same view are not reliable in SwiftUI.
+    private enum RowSheet: Identifiable {
+        case neteasePlaylist
+        case mixedPlaylist
+
+        var id: Int { hashValue }
+    }
+
+    @State private var activeSheet: RowSheet? = nil
     @State private var isReducingRecommendation = false
+
+    /// Plugin items have no NetEase id, so every NetEase-backed affordance
+    /// (like, album/artist links, the 163 link) is meaningless for them.
+    private var isPluginTrack: Bool { track.plugin != nil }
 
     private var isCurrent: Bool { player.currentTrack?.id == track.id }
     private var isPlayable: Bool { playability == .playable }
@@ -92,7 +115,7 @@ struct TrackRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if style == .full && !isCompact {
+            if style == .full && !isCompact && track.album.id > 0 {
                 NavigationLink(value: Destination.album(track.album.id)) {
                     Text(track.album.name)
                         .font(.system(size: 12))
@@ -101,6 +124,16 @@ struct TrackRow: View {
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: 220, alignment: .leading)
+            }
+
+            if let sourceTag {
+                Text(sourceTag)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 4))
             }
 
             if let reason = playability.reason {
@@ -144,8 +177,13 @@ struct TrackRow: View {
         }
         #endif
         .contextMenu { contextMenuItems }
-        .sheet(isPresented: $showAddToPlaylist) {
-            AddToPlaylistSheet(track: track)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .neteasePlaylist:
+                AddToPlaylistSheet(track: track)
+            case .mixedPlaylist:
+                MixedPlaylistPickerSheet(track: track)
+            }
         }
     }
 
@@ -204,16 +242,20 @@ struct TrackRow: View {
 
     private var likeAndDuration: some View {
         HStack(spacing: 8) {
-            let liked = account.isLiked(track.id)
-            Button {
-                Task { await account.toggleLike(trackID: track.id) }
-            } label: {
-                Image(systemName: liked ? "heart.fill" : "heart")
-                    .font(.system(size: 12))
-                    .foregroundStyle(liked ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.secondary))
+            // Plugin items carry no NetEase id — toggling "我喜欢" on one would
+            // post a hashed id to the NetEase API, so the heart is hidden.
+            if !isPluginTrack {
+                let liked = account.isLiked(track.id)
+                Button {
+                    Task { await account.toggleLike(trackID: track.id) }
+                } label: {
+                    Image(systemName: liked ? "heart.fill" : "heart")
+                        .font(.system(size: 12))
+                        .foregroundStyle(liked ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(.secondary))
+                }
+                .buttonStyle(.pressable)
+                .opacity(liked || isHovering ? 1 : 0)
             }
-            .buttonStyle(.pressable)
-            .opacity(liked || isHovering ? 1 : 0)
 
             Text(Formatters.duration(track.duration))
                 .font(.system(size: 11.5).monospacedDigit())
@@ -229,12 +271,17 @@ struct TrackRow: View {
             player.addToPlayNext(track)
         }
         Divider()
-        let liked = account.isLiked(track.id)
-        Button(liked ? String(localized: "从「我喜欢」中移除") : String(localized: "添加到「我喜欢」")) {
-            Task { await account.toggleLike(trackID: track.id) }
+        if !isPluginTrack {
+            let liked = account.isLiked(track.id)
+            Button(liked ? String(localized: "从「我喜欢」中移除") : String(localized: "添加到「我喜欢」")) {
+                Task { await account.toggleLike(trackID: track.id) }
+            }
+            Button("收藏到网易云歌单…") {
+                activeSheet = .neteasePlaylist
+            }
         }
-        Button("收藏到歌单…") {
-            showAddToPlaylist = true
+        Button("添加到混装歌单…") {
+            activeSheet = .mixedPlaylist
         }
         if let pid = removableFromPlaylistID {
             Button("从歌单中删除", role: .destructive) {
@@ -248,6 +295,9 @@ struct TrackRow: View {
                     }
                 }
             }
+        }
+        if let onRemoveLocal {
+            Button("从这个歌单中删除", role: .destructive) { onRemoveLocal() }
         }
         #if os(macOS)
         if !account.isLiked(track.id), let onRecommendationReduced {
@@ -274,15 +324,17 @@ struct TrackRow: View {
                 Text("查看专辑")
             }
         }
-        ForEach(track.artists.prefix(3)) { artist in
+        ForEach(track.artists.filter { $0.id > 0 }.prefix(3)) { artist in
             NavigationLink(value: Destination.artist(artist.id)) {
                 Text("查看歌手：\(artist.name)")
             }
         }
-        Divider()
-        Button("复制链接") {
-            Platform.copyToPasteboard(string: "https://music.163.com/#/song?id=\(track.id)")
-            ToastCenter.shared.show(String(localized: "链接已复制"))
+        if !isPluginTrack {
+            Divider()
+            Button("复制链接") {
+                Platform.copyToPasteboard(string: "https://music.163.com/#/song?id=\(track.id)")
+                ToastCenter.shared.show(String(localized: "链接已复制"))
+            }
         }
     }
 }
@@ -501,11 +553,15 @@ struct TrackListView: View {
                     onRemoved: { onRemoved?(track) },
                     onRecommendationReduced: recommendationContext == nil || recommendationHandler == nil
                         ? nil
-                        : { replacement in recommendationHandler?(track, replacement) }
-                ) {
-                    player.play(tracks: playableTracks, source: source, startAt: track,
-                                context: context)
-                }
+                        : { replacement in recommendationHandler?(track, replacement) },
+                    // Spelled out rather than passed as a trailing closure: the
+                    // row now carries `onRemoveLocal` just before `onPlay`, so an
+                    // unlabeled closure would be ambiguous to a reader.
+                    onPlay: {
+                        player.play(tracks: playableTracks, source: source, startAt: track,
+                                    context: context)
+                    }
+                )
             }
         }
     }
