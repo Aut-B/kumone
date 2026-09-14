@@ -1,0 +1,90 @@
+name: build VVeboMultiFix.dylib
+
+# Builds the LiveContainer-multitask patch for VVebo with the real Apple
+# toolchain (macOS runner + iPhoneOS SDK + codesign).  That is the one thing the
+# Windows box cannot do: no clang, no iOS SDK there, and a zig -target
+# aarch64-macos binary retargeted to iOS ends up with a *linker* signature
+# (flags 0x20002) which iOS refuses to load:
+#   "code signature invalid ... codeBlobOffset=0xC830"
+# while the codesign-shaped VVeboFix.dylib in the same Frameworks/ directory of
+# the very same app loads fine.
+#
+# Lives in Aut-B/kumone only because that is the one repo the available PAT can
+# write to; it is unrelated to Kumone and self-contained in vvebo-multifix/.
+# Everything here can be deleted without affecting the Kumone app.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vvebo-multifix/**'
+      - '.github/workflows/build-vvebo-multifix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dylib:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: vvebo-multifix
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          sw_vers
+          uname -m
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "iPhoneOS SDK: $SDK"
+          echo "SDK version : $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "clang       : $(clang --version | head -1)"
+
+      - name: Compile arm64 / iOS with the real SDK
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+
+          # Xcode bumps raise the minimum deployment target the SDK still
+          # accepts, so ask the compiler instead of guessing.
+          MIN=""
+          for t in 14.0 15.0 16.0 17.0 18.0; do
+            if clang -target "arm64-apple-ios$t" -isysroot "$SDK" -dynamiclib \
+                     -x c /dev/null -o /dev/null >/dev/null 2>&1; then
+              MIN="$t"; break
+            fi
+          done
+          echo "deployment target: iOS $MIN"
+
+          clang -target "arm64-apple-ios$MIN" \
+                -isysroot "$SDK" \
+                -dynamiclib -O2 -fno-common \
+                -install_name @rpath/VVeboMultiFix.dylib \
+                -o VVeboMultiFix.dylib VVeboMultiFix.c
+
+          echo "--- ld's own (linker) signature ---"
+          codesign --display --verbose=4 VVeboMultiFix.dylib 2>&1 | head -20 || true
+
+          # Replace it with a real ad-hoc signature, exactly the shape
+          # `codesign -s -` gives any hand-built dylib.
+          codesign --force --sign - VVeboMultiFix.dylib
+
+          echo "--- after codesign --force --sign - ---"
+          codesign --display --verbose=4 VVeboMultiFix.dylib
+          codesign --verify --verbose=2 VVeboMultiFix.dylib || true
+          ls -l VVeboMultiFix.dylib
+          shasum -a 256 VVeboMultiFix.dylib
+
+      - name: Gate - arm64/iOS, ad-hoc codesign signature, hashes self-consistent
+        run: python3 verify_shape.py VVeboMultiFix.dylib
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: VVeboMultiFix-dylib
+          path: vvebo-multifix/VVeboMultiFix.dylib
+          if-no-files-found: error
