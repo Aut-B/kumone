@@ -85,13 +85,20 @@
 #import <stdio.h>
 #import <stdarg.h>
 #import <errno.h>
-#import <execinfo.h>
 #import <limits.h>
 #import <pthread.h>
 #import <sys/time.h>
 #import <sys/types.h>
 #import <mach/mach.h>
 #import <mach/task_info.h>
+
+/* Declared by hand rather than through <execinfo.h> / <mach-o/dyld.h>: the
+   iPhoneOS SDK does not expose _dyld_image_count() through the public header
+   (build 3's first CI run failed on exactly that), and execinfo.h is not
+   guaranteed to exist in the SDK at all.  Neither is a link-time dependency. */
+extern int  backtrace(void **buffer, int size);
+extern void backtrace_symbols_fd(void *const *buffer, int size, int fd);
+extern uint32_t _dyld_image_count(void);
 
 #ifndef PATH_MAX
 #define PATH_MAX 1024
@@ -229,6 +236,21 @@ static void VVOpenLogs(void) {
 
 /* =========================================================== signal autopsy */
 
+/* strsignal() is not worth depending on either. */
+static const char *vvSignalName(int sig) {
+    switch (sig) {
+        case SIGABRT: return "SIGABRT";
+        case SIGSEGV: return "SIGSEGV";
+        case SIGBUS:  return "SIGBUS";
+        case SIGILL:  return "SIGILL";
+        case SIGTRAP: return "SIGTRAP";
+        case SIGFPE:  return "SIGFPE";
+        case SIGSYS:  return "SIGSYS";
+        case SIGKILL: return "SIGKILL";
+        default:      return "SIG?";
+    }
+}
+
 static void VVSignalHandler(int sig, siginfo_t *info, void *ucontext) {
     char head[320];
     void *bt[96];
@@ -236,7 +258,7 @@ static void VVSignalHandler(int sig, siginfo_t *info, void *ucontext) {
 
     n = snprintf(head, sizeof(head),
                  "\n!!!!! FATAL SIGNAL %d (%s) si_code=%d si_addr=%p ucontext=%p\n",
-                 sig, strsignal(sig), info ? info->si_code : 0,
+                 sig, vvSignalName(sig), info ? info->si_code : 0,
                  info ? info->si_addr : NULL, ucontext);
     if (n > 0) {
         for (i = 0; i < gNFD; i++) {
@@ -568,7 +590,7 @@ static void vvHook(Class cls, const char *selName, int isClass, int kind, const 
 - (void)getPendingTaskRequestsWithCompletionHandler:(id)handler {
     VVLog("[guard] fake scheduler: getPending -> []");
     if (handler) {
-        void (^done)(id) = handler;
+        void (^done)(id) = (void (^)(id))handler;
         done(@[]);
     }
 }
@@ -686,10 +708,13 @@ static void VVHookLifecycle(void) {
 
     /* UIApplication / notification / session entry points that are worth a
        breadcrumb even when we let them through: if the log stops right after one
-       of these lines, that call is the killer. */
+       of these lines, that call is the killer.
+
+       Deliberately NOT hooked: -beginBackgroundTaskWithExpirationHandler: and
+       -beginBackgroundTaskWithName:expirationHandler:.  They return an
+       NSUInteger identifier, so a void-shaped breadcrumb would hand the app
+       garbage, and LiveContainer's own Dead10ccFix.m already swizzles them. */
     vvHook(uiapp, "openURL:options:completionHandler:", 0, K_VOID3, "UIApplication openURL");
-    vvHook(uiapp, "beginBackgroundTaskWithExpirationHandler:", 0, K_VOID1, "UIApplication beginBGTask");
-    vvHook(uiapp, "beginBackgroundTaskWithName:expirationHandler:", 0, K_VOID2, "UIApplication beginBGTaskNamed");
 
     vvHook(NSClassFromString(@"UNUserNotificationCenter"), "currentNotificationCenter", 1, K_ID0,
            "UNUserNotificationCenter.current");
@@ -768,10 +793,28 @@ static void VVeboMultiFixInit(void) {
         VVInstallSignalHandlers();
         VVLog("signal handlers installed (ABRT/SEGV/BUS/ILL/TRAP/FPE/SYS)");
 
-        VVDumpEnvironment();
+        /* The constructor runs from inside dyld's dlopen() of the guest image, so
+           nothing here may be allowed to throw: an exception escaping a
+           constructor would fail the load and hand LiveContainer a bogus error.
+           Observation code is wrapped for that reason; the guards are plain
+           runtime calls. */
+        @try {
+            VVDumpEnvironment();
+        } @catch (NSException *e) {
+            VVLog("!! environment dump threw: %s", e.name.UTF8String ?: "?");
+        }
 
-        VVInstallGuards();
-        VVHookLifecycle();
+        @try {
+            VVInstallGuards();
+        } @catch (NSException *e) {
+            VVLog("!! installing guards threw: %s", e.name.UTF8String ?: "?");
+        }
+
+        @try {
+            VVHookLifecycle();
+        } @catch (NSException *e) {
+            VVLog("!! lifecycle hooks threw: %s", e.name.UTF8String ?: "?");
+        }
 
         if (gNFD > 0) {
             pthread_t th;
