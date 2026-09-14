@@ -201,13 +201,24 @@ static void VVOpenLogs(void) {
 
     gettimeofday(&gT0, NULL);
 
-    /* LP_HOME_PATH is set by LiveProcess/main.m:59 to the child's HOME before the
-       guest bundle is loaded, so it exists in exactly the multitask child.
-       LC_HOME_PATH is LiveContainer's own container (set in both modes). HOME
-       covers everything else. */
-    homes[0] = getenv("LP_HOME_PATH");
+    /* Order matters, and the order is not the obvious one.
+
+       HOME is rewritten by LCBootstrap.m:476 (setenv("HOME", newHomePath)) to the
+       *guest* container, and that happens BEFORE the guest bundle is dlopen()ed,
+       i.e. before this constructor ever runs.  For a private app newHomePath is
+       LiveContainer/Documents/Data/Application/<uuid> -- a directory the Files app
+       can actually open.  That is where a log is worth anything, so HOME goes
+       first.
+
+       LP_HOME_PATH (LiveProcess/main.m:59) is the LiveProcess extension's OWN
+       sandbox.  It is just as writable, which is exactly the trap build 3 fell
+       into: every copy landed there and the user had no way to reach a single
+       one.  It stays as the last resort, together with LC_HOME_PATH, which is
+       LiveContainer's own container and only writable when the guest holds a
+       security-scoped bookmark for it. */
+    homes[0] = getenv("HOME");
     homes[1] = getenv("LC_HOME_PATH");
-    homes[2] = getenv("HOME");
+    homes[2] = getenv("LP_HOME_PATH");
 
     for (i = 0; i < 3; i++) {
         /* both spellings: LC's published Documents, and the container root in
@@ -228,7 +239,7 @@ static void VVOpenLogs(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    VVLog("=========== VVeboMultiFix build 3 ===========");
+    VVLog("=========== VVeboMultiFix build 4 (log lands in the guest container) ===========");
     for (i = 0; i < gNFD; i++) {
         VVLog("log copy #%d -> %s", i, gLogPath[i]);
     }
