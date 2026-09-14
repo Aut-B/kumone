@@ -6,7 +6,52 @@
 section the English bullets come first, followed by their Simplified Chinese
 counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单行。
 
-## 0.3.15 - 2026-09-01
+## 0.3.18 - 2026-09-10
+
+### Added / 新增
+
+- **macOS**: an ambient background behind the main window derived from the current track's artwork — a soft color wash plus a subtle titlebar tint that follows the playing song. On by default; toggle it off or adjust the intensity in Settings. Thanks @yamakze (#86).
+- **macOS**：主窗口新增取自当前封面的氛围背景——柔和的色彩铺底 + 淡淡的标题栏染色，随播放歌曲变化。默认开启,可在设置里关闭或调节强度。感谢 @yamakze（#86）。
+
+### Fixed / 修复
+
+- **macOS**: the toolbar search field and the floating player bar now keep more clearance from the window's rounded corners, so their capsules no longer nearly touch the window edges and the inner/outer corner radii stop visually merging. (#88)
+- **macOS**：工具栏搜索框与悬浮播放条现在与窗口圆角保持更多间距,不再几乎贴住窗口边缘,内外圆角也不再互相干扰。（#88）
+
+## 0.3.17 - 2026-09-10
+
+### Added / 新增
+
+- **macOS**: a 「减少推荐」 (reduce recommendation) right-click action on un-liked songs in 每日推荐 and 私人雷达 lists — it asks NetEase to swap the song out and replaces it in place. Thanks @yamakze (#84, closes #74).
+- **macOS**：每日推荐 / 私人雷达 列表里,未收藏歌曲的右键菜单新增「减少推荐」——会请求网易云替换该歌曲并就地替换。感谢 @yamakze（#84，关闭 #74）。
+
+### Fixed / 修复
+
+- **iOS**: the lock screen and Dynamic Island Now Playing controls show previous/next track again instead of back-15s/forward-15s. Registering the ±15s skip commands (added for CarPlay in 0.3.15) made iOS pick the podcast-style skip layout system-wide and hid the track buttons; those commands are removed, so previous/next are the media buttons everywhere (CarPlay included). (#83, #87)
+- **iOS**：锁屏与灵动岛的「正在播放」控制重新显示上一首 / 下一首，而不是后退 15 秒 / 前进 15 秒。此前为 CarPlay 注册的 ±15 秒快进快退命令（0.3.15 引入）让 iOS 在全局采用了播客式布局、把切歌按钮挤掉了；现已移除这两个命令，上一首 / 下一首恢复为各处（含 CarPlay）的系统媒体按钮。（#83、#87）
+- **macOS**: the search results page no longer shows a second, empty system search box on top of the toolbar search field — the page's `.searchable` bar is now iOS-only. Thanks @yamakze (#90, closes #89).
+- **macOS**：搜索结果页不再在工具栏搜索框之外多出一个空的系统搜索框——结果页的 `.searchable` 搜索栏改为仅 iOS 使用。感谢 @yamakze（#90，关闭 #89）。
+
+## 0.3.16 - 2026-09-03
+
+### Added / 新增
+
+- **iOS**: CarPlay Now Playing gains a working Up Next button — tapping it pushes the live playback queue (current track pinned on top, up to 300 upcoming rows), and picking a row jumps straight to that track. Outside FM mode the button row also gains 随机 and 循环 controls whose icons track `shuffleEnabled` / `repeatMode`, and the album-artist button opens the current track's album (falling back to its first artist for cloud-disk tracks with no album). Thanks @MikeChongCan (#54).
+- **iOS**：CarPlay Now Playing 的「播放队列」按钮现在可用——点击弹出实时播放队列（当前曲目置顶，最多 300 条待播），点任意一行直接跳转播放。非 FM 模式下按钮区新增 随机 / 循环 控件，图标跟随 `shuffleEnabled` 与 `repeatMode` 变化；专辑歌手按钮可跳转当前曲目的专辑（云盘歌曲等无专辑信息时回退到第一位歌手）。感谢 @MikeChongCan（#54）。
+- **Build**: `make configure` / `make configure-carplay` select which capabilities the iOS build ships with, plus `make build` / `test` / `app` / `project` wrappers. Run `make` for the list. (#54)
+- **Build**：新增 `make configure` / `make configure-carplay` 切换 iOS 构建包含的能力，另有 `make build` / `test` / `app` / `project` 等封装。执行 `make` 查看全部目标。（#54）
+
+### Changed / 变更
+
+- **iOS**: CarPlay is now excluded from the default build entirely, not just left unsigned — `UISupportsCarPlay` and the `CPTemplateApplicationSceneSessionRoleApplication` scene declaration have moved out of `ios/Config/Info.plist` and are injected, together with the `com.apple.developer.carplay-audio` entitlement, only by `make configure-carplay`. The overlay is written to untracked files and never touches the Xcode project, so enabling CarPlay leaves the working tree clean. Replaces the previous "uncomment `KumoneIOS.entitlements.example` by hand" flow. (#54)
+- **iOS**：CarPlay 现在从默认构建中完全移除，而不只是不签名——`UISupportsCarPlay` 与 `CPTemplateApplicationSceneSessionRoleApplication` scene 声明已移出 `ios/Config/Info.plist`，与 `com.apple.developer.carplay-audio` entitlement 一起，仅由 `make configure-carplay` 注入。覆盖文件均不纳入 git 且完全不改动 Xcode 工程，开启 CarPlay 后工作区依然干净。取代原先手动取消注释 `KumoneIOS.entitlements.example` 的流程。（#54）
+
+### Fixed / 修复
+
+- **iOS**: the in-app updater now saves the downloaded IPA into the app's Documents folder — findable in the Files app under On My iPhone ▸ Kumone (the app now enables file sharing) — and opens a share sheet so it can be saved or handed straight to a signing tool (全能签 / ESign / AltStore …), instead of only offering an export dialog that left users unable to locate the file. (#73, #50)
+- **iOS**：应用内更新现在会把下载的 IPA 保存到 App 的 Documents 目录——可在「文件」App ▸ 我的 iPhone ▸ Kumone 里找到（已开启文件共享）——并弹出分享面板，可保存或直接导入签名工具（全能签 / ESign / AltStore 等），不再是之前那种让人找不到文件的导出弹窗。（#73，#50）
+
+## 0.3.15 - 2026-09-03
 
 ### Added / 新增
 
@@ -34,6 +79,8 @@ counterparts. 段落格式：`## <版本号> - <日期>`，条目必须写成单
 
 - **iOS**: in the immersive now-playing page, tapping the small top-left cover while lyrics (or the queue) are shown collapses back to the full artwork — matching Apple Music. (#50)
 - **iOS**：沉浸播放页在显示歌词（或队列）时，点击左上角的小封面即可收起、回到大封面视图，与 Apple Music 一致。（#50）
+- **iOS**: detail-page loading skeletons unified, the FM (漫游) page scales responsively on small/landscape screens, immersive-lyrics scroll & scale are smoother, and floating player-bar / tab-bar clearance is computed more accurately. Thanks @fanyuexiang (#65).
+- **iOS**：详情页加载骨架统一、FM（漫游）页在小屏/横屏自适应缩放、沉浸歌词滚动与缩放更顺滑、底部播放条 / tab bar 留白计算更准确。感谢 @fanyuexiang（#65）。
 
 ## 0.3.14 - 2026-08-29
 

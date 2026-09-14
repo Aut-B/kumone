@@ -10,6 +10,7 @@ final class PlaylistDetailViewModel: ObservableObject {
     @Published var isLoadingMore = false
     @Published var errorMessage: String?
     @Published var filter = ""
+    private var reducedRecommendationIDs: Set<Int> = []
 
     init(playlistID: Int) {
         self.playlistID = playlistID
@@ -31,7 +32,7 @@ final class PlaylistDetailViewModel: ObservableObject {
         do {
             let response = try await NeteaseAPI.playlistDetail(id: playlistID)
             detail = response.playlist
-            tracks = response.playlist.tracks
+            tracks = response.playlist.tracks.filter { !reducedRecommendationIDs.contains($0.id) }
             merge(privileges: response.privileges)
             isLoading = false
             await loadRemainingTracks()
@@ -49,7 +50,7 @@ final class PlaylistDetailViewModel: ObservableObject {
         for chunk in stride(from: 0, to: remaining.count, by: 500)
             .map({ Array(remaining.dropFirst($0).prefix(500)) }) {
             guard let response = try? await NeteaseAPI.songDetails(ids: chunk) else { break }
-            tracks += response.songs
+            tracks += response.songs.filter { !reducedRecommendationIDs.contains($0.id) }
             merge(privileges: response.privileges)
         }
     }
@@ -63,11 +64,18 @@ final class PlaylistDetailViewModel: ObservableObject {
     func remove(_ track: Track) {
         tracks.removeAll { $0.id == track.id }
     }
+
+    func replaceRecommendation(_ rejected: Track, with replacement: Track) {
+        if tracks.replaceRecommendation(rejected, with: replacement) {
+            reducedRecommendationIDs.insert(rejected.id)
+        }
+    }
 }
 
 struct PlaylistDetailView: View {
     let playlistID: Int
     var isLikedList = false
+    var recommendationContext: RecommendationContext?
 
     @StateObject private var model: PlaylistDetailViewModel
     @EnvironmentObject private var player: PlayerService
@@ -75,9 +83,10 @@ struct PlaylistDetailView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showFullDescription = false
 
-    init(playlistID: Int, isLikedList: Bool = false) {
+    init(playlistID: Int, isLikedList: Bool = false, recommendationContext: RecommendationContext? = nil) {
         self.playlistID = playlistID
         self.isLikedList = isLikedList
+        self.recommendationContext = recommendationContext
         _model = StateObject(wrappedValue: PlaylistDetailViewModel(playlistID: playlistID))
     }
 
@@ -113,7 +122,9 @@ struct PlaylistDetailView: View {
                         source: .playlist(playlistID),
                         context: model.detail.map { .playlist(id: playlistID, name: $0.name) },
                         removableFromPlaylistID: isOwnPlaylist ? playlistID : nil,
-                        onRemoved: { model.remove($0) }
+                        onRemoved: { model.remove($0) },
+                        recommendationContext: recommendationContext,
+                        onRecommendationReduced: { model.replaceRecommendation($0, with: $1) }
                     )
                     .padding(.horizontal, isCompact ? 6 : Theme.Layout.contentInset - 10)
 
@@ -421,18 +432,18 @@ struct PlaylistDetailView: View {
     }
 
     private var loadingHeader: some View {
-        HStack(spacing: 24) {
-            RoundedRectangle(cornerRadius: Theme.Radius.large, style: .continuous)
-                .fill(.primary.opacity(0.05))
+        HStack(alignment: .top, spacing: isCompact ? 14 : 24) {
+            SkeletonView(cornerRadius: isCompact ? Theme.Radius.standard : Theme.Radius.large)
                 .frame(width: isCompact ? 120 : 200, height: isCompact ? 120 : 200)
+
             VStack(alignment: .leading, spacing: 10) {
-                RoundedRectangle(cornerRadius: 4).fill(.primary.opacity(0.08)).frame(width: 80, height: 14)
-                RoundedRectangle(cornerRadius: 6).fill(.primary.opacity(0.1)).frame(width: 220, height: 24)
-                RoundedRectangle(cornerRadius: 4).fill(.primary.opacity(0.06)).frame(width: 140, height: 12)
+                SkeletonView(cornerRadius: 4).frame(width: 80, height: 14)
+                SkeletonView(cornerRadius: 4).frame(maxWidth: isCompact ? 160 : 220, minHeight: 14, maxHeight: 14)
+                SkeletonView(cornerRadius: 4).frame(width: 120, height: 14)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, isCompact ? 16 : Theme.Layout.contentInset)
-        .padding(.top, 16)
+        .padding(.top, isCompact ? 12 : 16)
     }
 }

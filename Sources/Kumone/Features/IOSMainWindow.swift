@@ -667,6 +667,11 @@ struct IOSLibraryView: View {
                     }
                 }
             }
+
+            Section {
+                PlayerClearanceSpacer()
+                    .listRowBackground(Color.clear)
+            }
         }
         .navigationTitle("我的")
         .toolbar {

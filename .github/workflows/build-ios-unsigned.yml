@@ -2,7 +2,7 @@ name: Build unsigned iOS IPA
 
 on:
   push:
-    branches: ["dev-musicfree"]
+    branches: ["dev-musicfree", "dev-musicfree-0.3.17"]
   workflow_dispatch:
 
 permissions:

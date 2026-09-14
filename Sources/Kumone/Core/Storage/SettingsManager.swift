@@ -105,6 +105,10 @@ final class SettingsManager: ObservableObject {
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
         static let desktopLyricsCentered = "settings.desktopLyricsCentered"
+        #if os(macOS)
+        static let mainWindowAmbientBackground = "settings.showMainWindowAmbientBackground"
+        static let mainWindowAmbientBackgroundIntensity = "settings.mainWindowAmbientBackgroundIntensity"
+        #endif
         // Player customisation (ported from Beans-Music)
         static let progressBarStyle = "settings.progressBarStyle"   // 0流光 1辉光 2极光 3波浪
         static let playerBreath = "settings.playerBreath"           // 0...1 呼吸光晕强度
@@ -242,6 +246,30 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(desktopLyricsCentered, forKey: Keys.desktopLyricsCentered) }
     }
 
+    #if os(macOS)
+    static let mainWindowAmbientBackgroundIntensityRange = 0.5...1.5
+
+    /// Artwork-tinted overlay on the main desktop window.
+    @Published var showMainWindowAmbientBackground: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                showMainWindowAmbientBackground,
+                forKey: Keys.mainWindowAmbientBackground
+            )
+        }
+    }
+
+    /// Multiplier applied to the main window's artwork tint.
+    @Published var mainWindowAmbientBackgroundIntensity: Double {
+        didSet {
+            UserDefaults.standard.set(
+                mainWindowAmbientBackgroundIntensity,
+                forKey: Keys.mainWindowAmbientBackgroundIntensity
+            )
+        }
+    }
+    #endif
+
     private init() {
         let defaults = UserDefaults.standard
         audioQuality = defaults.string(forKey: Keys.quality).flatMap(AudioQuality.init) ?? .exhigh
@@ -256,6 +284,18 @@ final class SettingsManager: ObservableObject {
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
         desktopLyricsCentered = defaults.object(forKey: Keys.desktopLyricsCentered) as? Bool ?? false
+        #if os(macOS)
+        showMainWindowAmbientBackground = defaults.object(
+            forKey: Keys.mainWindowAmbientBackground
+        ) as? Bool ?? true
+        let storedAmbientBackgroundIntensity = defaults.object(
+            forKey: Keys.mainWindowAmbientBackgroundIntensity
+        ) as? Double ?? 1
+        mainWindowAmbientBackgroundIntensity = min(
+            max(storedAmbientBackgroundIntensity, Self.mainWindowAmbientBackgroundIntensityRange.lowerBound),
+            Self.mainWindowAmbientBackgroundIntensityRange.upperBound
+        )
+        #endif
         progressBarStyle = defaults.object(forKey: Keys.progressBarStyle) as? Int ?? 0
         playerBreath = defaults.object(forKey: Keys.playerBreath) as? Double ?? 0.6
         djVisual = defaults.object(forKey: Keys.djVisual) as? Bool ?? false
