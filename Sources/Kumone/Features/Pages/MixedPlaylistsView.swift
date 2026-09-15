@@ -581,9 +581,9 @@ private struct PluginPlaylistExportResultSheet: View {
                     }
                 } footer: {
                     if skipped > 0 {
-                        Text("跳过的 \(skipped) 首是网易云歌曲，插件歌单存不下它们——它们仍完整保留在混装歌单里。")
+                        Text("跳过的 \(skipped) 首是网易云歌曲，插件歌单存不下它们——它们仍完整留在混装歌单里。要把整个歌单同步到另一台手机，用混装歌单页的「云同步（WebDAV）」，网易云的歌会一起备份过去。")
                     } else {
-                        Text("这个歌单会随插件歌单的 WebDAV 备份一起同步。")
+                        Text("已复制进插件歌单，会随插件歌单的 WebDAV 备份一起同步。注意这只同步了插件音源的歌；要连网易云的歌一起同步，请用混装歌单页的「云同步（WebDAV）」。")
                     }
                 }
             }
