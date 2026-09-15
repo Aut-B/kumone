@@ -603,6 +603,9 @@ struct WebDAVImportView: View {
 
     @State private var entries: [WebDAVEntry] = []
     @State private var path = ""
+    /// Absolute URL of the folder being browsed, so 「导出备份」 writes into the
+    /// folder the user is looking at instead of the account root.
+    @State private var currentDirectoryURL: String?
     @State private var isLoading = false
     @State private var isExporting = false
     @State private var errorMessage: String?
@@ -633,6 +636,8 @@ struct WebDAVImportView: View {
                     Text("WebDAV 设置")
                 } footer: {
                     Text("支持坚果云等 WebDAV 服务。把 MusicFree 导出的歌单 JSON 备份到任意目录后在此导入。「导出备份」会把插件歌单与混装歌单一起写进 KumoneBackup.json。")
+                    Text("导出到：" + exportDestination)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {
@@ -659,7 +664,7 @@ struct WebDAVImportView: View {
                     }
                 }
             }
-            .navigationTitle("WebDAV 导入歌单")
+            .navigationTitle("WebDAV 云同步")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -740,6 +745,12 @@ struct WebDAVImportView: View {
                     password: password
                 )
                 path = URLComponents(string: directory.urlString)?.path ?? directory.name
+                // Keep the collection URL: some servers omit the trailing slash
+                // on collection hrefs, and without it a later PUT would land in
+                // the parent folder instead.
+                currentDirectoryURL = directory.urlString.hasSuffix("/")
+                    ? directory.urlString
+                    : directory.urlString + "/"
             } else {
                 list = try await WebDAVClient.listRoot(
                     server: trimmedServer,
@@ -747,6 +758,7 @@ struct WebDAVImportView: View {
                     password: password
                 )
                 path = ""
+                currentDirectoryURL = nil
             }
             entries = list
         } catch {
@@ -854,9 +866,24 @@ struct WebDAVImportView: View {
     @State private var backupPluginURLs: [String] = []
     @State private var showBackupPluginsOffer = false
 
+    /// Where 「导出备份」 writes: the folder currently being browsed, or the
+    /// address from the settings when none has been opened. Always ends in "/".
+    private var exportBase: String {
+        var base = currentDirectoryURL ?? server.trimmingCharacters(in: .whitespaces)
+        if !base.isEmpty, !base.hasSuffix("/") { base += "/" }
+        return base
+    }
+
+    /// The full destination, spelled out in the sheet so a mistyped folder is
+    /// obvious before the upload fails.
+    private var exportDestination: String {
+        guard !exportBase.isEmpty else { return String(localized: "（先填 WebDAV 地址）") }
+        return WebDAVClient.directoryDescription(of: exportBase + "KumoneBackup.json")
+    }
+
     /// Exports all imported playlists as a MusicFree-format backup JSON and
-    /// uploads it to the WebDAV root (KumoneBackup.json) — re-import on any
-    /// device via this same sheet.
+    /// uploads it to the folder currently being browsed (KumoneBackup.json) —
+    /// re-import on any device via this same sheet.
     private func exportBackup() async {
         let trimmedServer = server.trimmingCharacters(in: .whitespaces)
         guard !trimmedServer.isEmpty, !username.isEmpty, !password.isEmpty else {
@@ -901,12 +928,20 @@ struct WebDAVImportView: View {
             errorMessage = String(localized: "备份序列化失败")
             return
         }
-        var target = trimmedServer
-        if !target.hasSuffix("/") { target += "/" }
-        target += "KumoneBackup.json"
+        let base = exportBase
+        let target = base + "KumoneBackup.json"
         do {
             try await WebDAVClient.upload(data: data, urlString: target, username: username, password: password)
-            ToastCenter.shared.show(String(localized: "备份已上传：KumoneBackup.json"))
+            ToastCenter.shared.show(
+                String(localized: "已备份到 ") + WebDAVClient.directoryDescription(of: target)
+            )
+            // Refresh the listing so the new file is visible — that also proves
+            // the write landed where the user expects.
+            entries = (try? await WebDAVClient.list(
+                urlString: base,
+                username: username,
+                password: password
+            )) ?? entries
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -25,13 +25,44 @@ enum WebDAVError: LocalizedError {
     case unauthorized
     case malformedResponse
     case downloadFailed(Int)
+    case listFailed(Int)
+    case uploadFailed(Int, String)
+    case mkdirFailed(Int, String)
 
     var errorDescription: String? {
         switch self {
-        case .badServer: return String(localized: "WebDAV 地址无效")
-        case .unauthorized: return String(localized: "WebDAV 账号或密码错误")
-        case .malformedResponse: return String(localized: "WebDAV 响应解析失败")
-        case .downloadFailed(let code): return String(localized: "下载失败（HTTP \(code)）")
+        case .badServer:
+            return String(localized: "WebDAV 地址无效")
+        case .unauthorized:
+            return String(localized: "WebDAV 账号或密码错误（注意要填应用授权密码，不是登录密码）")
+        case .malformedResponse:
+            return String(localized: "WebDAV 响应解析失败")
+        case .downloadFailed(let code):
+            return String(localized: "下载失败（HTTP \(code)）")
+        case .listFailed(let code):
+            if code == 401 || code == 403 {
+                return String(localized: "连接失败（HTTP \(code)）：账号或密码不对。注意要填应用授权密码，不是登录密码。")
+            }
+            if code == 404 {
+                return String(localized: "连接失败（HTTP 404）：服务器上没有这个目录。请检查「WebDAV 设置」里的地址，坚果云一般是 https://dav.jianguoyun.com/dav/")
+            }
+            return String(localized: "连接失败（HTTP \(code)）")
+        case .uploadFailed(let code, let url):
+            if code == 404 || code == 409 {
+                return String(localized: "上传失败（HTTP \(code)）：地址指向的目录在服务器上不存在，而且自动创建也没成功。请确认地址形如 https://dav.jianguoyun.com/dav/ ，再试一次。\n目标：\(url)")
+            }
+            if code == 401 || code == 403 {
+                return String(localized: "上传失败（HTTP \(code)）：账号或密码不对，或者这个目录没有写入权限。")
+            }
+            if code == 507 {
+                return String(localized: "上传失败（HTTP 507）：网盘空间不足。")
+            }
+            return String(localized: "上传失败（HTTP \(code)）：\n目标：\(url)")
+        case .mkdirFailed(let code, let url):
+            if code == 401 || code == 403 {
+                return String(localized: "无法创建远程目录（HTTP \(code)）：账号或密码不对，或者没有权限。")
+            }
+            return String(localized: "无法创建远程目录（HTTP \(code)）：\n\(url)")
         }
     }
 }
@@ -82,7 +113,7 @@ enum WebDAVClient {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw WebDAVError.malformedResponse }
         if http.statusCode == 401 || http.statusCode == 403 { throw WebDAVError.unauthorized }
-        guard http.statusCode == 207 else { throw WebDAVError.downloadFailed(http.statusCode) }
+        guard http.statusCode == 207 else { throw WebDAVError.listFailed(http.statusCode) }
         guard let xml = String(data: data, encoding: .utf8) else { throw WebDAVError.malformedResponse }
 
         var entries: [WebDAVEntry] = []
@@ -144,18 +175,138 @@ enum WebDAVClient {
         return data
     }
 
-    /// Uploads (PUT) a file over WebDAV.
+    /// Uploads (PUT) a file over WebDAV, creating the target collection first
+    /// when the server does not have it yet.
+    ///
+    /// PUT alone never creates folders: 坚果云 (and most other servers) answer
+    /// `404` — not `409` — when the parent collection is missing, so a path the
+    /// user typed but never created used to look like a broken upload. The
+    /// address is still the account root or an existing folder in the common
+    /// case, where `ensureParentCollection` is a no-op.
     static func upload(data: Data, urlString: String, username: String, password: String) async throws {
         guard let url = robustURL(urlString) else { throw WebDAVError.badServer }
+        try await ensureParentCollection(of: url, username: username, password: password)
+        let status = try await put(data: data, url: url, username: username, password: password)
+        if (200..<300).contains(status) { return }
+        if status == 401 || status == 403 { throw WebDAVError.unauthorized }
+        // The folder may have been renamed or removed between the check and the
+        // write; create the chain once more and retry a single time.
+        if status == 404 || status == 409 {
+            try await createCollectionChain(for: url, username: username, password: password)
+            let retried = try await put(data: data, url: url, username: username, password: password)
+            if (200..<300).contains(retried) { return }
+            throw WebDAVError.uploadFailed(retried, url.absoluteString)
+        }
+        throw WebDAVError.uploadFailed(status, url.absoluteString)
+    }
+
+    /// The collection a PUT writes into, for telling the user where the backup
+    /// landed (it is easy to be unsure which folder a URL points at).
+    static func directoryDescription(of urlString: String) -> String {
+        guard let url = robustURL(urlString) else { return urlString }
+        return directoryURL(of: url)?.absoluteString ?? urlString
+    }
+
+    // MARK: - Upload plumbing
+
+    /// Makes sure the file's folder exists, creating the whole chain when the
+    /// server does not have it yet.
+    private static func ensureParentCollection(of url: URL, username: String, password: String) async throws {
+        guard let directory = directoryURL(of: url) else { return }
+        if try await collectionExists(directory, username: username, password: password) { return }
+        try await createCollectionChain(for: url, username: username, password: password)
+    }
+
+    private static func authHeader(_ username: String, _ password: String) -> String {
+        "Basic \(Data("\(username):\(password)".utf8).base64EncodedString())"
+    }
+
+    /// The collection part of a file URL (keeps the trailing slash).
+    private static func directoryURL(of url: URL) -> URL? {
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var path = components?.path ?? ""
+        if path.hasSuffix("/") { return url }
+        if let slash = path.range(of: "/", options: .backwards) {
+            path = String(path[path.startIndex..<slash.lowerBound])
+        } else {
+            path = ""
+        }
+        if !path.hasSuffix("/") { path += "/" }
+        components?.path = path
+        components?.query = nil
+        components?.fragment = nil
+        return components?.url
+    }
+
+    private static func put(data: Data, url: URL, username: String, password: String) async throws -> Int {
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.timeoutInterval = 60
-        request.setValue("Basic \(Data("\(username):\(password)".utf8).base64EncodedString())", forHTTPHeaderField: "Authorization")
+        request.setValue(authHeader(username, password), forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = data
         let (_, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw WebDAVError.downloadFailed((response as? HTTPURLResponse)?.statusCode ?? -1)
+        guard let http = response as? HTTPURLResponse else { throw WebDAVError.malformedResponse }
+        return http.statusCode
+    }
+
+    private static func mkcol(url: URL, username: String, password: String) async throws -> Int {
+        var request = URLRequest(url: url)
+        request.httpMethod = "MKCOL"
+        request.timeoutInterval = 20
+        request.setValue(authHeader(username, password), forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw WebDAVError.malformedResponse }
+        return http.statusCode
+    }
+
+    private static func collectionExists(_ url: URL, username: String, password: String) async throws -> Bool {
+        var request = URLRequest(url: url)
+        request.httpMethod = "PROPFIND"
+        request.timeoutInterval = 20
+        request.setValue("0", forHTTPHeaderField: "Depth")
+        request.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue(authHeader(username, password), forHTTPHeaderField: "Authorization")
+        let body = #"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>"#
+        request.httpBody = body.data(using: .utf8)
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw WebDAVError.malformedResponse }
+        if http.statusCode == 401 || http.statusCode == 403 { throw WebDAVError.unauthorized }
+        return http.statusCode == 207
+    }
+
+    /// Creates every missing collection along the file's directory path — the
+    /// equivalent of `mkdir -p`. Servers answer `405` for a folder that is
+    /// already there, which is a success here.
+    private static func createCollectionChain(for url: URL, username: String, password: String) async throws {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw WebDAVError.badServer
+        }
+        var path = components.path
+        if !path.hasSuffix("/") {
+            if let slash = path.range(of: "/", options: .backwards) {
+                path = String(path[path.startIndex..<slash.lowerBound])
+            } else {
+                path = ""
+            }
+        }
+        components.query = nil
+        components.fragment = nil
+        var built = ""
+        for segment in path.split(separator: "/") {
+            built += "/" + segment
+            components.path = built
+            guard let dirURL = components.url else { continue }
+            let code = try await mkcol(url: dirURL, username: username, password: password)
+            // 201 created · 405 already exists · 3xx redirected. A `409` on a
+            // middle segment means the server considers the parent missing, but
+            // the PUT below still decides the outcome, so let it through rather
+            // than failing the upload on a guess.
+            if (200..<300).contains(code) || code == 405 || code == 409 || (300..<400).contains(code) {
+                continue
+            }
+            if code == 401 || code == 403 { throw WebDAVError.unauthorized }
+            throw WebDAVError.mkdirFailed(code, dirURL.absoluteString)
         }
     }
 }
