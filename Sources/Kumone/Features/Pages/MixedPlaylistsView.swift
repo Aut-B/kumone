@@ -32,6 +32,7 @@ struct MixedPlaylistsView: View {
     @ObservedObject private var store = MixedPlaylistStore.shared
     @State private var editor: Editor? = nil
     @State private var nameField = ""
+    @State private var showWebDAVSync = false
 
     var body: some View {
         List {
@@ -80,6 +81,31 @@ struct MixedPlaylistsView: View {
                 Text("混装歌单保存在本机，不会写进你的网易云歌单，也不会写进插件歌单。")
             }
 
+            // The whole-list sync entry. It is deliberately its own row rather
+            // than a toolbar icon: backing up the mixed playlists is the main
+            // reason to have them, and a bare icon is easy to miss.
+            Section {
+                Button {
+                    showWebDAVSync = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "icloud.and.arrow.up")
+                            .foregroundStyle(Theme.accent)
+                            .frame(width: 26)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("云同步（WebDAV）")
+                                .font(.system(size: 15))
+                                .foregroundStyle(.primary)
+                            Text("备份 / 恢复整个歌单")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } footer: {
+                Text("备份到 WebDAV 后，在另一台手机登录同一帐号恢复即可，网易云的歌也会一起过去，不需要先把它们搬进插件歌单。")
+            }
+
             Section {
                 PlayerClearanceSpacer().listRowBackground(Color.clear)
             }
@@ -95,6 +121,9 @@ struct MixedPlaylistsView: View {
                 }
                 .accessibilityLabel("新建混装歌单")
             }
+        }
+        .sheet(isPresented: $showWebDAVSync) {
+            WebDAVImportView()
         }
         .alert(editorTitle, isPresented: editorBinding) {
             TextField("歌单名称", text: $nameField)
@@ -142,6 +171,8 @@ struct MixedPlaylistDetailView: View {
     @State private var tracks: [Track] = []
     /// Presents the "copy into a plugin playlist" flow.
     @State private var exportTarget: ExportTarget? = nil
+    /// Presents the whole-list WebDAV backup / restore sheet.
+    @State private var showWebDAVSync = false
 
     /// What the export flow is doing: either it needs a destination, or the
     /// copy already ran and the result is worth reporting.
@@ -237,13 +268,22 @@ struct MixedPlaylistDetailView: View {
                             .disabled(rows.isEmpty)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            beginExport()
+                        Menu {
+                            Button {
+                                showWebDAVSync = true
+                            } label: {
+                                Label("云同步（WebDAV）", systemImage: "icloud.and.arrow.up")
+                            }
+                            Button {
+                                beginExport()
+                            } label: {
+                                Label("复制插件曲到插件歌单", systemImage: "square.and.arrow.down.on.square")
+                            }
                         } label: {
-                            Image(systemName: "square.and.arrow.down.on.square")
+                            Image(systemName: "ellipsis.circle")
                         }
                         .disabled(rows.isEmpty)
-                        .accessibilityLabel("导入到插件歌单")
+                        .accessibilityLabel("更多")
                     }
                 }
                 .sheet(item: $exportTarget) { target in
@@ -269,6 +309,10 @@ struct MixedPlaylistDetailView: View {
             } else {
                 EmptyStateView(icon: "questionmark.folder", title: "歌单不存在")
             }
+        }
+        // Kept off the List so the two sheets never share one presenter.
+        .sheet(isPresented: $showWebDAVSync) {
+            WebDAVImportView()
         }
     }
 
@@ -488,9 +532,11 @@ private struct PluginPlaylistExportSheet: View {
     }
 
     private var summaryFooter: String {
-        let base = String(localized: "将导入「\(snapshot.playlistName)」中的 \(snapshot.items.count) 首插件音源歌曲。")
+        let base = String(localized: "将把「\(snapshot.playlistName)」里的 \(snapshot.items.count) 首插件音源歌曲复制进插件歌单。")
         guard snapshot.skipped > 0 else { return base }
-        return base + String(localized: "另有 \(snapshot.skipped) 首网易云的歌无法放进插件歌单，会被跳过。")
+        return base + String(
+            localized: "另有 \(snapshot.skipped) 首网易云的歌，插件歌单存不下，会被跳过。这只是把插件曲复制一份，不能用来同步——要同步整个歌单请退出这里，用混装歌单页的「云同步（WebDAV）」。"
+        )
     }
 
     private func run(exportingTo playlist: ImportedPlaylist) {
