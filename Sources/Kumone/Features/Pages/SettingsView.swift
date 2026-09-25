@@ -3,7 +3,9 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsManager
     @EnvironmentObject private var account: AccountStore
-    @State private var cacheSize: String = String(localized: "计算中…")
+    @State private var audioCacheUsage: String = String(localized: "计算中…")
+    @State private var imageCacheUsage: String = String(localized: "计算中…")
+    @State private var cacheError: String?
 
     var body: some View {
         Form {
@@ -22,7 +24,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 Toggle("允许酷狗 / 酷我兜底", isOn: $settings.enableUnblockFallback)
                     .disabled(!settings.enableUnblock)
-                Text("默认关闭。开启后仅当 pyncmd 查无此曲时才回退到酷狗 / 酷我——它们按歌名和时长模糊匹配，可能匹配成翻唱或别的歌")
+                Text("默认关闭。开启后仅当 pyncmd 查无此曲时才回退到下面勾选的音源——它们按歌名和时长匹配，可能匹配成翻唱或别的歌")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 NavigationLink("播放器设置") {
@@ -42,17 +44,51 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if settings.enableUnblock {
+                Section {
+                    ForEach(AudioSourceID.allCases, id: \.self) { source in
+                        Toggle(source.displayName, isOn: Binding(
+                            get: { settings.enabledAudioSourceIDs.contains(source) },
+                            set: { isEnabled in
+                                if isEnabled {
+                                    settings.enabledAudioSourceIDs.insert(source)
+                                } else {
+                                    settings.enabledAudioSourceIDs.remove(source)
+                                }
+                            }
+                        ))
+                    }
+                } header: {
+                    Text("音源")
+                }
+            }
+
             Section("外观") {
                 Picker("主题", selection: $settings.appearance) {
                     ForEach(AppAppearance.allCases) { appearance in
                         Text(appearance.displayName).tag(appearance)
                     }
                 }
+                #if os(macOS)
+                // macOS only renders two now-playing layouts — 黑胶 and the
+                // regular page; the iOS 沉浸/简洁 options all fall back to the
+                // regular page here, so offering four was misleading (#105).
+                // Map any non-vinyl value onto 经典模式 so a stored default (e.g.
+                // 沉浸模式) still shows a valid selection.
+                Picker("播放页模式", selection: Binding(
+                    get: { settings.nowPlayingMode == .vinyl ? .vinyl : .classic },
+                    set: { settings.nowPlayingMode = $0 }
+                )) {
+                    Text(NowPlayingMode.vinyl.displayName).tag(NowPlayingMode.vinyl)
+                    Text(NowPlayingMode.classic.displayName).tag(NowPlayingMode.classic)
+                }
+                #else
                 Picker("播放页模式", selection: $settings.nowPlayingMode) {
                     ForEach(NowPlayingMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
                     }
                 }
+                #endif
                 Toggle("显示歌词翻译", isOn: $settings.showLyricsTranslation)
                 Toggle("逐字歌词（卡拉OK）", isOn: $settings.verbatimLyrics)
                 Picker("日文歌词读音", selection: $settings.lyricsAnnotation) {
@@ -63,7 +99,6 @@ struct SettingsView: View {
                 Text("罗马音在歌词上方另起一行，汉字读音把假名标在汉字正上方；缺少官方罗马音时自动生成读音")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                #if os(macOS)
                 Toggle("主界面环境色", isOn: $settings.showMainWindowAmbientBackground)
                 if settings.showMainWindowAmbientBackground {
                     VStack(alignment: .leading, spacing: 6) {
@@ -87,6 +122,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     }
                 }
+                #if os(macOS)
                 Toggle("桌面歌词", isOn: $settings.showDesktopLyrics)
                 if settings.showDesktopLyrics {
                     Toggle("桌面歌词水平居中", isOn: $settings.desktopLyricsCentered)
@@ -98,9 +134,68 @@ struct SettingsView: View {
             }
 
             Section("存储") {
-                LabeledContent("图片缓存", value: cacheSize)
-                Button("清除缓存") {
-                    clearCache()
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle(
+                        "歌曲缓存",
+                        isOn: Binding(
+                            get: { settings.enableAudioCache },
+                            set: { enabled in
+                                settings.enableAudioCache = enabled
+                                if enabled {
+                                    Task { await enforceAudioCacheLimit() }
+                                }
+                            }
+                        )
+                    )
+                    Text("关闭后将不读取或缓存歌曲")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if settings.enableAudioCache {
+                        Slider(
+                            value: Binding(
+                                get: { Double(settings.audioCacheSizeMB) },
+                                set: { settings.audioCacheSizeMB = Int($0.rounded()) }
+                            ),
+                            in: Double(SettingsManager.audioCacheSizeRangeMB.lowerBound)...Double(
+                                SettingsManager.audioCacheSizeRangeMB.upperBound
+                            ),
+                            step: Double(SettingsManager.audioCacheSizeStepMB)
+                        )
+                        HStack {
+                            Text("100 MB")
+                            Spacer()
+                            Text("1 GB")
+                        }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("\(audioCacheUsage) / \(audioCacheLimit)")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("清理") {
+                            Task { await clearAudioCache() }
+                        }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("图片缓存")
+                    HStack {
+                        HStack(spacing: 4) {
+                            Text("已占用")
+                            Text(imageCacheUsage)
+                        }
+                        .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("清理") {
+                            Task { await clearImageCache() }
+                        }
+                    }
+                }
+                if let cacheError {
+                    Text(cacheError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
 
@@ -142,45 +237,74 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         #if os(macOS)
-        .frame(width: 440, height: 480)
+        .frame(width: 440, height: 600)
         #endif
-        .task { updateCacheSize() }
+        .task {
+            await refreshCacheUsage()
+            await enforceAudioCacheLimit()
+        }
+        #if os(macOS)
+        .onChange(of: settings.audioCacheSizeMB) { _, _ in
+            Task { await enforceAudioCacheLimit() }
+        }
+        #else
+        .onChange(of: settings.audioCacheSizeMB) { _ in
+            Task { await enforceAudioCacheLimit() }
+        }
+        #endif
     }
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }
 
-    private var cacheDirectory: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("im.missuo.Kumone/images", isDirectory: true)
+    private var audioCacheLimit: String {
+        ByteCountFormatter.string(
+            fromByteCount: Int64(settings.audioCacheSizeMB) * 1_000_000,
+            countStyle: .file
+        )
     }
 
-    private func updateCacheSize() {
-        let dir = cacheDirectory
-        DispatchQueue.global(qos: .utility).async {
-            let files = (try? FileManager.default.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: [.fileSizeKey]
-            )) ?? []
-            let bytes = files.reduce(0) { sum, url in
-                sum + ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            }
-            let formatted = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-            DispatchQueue.main.async {
-                cacheSize = formatted
-            }
+    private func refreshCacheUsage() async {
+        do {
+            audioCacheUsage = (try await AudioCache.shared.usage()).formatted
+        } catch {
+            cacheError = error.localizedDescription
+        }
+        do {
+            imageCacheUsage = (try await ImageCache.shared.usage()).formatted
+        } catch {
+            cacheError = error.localizedDescription
         }
     }
 
-    private func clearCache() {
-        let dir = cacheDirectory
-        DispatchQueue.global(qos: .utility).async {
-            try? FileManager.default.removeItem(at: dir)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            DispatchQueue.main.async {
-                cacheSize = String(localized: "0 字节")
-                ToastCenter.shared.show(String(localized: "缓存已清除"))
-            }
+    private func enforceAudioCacheLimit() async {
+        guard settings.enableAudioCache else { return }
+        do {
+            try await AudioCache.shared.enforce(maximumSizeMB: settings.audioCacheSizeMB)
+            await refreshCacheUsage()
+        } catch {
+            cacheError = error.localizedDescription
+        }
+    }
+
+    private func clearAudioCache() async {
+        do {
+            try await AudioCache.shared.clear()
+            ToastCenter.shared.show(String(localized: "歌曲缓存已清除"))
+            await refreshCacheUsage()
+        } catch {
+            cacheError = error.localizedDescription
+        }
+    }
+
+    private func clearImageCache() async {
+        do {
+            try await ImageCache.shared.clear()
+            ToastCenter.shared.show(String(localized: "图片缓存已清除"))
+            await refreshCacheUsage()
+        } catch {
+            cacheError = error.localizedDescription
         }
     }
 }

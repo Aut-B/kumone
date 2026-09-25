@@ -31,7 +31,7 @@
 "检查更新…" = "Check for Updates…";
 "打开播放页" = "Open Now Playing";
 "私人漫游中" = "Personal FM";
-"音源" = "SRC";
+"音源" = "Audio Sources";
 "来自 %@" = "From %@";
 "音量" = "Volume";
 "未在播放" = "Not Playing";
@@ -40,6 +40,13 @@
 "播放队列是空的" = "The queue is empty";
 "播放一些音乐吧" = "Play some music";
 "%lld 首" = "%lld songs";
+"睡眠定时" = "Sleep Timer";
+"睡眠定时（剩余 %@）" = "Sleep Timer (%@ remaining)";
+"睡眠定时（本曲结束）" = "Sleep Timer (End of Song)";
+"当前歌曲结束时停止" = "Stop at End of Current Song";
+"将在当前歌曲结束时停止" = "Stops at the end of the current song";
+"剩余 %@" = "%@ remaining";
+"取消睡眠定时" = "Cancel Sleep Timer";
 
 /* Home */
 "推荐歌单" = "Recommended Playlists";
@@ -201,7 +208,7 @@
 "高解析" = "Hi-Res";
 "无损与 Hi-Res 需要黑胶 VIP，未开通时自动回落到可用音质" = "Lossless and Hi-Res require VIP; falls back automatically otherwise";
 "灰色歌曲解锁" = "Unblock Gray Tracks";
-"无版权 / 下架歌曲自动从第三方音源（酷我、酷狗等）匹配播放" = "Unavailable tracks are matched from third-party sources (Kuwo, Kugou, etc.)";
+"无版权或下架歌曲将从已启用音源中匹配播放" = "Unavailable tracks are matched from enabled sources";
 "外观" = "Appearance";
 "主题" = "Theme";
 "跟随系统" = "System";
@@ -216,7 +223,10 @@
 "桌面歌词" = "Desktop Lyrics";
 "在屏幕上悬浮显示当前歌词，可拖动调整位置" = "Float the current lyric line on screen; drag to reposition";
 "存储" = "Storage";
+"歌曲缓存" = "Song Cache";
 "图片缓存" = "Image Cache";
+"已占用" = "Used";
+"清理" = "Clear";
 "清除缓存" = "Clear Cache";
 "账号" = "Account";
 "当前账号" = "Signed in as";
@@ -226,6 +236,8 @@
 "计算中…" = "Calculating…";
 "0 字节" = "Zero bytes";
 "缓存已清除" = "Cache cleared";
+"歌曲缓存已清除" = "Song cache cleared";
+"图片缓存已清除" = "Image cache cleared";
 
 /* Errors & toasts */
 "加载失败" = "Failed to Load";

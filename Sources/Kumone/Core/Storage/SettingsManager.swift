@@ -104,13 +104,14 @@ final class SettingsManager: ObservableObject {
         static let unblock = "settings.enableUnblock"
         /// Keep in sync with `UnblockService.fallbackDefaultsKey`.
         static let unblockFallback = "settings.enableUnblockFallback"
+        static let unblockSources = "settings.enabledUnblockSources"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
         static let desktopLyricsCentered = "settings.desktopLyricsCentered"
-        #if os(macOS)
         static let mainWindowAmbientBackground = "settings.showMainWindowAmbientBackground"
         static let mainWindowAmbientBackgroundIntensity = "settings.mainWindowAmbientBackgroundIntensity"
-        #endif
+        static let enableAudioCache = "settings.enableAudioCache"
+        static let audioCacheSizeMB = "settings.audioCacheSizeMB"
         // Player customisation (ported from Beans-Music)
         static let progressBarStyle = "settings.progressBarStyle"   // 0流光 1辉光 2极光 3波浪
         static let playerBreath = "settings.playerBreath"           // 0...1 呼吸光晕强度
@@ -197,6 +198,37 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(audioQuality.rawValue, forKey: Keys.quality) }
     }
 
+    static let audioCacheSizeRangeMB = 100...1_000
+    static let audioCacheSizeStepMB = 100
+
+    /// Use locally stored audio files before resolving a remote source and
+    /// retain completed remote playback for future requests.
+    @Published var enableAudioCache: Bool {
+        didSet { UserDefaults.standard.set(enableAudioCache, forKey: Keys.enableAudioCache) }
+    }
+
+    static func normalizedAudioCacheSizeMB(_ value: Int) -> Int {
+        let boundedValue = min(
+            max(value, audioCacheSizeRangeMB.lowerBound),
+            audioCacheSizeRangeMB.upperBound
+        )
+        let distanceFromLowerBound = boundedValue - audioCacheSizeRangeMB.lowerBound
+        return audioCacheSizeRangeMB.lowerBound
+            + Int((Double(distanceFromLowerBound) / Double(audioCacheSizeStepMB)).rounded())
+                * audioCacheSizeStepMB
+    }
+
+    @Published var audioCacheSizeMB: Int {
+        didSet {
+            let normalizedValue = Self.normalizedAudioCacheSizeMB(audioCacheSizeMB)
+            guard normalizedValue == audioCacheSizeMB else {
+                audioCacheSizeMB = normalizedValue
+                return
+            }
+            UserDefaults.standard.set(audioCacheSizeMB, forKey: Keys.audioCacheSizeMB)
+        }
+    }
+
     @Published var appearance: AppAppearance {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: Keys.appearance) }
     }
@@ -240,8 +272,23 @@ final class SettingsManager: ObservableObject {
     /// Allow the fuzzy 酷狗 / 酷我 fallback when pyncmd has no copy of a track.
     /// Off by default: pyncmd resolves by the original NetEase id, while those two
     /// match on name + duration and can return the wrong recording.
+    /// Acts as the master switch: when off, only pyncmd is ever asked.
     @Published var enableUnblockFallback: Bool {
         didSet { UserDefaults.standard.set(enableUnblockFallback, forKey: Keys.unblockFallback) }
+    }
+
+    /// Built-in third-party sources eligible for gray-track resolution.
+    @Published var enabledAudioSourceIDs: Set<AudioSourceID> {
+        didSet {
+            UserDefaults.standard.set(
+                enabledAudioSourceIDs.map(\.rawValue).sorted(),
+                forKey: Keys.unblockSources
+            )
+        }
+    }
+
+    var canResolveUnblockedTracks: Bool {
+        enableUnblock && !enabledAudioSourceIDs.isEmpty
     }
 
     /// Floating desktop lyrics window (LyricsX-style).
@@ -255,10 +302,9 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(desktopLyricsCentered, forKey: Keys.desktopLyricsCentered) }
     }
 
-    #if os(macOS)
     static let mainWindowAmbientBackgroundIntensityRange = 0.5...1.5
 
-    /// Artwork-tinted overlay on the main desktop window.
+    /// Artwork-tinted overlay on the main app interface.
     @Published var showMainWindowAmbientBackground: Bool {
         didSet {
             UserDefaults.standard.set(
@@ -268,7 +314,7 @@ final class SettingsManager: ObservableObject {
         }
     }
 
-    /// Multiplier applied to the main window's artwork tint.
+    /// Multiplier applied to the main interface's artwork tint.
     @Published var mainWindowAmbientBackgroundIntensity: Double {
         didSet {
             UserDefaults.standard.set(
@@ -277,11 +323,15 @@ final class SettingsManager: ObservableObject {
             )
         }
     }
-    #endif
-
     private init() {
         let defaults = UserDefaults.standard
         audioQuality = defaults.string(forKey: Keys.quality).flatMap(AudioQuality.init) ?? .exhigh
+        enableAudioCache = defaults.object(forKey: Keys.enableAudioCache) as? Bool ?? true
+        let storedAudioCacheSizeMB = defaults.object(forKey: Keys.audioCacheSizeMB) as? Int
+            ?? AudioCache.defaultMaximumSizeMB
+        let normalizedAudioCacheSizeMB = Self.normalizedAudioCacheSizeMB(storedAudioCacheSizeMB)
+        audioCacheSizeMB = normalizedAudioCacheSizeMB
+        defaults.set(normalizedAudioCacheSizeMB, forKey: Keys.audioCacheSizeMB)
         appearance = defaults.string(forKey: Keys.appearance).flatMap(AppAppearance.init) ?? .auto
         nowPlayingMode = defaults.string(forKey: Keys.nowPlayingMode).flatMap(NowPlayingMode.init) ?? .immersive
         showLyricsTranslation = defaults.object(forKey: Keys.showTranslation) as? Bool ?? true
@@ -291,10 +341,14 @@ final class SettingsManager: ObservableObject {
         verbatimLyrics = defaults.object(forKey: Keys.verbatimLyrics) as? Bool ?? true
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
         enableUnblockFallback = defaults.object(forKey: Keys.unblockFallback) as? Bool ?? false
+        if let rawSourceIDs = defaults.stringArray(forKey: Keys.unblockSources) {
+            enabledAudioSourceIDs = Set(rawSourceIDs.compactMap(AudioSourceID.init))
+        } else {
+            enabledAudioSourceIDs = Set(AudioSourceID.allCases)
+        }
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
         desktopLyricsCentered = defaults.object(forKey: Keys.desktopLyricsCentered) as? Bool ?? false
-        #if os(macOS)
         showMainWindowAmbientBackground = defaults.object(
             forKey: Keys.mainWindowAmbientBackground
         ) as? Bool ?? true
@@ -305,7 +359,6 @@ final class SettingsManager: ObservableObject {
             max(storedAmbientBackgroundIntensity, Self.mainWindowAmbientBackgroundIntensityRange.lowerBound),
             Self.mainWindowAmbientBackgroundIntensityRange.upperBound
         )
-        #endif
         progressBarStyle = defaults.object(forKey: Keys.progressBarStyle) as? Int ?? 0
         playerBreath = defaults.object(forKey: Keys.playerBreath) as? Double ?? 0.6
         djVisual = defaults.object(forKey: Keys.djVisual) as? Bool ?? false
