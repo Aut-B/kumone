@@ -192,10 +192,22 @@ struct HomeView: View {
             }
 
             if !model.newAlbums.isEmpty {
-                Shelf(title: "新碟上架", rowHeight: Theme.Layout.coverShelfHeight) {
-                    ForEach(model.newAlbums) { album in
-                        albumCard(album)
+                VStack(alignment: .leading, spacing: 14) {
+                    SectionHeader(title: "新碟上架")
+                        .padding(.horizontal, Theme.Layout.contentInset)
+                    GeometryReader { geometry in
+                        let size = Theme.Layout.fittedShelfCardSize(availableWidth: geometry.size.width, leadingInset: Theme.Layout.contentInset)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(alignment: .top, spacing: 16) {
+                                ForEach(model.newAlbums) { album in
+                                    albumCard(album, size: size)
+                                }
+                            }
+                            .padding(.horizontal, Theme.Layout.contentInset)
+                            .frame(height: Theme.Layout.coverShelfHeight)
+                        }
                     }
+                    .frame(height: Theme.Layout.coverShelfHeight)
                 }
             }
 
@@ -302,12 +314,13 @@ struct HomeView: View {
         .buttonStyle(.plain)
     }
 
-    private func albumCard(_ album: AlbumSummary) -> some View {
+    private func albumCard(_ album: AlbumSummary, size: CGFloat) -> some View {
         NavigationLink(value: Destination.album(album.id)) {
             CoverCardBody(
                 coverURL: album.picUrl?.resizedImageURL(384),
                 title: album.name,
-                subtitle: album.artistName
+                subtitle: album.artistName,
+                size: size
             ) {
                 Task {
                     if let detail = try? await NeteaseAPI.album(id: album.id) {
