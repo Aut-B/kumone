@@ -142,9 +142,10 @@ public struct IOSMainWindow: View {
 
     @ViewBuilder
     private var appContent: some View {
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            MainWindow(path: $iPadPath)
-        } else {
+        // iPad used to route to the sidebar MainWindow; NavigationSplitView
+        // is iOS 16+ and cannot compile for an iOS 15 deployment target, so
+        // iPad now uses the same tab layout as iPhone.
+        Group {
             tabInterface
                 .overlay {
                     if settings.showMainWindowAmbientBackground {
@@ -278,11 +279,6 @@ public struct IOSMainWindow: View {
 
     private func openDestination(_ destination: Destination) {
         player.showNowPlaying = false
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            iPadPath.appendIfNotCurrent(destination)
-            return
-        }
-
         let path = binding(for: selectedTab)
         var destinations = path.wrappedValue
         destinations.appendIfNotCurrent(destination)
@@ -294,8 +290,8 @@ public struct IOSMainWindow: View {
         _ tab: IOSTab,
         @ViewBuilder _ content: () -> Content
     ) -> some View {
-        NavigationStack(path: binding(for: tab)) {
-            content().appDestinations()
+        AppNavStackPath(path: binding(for: tab)) {
+            content()
         }
     }
 
@@ -625,21 +621,21 @@ struct IOSLibraryView: View {
             if account.hasAuthCookie {
                 Section("我的音乐") {
                     if let liked = account.likedSongsPlaylist {
-                        NavigationLink(value: Destination.playlist(liked.id)) {
+                        DestinationLink(value: Destination.playlist(liked.id)) {
                             Label("我喜欢的音乐", systemImage: "heart.fill")
                                 .foregroundStyle(Theme.accent)
                         }
                     }
-                    NavigationLink(value: Destination.daily) {
+                    DestinationLink(value: Destination.daily) {
                         Label("每日推荐", systemImage: "calendar")
                     }
-                    NavigationLink(value: Destination.recents) {
+                    DestinationLink(value: Destination.recents) {
                         Label("最近播放", systemImage: "clock.fill")
                     }
-                    NavigationLink(value: Destination.collections) {
+                    DestinationLink(value: Destination.collections) {
                         Label("我的收藏", systemImage: "star.fill")
                     }
-                    NavigationLink(value: Destination.cloud) {
+                    DestinationLink(value: Destination.cloud) {
                         Label("音乐云盘", systemImage: "icloud.fill")
                     }
                 }
@@ -680,7 +676,7 @@ struct IOSLibraryView: View {
             CloudPlaylistOrderSheet(playlists: reorderBase)
         }
         .sheet(isPresented: $showSettings) {
-            NavigationStack {
+            AppNavStack {
                 SettingsView()
                     .navigationTitle("设置")
                     .toolbar {
@@ -721,7 +717,7 @@ struct IOSLibraryView: View {
     ) -> some View {
         Section {
             ForEach(layout.orderedCloud(playlists)) { playlist in
-                NavigationLink(value: Destination.playlist(playlist.id)) {
+                DestinationLink(value: Destination.playlist(playlist.id)) {
                     HStack(spacing: 10) {
                         CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
                             .frame(width: 32, height: 32)

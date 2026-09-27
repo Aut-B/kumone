@@ -201,7 +201,7 @@ struct SettingsView: View {
 
             Section("账号") {
                 if let profile = account.profile {
-                    LabeledContent("当前账号", value: profile.nickname)
+                    HStack { Text("当前账号"); Spacer(); Text(profile.nickname).foregroundStyle(.secondary) }
                     Button("退出登录", role: .destructive) {
                         Task { await AccountStore.shared.logout() }
                     }
@@ -219,7 +219,7 @@ struct SettingsView: View {
             }
 
             Section("关于") {
-                LabeledContent("Kumone", value: appVersion)
+                HStack { Text("Kumone"); Spacer(); Text(appVersion).foregroundStyle(.secondary) }
                 #if os(iOS)
                 Button {
                     IOSUpdater.shared.check(interactive: true)
@@ -235,7 +235,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
+        .compatFormGrouped()
         #if os(macOS)
         .frame(width: 440, height: 600)
         #endif

@@ -205,8 +205,9 @@ struct RubyText: View, Animatable {
         )
         let attributed = RubyAttributedString.make(segments, style: style, alphas: alphas)
 
-        return RubyTextLayout(attributed: attributed) {
-            Canvas(rendersAsynchronously: false) { context, canvasSize in
+        if #available(iOS 16.0, *) {
+            return AnyView(RubyTextLayout(attributed: attributed) {
+                Canvas(rendersAsynchronously: false) { context, canvasSize in
                 context.withCGContext { cgContext in
                     cgContext.saveGState()
                     cgContext.textMatrix = .identity
@@ -221,7 +222,15 @@ struct RubyText: View, Animatable {
                     cgContext.restoreGState()
                 }
             }
+            })
         }
+        // iOS 15 has no `Layout` protocol: draw the plain string, which loses
+        // the ruby annotation but keeps the line readable.
+        return AnyView(
+            Text(attributed.string)
+                .font(.system(size: size, weight: weight))
+                .foregroundColor(color)
+        )
     }
 }
 
@@ -232,6 +241,7 @@ private final class AttributedBox: @unchecked Sendable {
     init(_ string: NSAttributedString) { self.string = string }
 }
 
+@available(iOS 16.0, *)
 private struct RubyTextLayout: Layout {
     private let box: AttributedBox
 

@@ -157,7 +157,7 @@ final class PlayerService: ObservableObject {
     /// Playback speed multiplier (0.5 ... 2.0).
     @Published var rate: Double = 1.0 {
         didSet {
-            engine.defaultRate = Float(rate)
+            if #available(iOS 16.0, *) { engine.defaultRate = Float(rate) }
             if isPlaying {
                 engine.playImmediately(atRate: Float(rate))
             }
@@ -212,7 +212,7 @@ final class PlayerService: ObservableObject {
         let endsAt = Date().addingTimeInterval(TimeInterval(minutes) * 60)
         sleepTimerEndsAt = endsAt
         sleepTimerTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(minutes * 60))
+            try? await Task.sleep(nanoseconds: UInt64(minutes * 60 * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             self.pause()
             self.sleepTimerEndsAt = nil
@@ -293,7 +293,7 @@ final class PlayerService: ObservableObject {
         repeatMode = UserDefaults.standard.string(forKey: "player.repeat")
             .flatMap(RepeatMode.init) ?? .off
         rate = UserDefaults.standard.object(forKey: "player.rate") as? Double ?? 1.0
-        engine.defaultRate = Float(rate)
+        if #available(iOS 16.0, *) { engine.defaultRate = Float(rate) }
 
         #if os(iOS)
         do {
@@ -625,7 +625,7 @@ final class PlayerService: ObservableObject {
                     ToastCenter.shared.show(String(localized: "获取私人漫游数据失败"))
                     return
                 }
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(nanoseconds: UInt64(1 * 1_000_000_000))
             }
         }
         guard !fmUpcoming.isEmpty else { return }

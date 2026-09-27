@@ -68,7 +68,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
+        .compatHiddenScrollContentBackground()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             accountFooter
         }
@@ -191,7 +191,7 @@ struct SidebarView: View {
         .background(.ultraThinMaterial)
 #if os(iOS)
         .sheet(isPresented: $showSettings) {
-            NavigationStack {
+            AppNavStack {
                 SettingsView()
                     .navigationTitle("设置")
                     .navigationBarTitleDisplayMode(.inline)

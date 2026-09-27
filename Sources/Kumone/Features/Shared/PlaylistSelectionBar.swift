@@ -126,7 +126,7 @@ struct AddTracksToPlaylistSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        AppNavStack {
             List {
                 if account.createdPlaylists.isEmpty && ImportedPlaylistStore.shared.playlists.isEmpty {
                     Text("还没有可用的歌单，先在下面新建一个")
@@ -277,7 +277,7 @@ struct CloudPlaylistOrderSheet: View {
     @State private var working: [PlaylistSummary] = []
 
     var body: some View {
-        NavigationStack {
+        AppNavStack {
             List {
                 ForEach(working) { playlist in
                     HStack(spacing: 10) {

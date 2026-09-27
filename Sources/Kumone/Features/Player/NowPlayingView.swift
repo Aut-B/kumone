@@ -712,7 +712,7 @@ struct NowPlayingView: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(settings.circularCover ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 18, style: .continuous)))
+        .clipShape(RoundedRectangle(cornerRadius: settings.circularCover ? size / 2 : 18, style: .continuous))
         .shadow(color: .black.opacity(0.45), radius: 36, y: 18)
         .animation(.easeIn(duration: 0.25), value: artworkImage != nil)
         .scaleEffect(player.isPlaying ? 1 : 0.95)
@@ -857,7 +857,7 @@ struct NowPlayingView: View {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 21, weight: .bold))
                     .foregroundStyle(.black.opacity(0.85))
-                    .contentTransition(.opacity)
+                    .compatContentTransitionOpacity()
             }
         }
         .buttonStyle(.pressable)
@@ -925,7 +925,7 @@ struct NowPlayingView: View {
                         isUserScrolling = true
                         resumeTask?.cancel()
                         resumeTask = Task {
-                            try? await Task.sleep(for: .seconds(3))
+                            try? await Task.sleep(nanoseconds: UInt64(3 * 1_000_000_000))
                             guard !Task.isCancelled else { return }
                             isUserScrolling = false
                         }
@@ -1111,7 +1111,7 @@ private struct IOSImmersiveLyricsColumn: View {
                                 isUserScrolling = true
                                 resumeTask?.cancel()
                                 resumeTask = Task { @MainActor in
-                                    try? await Task.sleep(for: .seconds(3))
+                                    try? await Task.sleep(nanoseconds: UInt64(3 * 1_000_000_000))
                                     guard !Task.isCancelled else { return }
                                     isUserScrolling = false
                                     if let activeIndex {
@@ -1417,7 +1417,7 @@ private struct CompactTransportControls: View {
             Button(action: player.togglePlayPause) {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 36, weight: .bold))
-                    .contentTransition(.opacity)
+                    .compatContentTransitionOpacity()
                     .frame(maxWidth: .infinity, minHeight: 64)
             }
             .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
@@ -1947,7 +1947,7 @@ private struct IOSMinimalLyricsColumn: View {
         // ponytail: iOS 16 has no scroll phase API; replace with onScrollPhaseChange
         // when the deployment target reaches iOS 18.
         scrollSettleTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(120))
+            try? await Task.sleep(nanoseconds: UInt64(120 * 1_000_000))
             guard !Task.isCancelled else { return }
             let selection = nearestLine(to: guideY, in: lineCenters) ?? nearestIndex
             selectedIndex = selection
@@ -1964,7 +1964,7 @@ private struct IOSMinimalLyricsColumn: View {
     private func scheduleSelectionTimeout(proxy: ScrollViewProxy) {
         selectionTimeoutTask?.cancel()
         selectionTimeoutTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(nanoseconds: UInt64(5 * 1_000_000_000))
             guard !Task.isCancelled, selectedIndex != nil else { return }
             returnToActiveLine(proxy: proxy)
         }
@@ -2312,7 +2312,7 @@ private struct MinimalTransportControls: View {
             Button(action: player.togglePlayPause) {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 38, weight: .bold))
-                    .contentTransition(.opacity)
+                    .compatContentTransitionOpacity()
                     .frame(maxWidth: .infinity, minHeight: 64)
             }
             .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
@@ -2338,11 +2338,11 @@ private struct MinimalTransportControls: View {
     private var queueSheet: some View {
         if #available(iOS 16.4, *) {
             MinimalQueueSheet(backdrop: backdrop)
-                .presentationDetents([.fraction(0.5)])
+                .compatPresentationDetentsFraction(0.5)
                 .presentationBackgroundInteraction(.enabled)
         } else {
             MinimalQueueSheet(backdrop: backdrop)
-                .presentationDetents([.fraction(0.5)])
+                .compatPresentationDetentsFraction(0.5)
         }
     }
 
@@ -2393,7 +2393,7 @@ private struct MinimalQueueSheet: View {
     let backdrop: ArtworkColors
 
     var body: some View {
-        NavigationStack {
+        AppNavStack {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 2) {
                     if let current = player.currentTrack {
@@ -2847,7 +2847,7 @@ struct LocalPlaylistPickerSheet: View {
     @State private var showCreate = false
 
     var body: some View {
-        NavigationStack {
+        AppNavStack {
             Form {
                 Section {
                     ForEach(ImportedPlaylistStore.shared.playlists) { playlist in

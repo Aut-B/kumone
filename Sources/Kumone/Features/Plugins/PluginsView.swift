@@ -277,7 +277,7 @@ struct PluginsRootView: View {
                 .padding(.vertical, 14)
             } else {
                 ForEach(orderedPlaylists) { playlist in
-                    NavigationLink(value: Destination.localPlaylist(playlist)) {
+                    DestinationLink(value: Destination.localPlaylist(playlist)) {
                         HStack(spacing: 10) {
                             Image(systemName: "music.note.list")
                                 .foregroundStyle(Theme.accent)
@@ -494,7 +494,7 @@ struct ImportedPlaylistDetailView: View {
             }
             Spacer()
             if entry.durationMS > 0 {
-                Text(Duration.milliseconds(entry.durationMS).formatted(.time(pattern: .minuteSecond)))
+                Text(CompatDuration.mmss(entry.durationMS))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
@@ -610,7 +610,7 @@ struct LocalPlaylistOrderSheet: View {
     @State private var working: [ImportedPlaylist] = []
 
     var body: some View {
-        NavigationStack {
+        AppNavStack {
             List {
                 ForEach(working) { playlist in
                     HStack(spacing: 10) {
@@ -676,7 +676,7 @@ private struct PluginTrackRow: View {
                 }
                 Spacer(minLength: 8)
                 if item.durationMS > 0 {
-                    Text(Duration.milliseconds(item.durationMS).formatted(.time(pattern: .minuteSecond)))
+                    Text(CompatDuration.mmss(item.durationMS))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
@@ -703,7 +703,7 @@ struct PluginManagerView: View {
     @State private var installError: String?
 
     var body: some View {
-        NavigationStack {
+        AppNavStack {
             Form {
                 installedSection
                 presetSection
@@ -869,7 +869,7 @@ struct WebDAVImportView: View {
     @State private var importingName: String?
 
     var body: some View {
-        NavigationStack {
+        AppNavStack {
             Form {
                 Section {
                     TextField("https://dav.jianguoyun.com/dav/", text: $server)

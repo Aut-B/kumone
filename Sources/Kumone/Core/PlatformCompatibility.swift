@@ -127,3 +127,60 @@ extension View {
         }
     }
 }
+
+// MARK: - iOS 15 fallbacks
+//
+// The deployment target is iOS 15 (iPhone 6s can go no further), so every
+// modifier below is gated: the modern API runs where it exists, older systems
+// fall back to plain behaviour.
+
+extension View {
+    ///  is iOS 17+; older systems swap the content without
+    /// the cross-fade.
+    func compatContentTransitionOpacity() -> AnyView {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            return AnyView(self.contentTransition(.opacity))
+        }
+        return AnyView(self)
+    }
+
+    ///  is iOS 16+.
+    func compatPresentationDetentsHeight(_ height: CGFloat) -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.presentationDetents([.height(height)]))
+        }
+        return AnyView(self)
+    }
+
+    func compatPresentationDetentsFraction(_ fraction: Double) -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.presentationDetents([.fraction(fraction)]))
+        }
+        return AnyView(self)
+    }
+
+    ///  is iOS 16+; iOS 15 forms are grouped anyway.
+    func compatFormGrouped() -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.formStyle(.grouped))
+        }
+        return AnyView(self)
+    }
+
+    ///  is iOS 16+.
+    func compatHiddenScrollContentBackground() -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.scrollContentBackground(.hidden))
+        }
+        return AnyView(self)
+    }
+}
+
+/// mm:ss for a millisecond value —  formatting is iOS 16+.
+enum CompatDuration {
+    static func mmss(_ milliseconds: Int) -> String {
+        guard milliseconds > 0 else { return "--:--" }
+        let total = milliseconds / 1000
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}

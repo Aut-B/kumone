@@ -1,5 +1,7 @@
 import SwiftUI
 
+#if os(macOS)
+
 struct MainWindow: View {
     private let externalPath: Binding<[Destination]>?
 #if os(macOS)
@@ -148,10 +150,10 @@ struct MainWindow: View {
                 // drop the toolbar once nothing is left to see — snapping it
                 // away at once reads as a glitch above the rising page.
                 nowPlayingChromeTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(120))
+                    try? await Task.sleep(nanoseconds: UInt64(120 * 1_000_000))
                     guard !Task.isCancelled else { return }
                     nowPlayingChromeFadedOut = true
-                    try? await Task.sleep(for: .milliseconds(230))
+                    try? await Task.sleep(nanoseconds: UInt64(230 * 1_000_000))
                     guard !Task.isCancelled else { return }
                     nowPlayingChromeHidden = true
                 }
@@ -492,3 +494,4 @@ struct ToastView: View {
             .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
     }
 }
+#endif

@@ -426,7 +426,7 @@ struct PlaylistDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .sheet(isPresented: $showFullDescription) {
-                    NavigationStack {
+                    AppNavStack {
                         ScrollView {
                             Text(description)
                                 .font(.system(size: 14))
