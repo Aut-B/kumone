@@ -65,6 +65,12 @@ final class PlaylistDetailViewModel: ObservableObject {
         tracks.removeAll { $0.id == track.id }
     }
 
+    /// Batch removal: one network call already deleted them on the server, so
+    /// the local list just drops every id at once.
+    func remove(ids: Set<Int>) {
+        tracks.removeAll { ids.contains($0.id) }
+    }
+
     func replaceRecommendation(_ rejected: Track, with replacement: Track) {
         if tracks.replaceRecommendation(rejected, with: replacement) {
             reducedRecommendationIDs.insert(rejected.id)
@@ -80,8 +86,15 @@ struct PlaylistDetailView: View {
     @StateObject private var model: PlaylistDetailViewModel
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
+    @ObservedObject private var layout = PlaylistLayoutStore.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showFullDescription = false
+    @State private var multiSelectMode = false
+    @State private var selectedIDs: Set<Int> = []
+    @State private var sorting = false
+    @State private var showCollect = false
+    @State private var showDeleteConfirm = false
+    @State private var isDeleting = false
 
     init(playlistID: Int, isLikedList: Bool = false, recommendationContext: RecommendationContext? = nil) {
         self.playlistID = playlistID
@@ -103,48 +116,84 @@ struct PlaylistDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: isCompact ? 16 : 20) {
-                if let detail = model.detail {
-                    if isCompact {
-                        compactHeader(detail)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                    } else {
-                        regularHeader(detail)
-                            .padding(.horizontal, Theme.Layout.contentInset)
-                            .padding(.top, 16)
-                    }
+        Group {
+            if sorting {
+                reorderList
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: isCompact ? 16 : 20) {
+                        if let detail = model.detail {
+                            if isCompact {
+                                compactHeader(detail)
+                                    .padding(.horizontal, 16)
+                                    .padding(.top, 12)
+                            } else {
+                                regularHeader(detail)
+                                    .padding(.horizontal, Theme.Layout.contentInset)
+                                    .padding(.top, 16)
+                            }
 
-                    TrackListView(
-                        tracks: model.filteredTracks,
-                        privileges: model.privileges,
-                        source: .playlist(playlistID),
-                        context: model.detail.map { .playlist(id: playlistID, name: $0.name) },
-                        removableFromPlaylistID: isOwnPlaylist ? playlistID : nil,
-                        onRemoved: { model.remove($0) },
-                        recommendationContext: recommendationContext,
-                        onRecommendationReduced: { model.replaceRecommendation($0, with: $1) }
-                    )
-                    .padding(.horizontal, isCompact ? 6 : Theme.Layout.contentInset - 10)
+                            Group {
+                                if multiSelectMode {
+                                    PlaylistSelectionSummaryBar(
+                                        selectedCount: selectedIDs.count,
+                                        totalCount: visibleTracks.count,
+                                        onToggleAll: toggleSelectAll
+                                    )
+                                    LazyVStack(spacing: 1) {
+                                        ForEach(visibleTracks) { track in
+                                            selectableRow(track)
+                                        }
+                                    }
+                                } else {
+                                    TrackListView(
+                                        tracks: visibleTracks,
+                                        privileges: model.privileges,
+                                        source: .playlist(playlistID),
+                                        context: model.detail.map { .playlist(id: playlistID, name: $0.name) },
+                                        removableFromPlaylistID: isOwnPlaylist ? playlistID : nil,
+                                        onRemoved: { model.remove($0) },
+                                        recommendationContext: recommendationContext,
+                                        onRecommendationReduced: { model.replaceRecommendation($0, with: $1) }
+                                    )
+                                }
+                            }
+                            .padding(.horizontal, isCompact ? 6 : Theme.Layout.contentInset - 10)
 
-                    if model.isLoadingMore {
-                        HStack {
-                            Spacer()
-                            ProgressView().controlSize(.small)
-                            Spacer()
+                            if model.isLoadingMore {
+                                HStack {
+                                    Spacer()
+                                    ProgressView().controlSize(.small)
+                                    Spacer()
+                                }
+                                .padding(.vertical, 12)
+                            }
+                        } else if model.isLoading {
+                            loadingHeader
+                        } else if let message = model.errorMessage {
+                            ErrorStateView(message: message) {
+                                Task { await model.load() }
+                            }
+                            .frame(minHeight: 400)
                         }
-                        .padding(.vertical, 12)
+                        PlayerClearanceSpacer()
                     }
-                } else if model.isLoading {
-                    loadingHeader
-                } else if let message = model.errorMessage {
-                    ErrorStateView(message: message) {
-                        Task { await model.load() }
-                    }
-                    .frame(minHeight: 400)
                 }
-                PlayerClearanceSpacer()
+                .safeAreaInset(edge: .bottom) {
+                    if multiSelectMode {
+                        VStack(spacing: 0) {
+                            Divider().opacity(0.4)
+                            PlaylistSelectionActionBar(
+                                selectedCount: selectedIDs.count,
+                                canDelete: isOwnPlaylist,
+                                onPlayNext: playSelectedNext,
+                                onCollect: { showCollect = true },
+                                onDelete: { showDeleteConfirm = true }
+                            )
+                        }
+                        .background(.bar)
+                    }
+                }
             }
         }
         #if os(macOS)
@@ -152,9 +201,173 @@ struct PlaylistDetailView: View {
         #else
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    toggleMultiSelect()
+                } label: {
+                    Image(systemName: multiSelectMode ? "xmark.circle" : "checklist")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .accessibilityLabel(multiSelectMode ? "退出多选" : "多选")
+                .disabled(model.detail == nil || sorting)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        sorting.toggle()
+                        if sorting {
+                            multiSelectMode = false
+                            selectedIDs.removeAll()
+                        }
+                    } label: {
+                        Label(sorting ? "完成排序" : "调整歌曲顺序",
+                              systemImage: sorting ? "checkmark" : "arrow.up.arrow.down")
+                    }
+                    .disabled(model.tracks.count < 2)
+                    Button {
+                        layout.clearTrackOrder(playlistID: playlistID)
+                    } label: {
+                        Label("恢复默认顺序", systemImage: "arrow.uturn.left")
+                    }
+                    .disabled(!layout.hasCustomTrackOrder(playlistID: playlistID))
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("更多")
+                .disabled(model.detail == nil)
+            }
+        }
+        .sheet(isPresented: $showCollect) {
+            AddTracksToPlaylistSheet(tracks: selectedTracks)
+        }
+        .confirmationDialog(
+            "从歌单移除 \(selectedIDs.count) 首？",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("移除", role: .destructive) {
+                Task { await deleteSelected() }
+            }
+            Button("取消", role: .cancel) {}
+        }
         .task(id: playlistID) {
             await model.load()
         }
+    }
+
+    // MARK: - Multi-select
+
+    /// The list as shown: filtered, then re-ordered by the local layout.
+    private var visibleTracks: [Track] {
+        layout.orderedTracks(model.filteredTracks, playlistID: playlistID)
+    }
+
+    private var selectedTracks: [Track] {
+        visibleTracks.filter { selectedIDs.contains($0.id) }
+    }
+
+    /// A plain row while selecting — tapping toggles the checkbox instead of
+    /// starting playback, and the title is explicitly `.primary` so it isn't
+    /// painted in the accent colour.
+    private func selectableRow(_ track: Track) -> some View {
+        HStack(spacing: 10) {
+            SelectionCheckmark(isSelected: selectedIDs.contains(track.id))
+            CachedAsyncImage(url: track.album.picUrl?.resizedImageURL(160), animated: false) {
+                Rectangle().fill(Color.secondary.opacity(0.12))
+            }
+            .frame(width: 42, height: 42)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(track.artistNames)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { toggle(track) }
+    }
+
+    private func toggle(_ track: Track) {
+        if selectedIDs.contains(track.id) {
+            selectedIDs.remove(track.id)
+        } else {
+            selectedIDs.insert(track.id)
+        }
+    }
+
+    private func toggleSelectAll() {
+        let ids = Set(visibleTracks.map(\.id))
+        if !ids.isEmpty && selectedIDs == ids {
+            selectedIDs.removeAll()
+        } else {
+            selectedIDs = ids
+        }
+    }
+
+    private func toggleMultiSelect() {
+        multiSelectMode.toggle()
+        selectedIDs.removeAll()
+    }
+
+    private func playSelectedNext() {
+        let tracks = selectedTracks
+        guard !tracks.isEmpty else { return }
+        for track in tracks { player.addToPlayNext(track) }
+        ToastCenter.shared.show(String(localized: "\(tracks.count) 首已排到下一首"))
+        selectedIDs.removeAll()
+        multiSelectMode = false
+    }
+
+    private func deleteSelected() async {
+        let ids = selectedIDs
+        guard !ids.isEmpty, isOwnPlaylist else { return }
+        isDeleting = true
+        defer { isDeleting = false }
+        do {
+            try await NeteaseAPI.playlistTracks(op: "del", playlistID: playlistID, trackIDs: ids.sorted())
+            model.remove(ids: ids)
+            selectedIDs.removeAll()
+            multiSelectMode = false
+            ToastCenter.shared.show(String(localized: "已从歌单中移除 \(ids.count) 首"))
+        } catch {
+            ToastCenter.shared.show(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Reordering
+
+    /// NetEase offers no API to reorder a playlist's tracks, so this writes a
+    /// local view order: it changes what you see and play here, not the server.
+    private var reorderList: some View {
+        List {
+            ForEach(visibleTracks) { track in
+                HStack(spacing: 10) {
+                    Image(systemName: "line.3.horizontal")
+                        .foregroundStyle(.secondary)
+                    Text(track.name)
+                        .lineLimit(1)
+                    Spacer()
+                    Text(track.artistNames)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .onMove { offsets, destination in
+                var list = visibleTracks
+                list.move(fromOffsets: offsets, toOffset: destination)
+                layout.setTrackOrder(list, playlistID: playlistID)
+            }
+        }
+        .listStyle(.plain)
+        .environment(\.editMode, .constant(.active))
     }
 
     // MARK: - Compact (Mobile) Header

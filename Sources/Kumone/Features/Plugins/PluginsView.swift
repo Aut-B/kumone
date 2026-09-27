@@ -72,18 +72,19 @@ final class PluginsSearchModel: ObservableObject {
 // MARK: - Root tab
 
 struct PluginsRootView: View {
-    enum Section: Hashable {
-        case search, playlists
-    }
-
     @StateObject private var model = PluginsSearchModel()
+    @ObservedObject private var store = ImportedPlaylistStore.shared
+    @ObservedObject private var layout = PlaylistLayoutStore.shared
+    @Environment(\.openDestination) private var openDestination
     @State private var query = ""
     @State private var showManager = false
     @State private var showWebDAV = false
-    @State private var section: Section = .search
-    @State private var selectedPlaylist: ImportedPlaylist?
-    /// Plugin item picked for "添加到混装歌单" from a search result.
-    @State private var mixedTarget: PluginMusicItem? = nil
+    @State private var showNewPlaylist = false
+    @State private var showReorder = false
+    @State private var newPlaylistName = ""
+
+    /// Pinned first, then in the user's own order.
+    private var orderedPlaylists: [ImportedPlaylist] { layout.orderedLocal(store.playlists) }
 
     var body: some View {
         content
@@ -94,7 +95,6 @@ struct PluginsRootView: View {
                 prompt: Text("在插件音源中搜索")
             )
             .onSubmit(of: .search) {
-                section = .search
                 Task { await model.search(query: query) }
             }
             .toolbar {
@@ -105,12 +105,27 @@ struct PluginsRootView: View {
                         Image(systemName: "tray.and.arrow.down")
                     }
                     .accessibilityLabel("从 WebDAV 导入歌单")
-                    Button {
-                        showManager = true
+                    Menu {
+                        Button {
+                            showNewPlaylist = true
+                        } label: {
+                            Label("新建本地歌单", systemImage: "plus")
+                        }
+                        Button {
+                            showReorder = true
+                        } label: {
+                            Label("调整歌单顺序", systemImage: "arrow.up.arrow.down")
+                        }
+                        .disabled(orderedPlaylists.count < 2)
+                        Button {
+                            showManager = true
+                        } label: {
+                            Label("插件管理", systemImage: "puzzlepiece.extension")
+                        }
                     } label: {
-                        Image(systemName: "puzzlepiece.extension")
+                        Image(systemName: "ellipsis.circle")
                     }
-                    .accessibilityLabel("插件管理")
+                    .accessibilityLabel("更多")
                 }
             }
             .sheet(isPresented: $showManager) {
@@ -119,11 +134,23 @@ struct PluginsRootView: View {
             .sheet(isPresented: $showWebDAV) {
                 WebDAVImportView()
             }
-            .sheet(item: $selectedPlaylist) { playlist in
-                ImportedPlaylistDetailView(playlist: playlist)
+            .sheet(isPresented: $showReorder) {
+                LocalPlaylistOrderSheet()
             }
-            .sheet(item: $mixedTarget) { item in
-                MixedPlaylistPickerSheet(track: Track(pluginItem: item))
+            .alert("新建本地歌单", isPresented: $showNewPlaylist) {
+                TextField("歌单名称", text: $newPlaylistName)
+                Button("创建") {
+                    let name = newPlaylistName.trimmingCharacters(in: .whitespaces)
+                    newPlaylistName = ""
+                    guard !name.isEmpty else { return }
+                    do {
+                        _ = try ImportedPlaylistStore.shared.createPlaylist(name: name)
+                        ToastCenter.shared.show(String(localized: "歌单已创建"))
+                    } catch {
+                        ToastCenter.shared.show(error.localizedDescription)
+                    }
+                }
+                Button("取消", role: .cancel) { newPlaylistName = "" }
             }
             .onAppear {
                 model.selectFirst()
@@ -133,33 +160,45 @@ struct PluginsRootView: View {
             }
     }
 
+    /// Everything on one page: the playlists and the search results, so
+    /// neither needs a segmented switch to reach.
     @ViewBuilder
     private var content: some View {
         if PluginManager.shared.plugins.isEmpty {
             EmptyStateView(
                 icon: "puzzlepiece.extension",
                 title: "还没有安装插件音源",
-                subtitle: "点击右上角拼图按钮安装音源，兼容 MusicFree 插件生态"
+                subtitle: "点击右上角菜单里的「插件管理」安装音源，兼容 MusicFree 插件生态"
             )
         } else {
-            VStack(spacing: 0) {
-                Picker("", selection: $section) {
-                    Text("搜索").tag(Section.search)
-                    Text("歌单").tag(Section.playlists)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-
-                switch section {
-                case .search:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
                     pluginPicker
-                    searchResults
-                case .playlists:
-                    playlistList
+                    if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                        playlistSection
+                        searchHint
+                    } else {
+                        searchResults
+                        playlistSection
+                    }
                 }
+                .padding(.bottom, 24)
             }
         }
+    }
+
+    @ViewBuilder
+    private var searchHint: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 22))
+                .foregroundStyle(.tertiary)
+            Text("在顶部搜索框输入关键词，结果会直接显示在这里")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 26)
     }
 
     private var pluginPicker: some View {
@@ -196,167 +235,333 @@ struct PluginsRootView: View {
     @ViewBuilder
     private var searchResults: some View {
         if model.isSearching && model.items.isEmpty {
-            Spacer()
-            ProgressView()
-            Spacer()
+            HStack { Spacer(); ProgressView(); Spacer() }
+                .padding(.vertical, 24)
         } else if let error = model.errorMessage, model.items.isEmpty {
-            Spacer()
             EmptyStateView(icon: "wifi.exclamationmark", title: "搜索失败", subtitle: LocalizedStringKey(error))
-            Spacer()
         } else if model.items.isEmpty {
-            Spacer()
-            EmptyStateView(icon: "magnifyingglass", title: "输入关键词开始搜索")
-            Spacer()
+            EmptyStateView(icon: "magnifyingglass", title: "没有找到结果", subtitle: "换个关键词，或换一个音源再试")
         } else {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                        PluginTrackRow(
-                            item: item,
-                            onTap: { model.play(at: index) },
-                            onAddToMixed: { mixedTarget = item }
-                        )
-                    }
-                    if model.hasMore {
-                        ProgressView()
-                            .padding()
-                            .task { await model.loadMore() }
-                    }
+            LazyVStack(spacing: 0) {
+                ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                    PluginTrackRow(item: item, onTap: { model.play(at: index) })
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 80)
+                if model.hasMore {
+                    ProgressView()
+                        .padding()
+                        .task { await model.loadMore() }
+                }
             }
+            .padding(.horizontal, 16)
         }
     }
 
-    @ViewBuilder
-    private var playlistList: some View {
-        let playlists = ImportedPlaylistStore.shared.playlists
-        if playlists.isEmpty {
-            Spacer()
-            EmptyStateView(
-                icon: "music.note.list",
-                title: "还没有导入歌单",
-                subtitle: "点击右上角下载图标，从你的 WebDAV 导入 MusicFree 备份歌单"
-            )
-            Spacer()
-        } else {
-            List {
-                ForEach(playlists) { playlist in
-                    Button {
-                        selectedPlaylist = playlist
-                    } label: {
-                        HStack {
+    /// Local playlists, pinned first, opened by pushing onto the tab's stack
+    /// (they used to be a sheet behind a segmented switch).
+    private var playlistSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("我的歌单")
+                .font(.headline)
+                .padding(.horizontal, 16)
+
+            if orderedPlaylists.isEmpty {
+                VStack(spacing: 6) {
+                    Text("还没有本地歌单")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("右上角菜单可以新建，也能从 WebDAV 导入 Beans 或 MusicFree 的备份")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+            } else {
+                ForEach(orderedPlaylists) { playlist in
+                    NavigationLink(value: Destination.localPlaylist(playlist)) {
+                        HStack(spacing: 10) {
                             Image(systemName: "music.note.list")
                                 .foregroundStyle(Theme.accent)
-                                .frame(width: 28)
+                                .frame(width: 24)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(playlist.name).font(.body.weight(.medium))
+                                Text(playlist.name)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
                                 Text("\(playlist.itemCount) 首 · \(playlist.source)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
+                            if layout.isPinned(local: playlist.id) {
+                                Image(systemName: "pin.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.accent)
+                            }
                             Image(systemName: "chevron.right")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
                     }
-                    .swipeActions {
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button {
+                            layout.togglePin(local: playlist.id)
+                        } label: {
+                            Label(layout.isPinned(local: playlist.id) ? "取消置顶" : "置顶",
+                                  systemImage: layout.isPinned(local: playlist.id) ? "pin.slash" : "pin")
+                        }
                         Button(role: .destructive) {
                             ImportedPlaylistStore.shared.remove(playlist)
                         } label: {
-                            Label("删除", systemImage: "trash")
+                            Label("删除歌单", systemImage: "trash")
                         }
                     }
                 }
             }
-            .listStyle(.plain)
         }
     }
 }
 
-/// Detail view for an imported playlist: pick one song, or play from one.
+/// Detail view for a local playlist: play from one, select in bulk, reorder.
+///
+/// A local playlist holds both kinds of entry — plugin items and NetEase
+/// references — so a Beans backup lands here intact.
 struct ImportedPlaylistDetailView: View {
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var player: PlayerService
     let playlist: ImportedPlaylist
-    @State private var items: [PluginMusicItem] = []
-    /// Plugin item picked for "添加到混装歌单" from this list.
-    @State private var mixedTarget: PluginMusicItem? = nil
 
-    var body: some View {
-        NavigationStack {
-            List {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    Button {
-                        play(from: index)
-                        dismiss()
-                    } label: {
-                        HStack(spacing: 10) {
-                            CachedAsyncImage(url: item.artwork.flatMap(URL.init(string:))) {
-                                Rectangle().fill(Color.secondary.opacity(0.12))
-                            }
-                            .frame(width: 42, height: 42)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.title)
-                                    .font(.subheadline.weight(.medium))
-                                    .lineLimit(1)
-                                Text("\(item.artist) · \(item.platform)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            if item.durationMS > 0 {
-                                Text(Duration.milliseconds(item.durationMS).formatted(.time(pattern: .minuteSecond)))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                    .contextMenu {
-                        Button("播放") { play(from: index) }
-                        Button("添加到混装歌单…") { mixedTarget = item }
-                    }
-                }
-            }
-            .sheet(item: $mixedTarget) { item in
-                MixedPlaylistPickerSheet(track: Track(pluginItem: item))
-            }
-            .navigationTitle(playlist.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarLeading) {
-                    Button {
-                        play(from: 0)
-                        dismiss()
-                    } label: {
-                        Image(systemName: "play.circle")
-                    }
-                    .accessibilityLabel("播放全部")
-                    Button {
-                        addCurrent()
-                    } label: {
-                        Image(systemName: "plus.circle")
-                    }
-                    .accessibilityLabel("把正在播放的歌曲加进这个歌单")
-                    .disabled(player.currentTrack?.isPluginTrack != true)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
-        }
-        .onAppear {
-            items = ImportedPlaylistStore.shared.loadItems(of: playlist)
+    @State private var entries: [LocalTrackEntry] = []
+    @State private var filter = ""
+    @State private var multiSelectMode = false
+    @State private var selectedIDs: Set<String> = []
+    @State private var editMode: EditMode = .inactive
+    @State private var showCollect = false
+    @State private var showDeleteConfirm = false
+
+    private var isReordering: Bool { editMode == .active }
+
+    private var visibleEntries: [LocalTrackEntry] {
+        let query = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return entries }
+        return entries.filter {
+            $0.title.lowercased().contains(query)
+                || $0.artist.lowercased().contains(query)
+                || $0.album.lowercased().contains(query)
         }
     }
 
-    private func play(from index: Int) {
-        guard !items.isEmpty else { return }
-        let queue = items.map { Track(pluginItem: $0) }
+    /// Dragging only makes sense for the unfiltered list: a moved row would
+    /// otherwise be re-indexed against a list the user cannot see.
+    private var canReorder: Bool {
+        visibleEntries.count > 1 && filter.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var selectedTracks: [Track] {
+        entries.filter { selectedIDs.contains($0.id) }.map(\.track)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if multiSelectMode {
+                PlaylistSelectionSummaryBar(
+                    selectedCount: selectedIDs.count,
+                    totalCount: visibleEntries.count,
+                    onToggleAll: toggleSelectAll
+                )
+                Divider().opacity(0.4)
+            }
+
+            List {
+                ForEach(visibleEntries) { entry in
+                    row(for: entry)
+                }
+                .onMove(perform: canReorder ? moveEntries : nil)
+                .onDelete(perform: multiSelectMode ? nil : deleteEntries)
+            }
+            .listStyle(.plain)
+            .environment(\.editMode, $editMode)
+        }
+        .navigationTitle(playlist.name)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .searchable(
+            text: $filter,
+            placement: .navigationBarDrawer(displayMode: .automatic),
+            prompt: Text("搜索歌单内歌曲")
+        )
+        .safeAreaInset(edge: .bottom) {
+            if multiSelectMode {
+                VStack(spacing: 0) {
+                    Divider().opacity(0.4)
+                    PlaylistSelectionActionBar(
+                        selectedCount: selectedIDs.count,
+                        canDelete: true,
+                        onPlayNext: playSelectedNext,
+                        onCollect: { showCollect = true },
+                        onDelete: { showDeleteConfirm = true }
+                    )
+                }
+                .background(.bar)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    toggleMultiSelect()
+                } label: {
+                    Image(systemName: multiSelectMode ? "xmark.circle" : "checklist")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .accessibilityLabel(multiSelectMode ? "退出多选" : "多选")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        editMode = isReordering ? .inactive : .active
+                        if isReordering {
+                            multiSelectMode = false
+                            selectedIDs.removeAll()
+                        }
+                    } label: {
+                        Label(isReordering ? "完成排序" : "调整歌曲顺序",
+                              systemImage: isReordering ? "checkmark" : "arrow.up.arrow.down")
+                    }
+                    .disabled(!isReordering && !canReorder)
+                    Button {
+                        playAll()
+                    } label: {
+                        Label("播放全部", systemImage: "play")
+                    }
+                    .disabled(entries.isEmpty)
+                    Button {
+                        addCurrent()
+                    } label: {
+                        Label("把正在播放的歌曲加进来", systemImage: "plus.circle")
+                    }
+                    .disabled(player.currentTrack == nil)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("更多")
+            }
+        }
+        .sheet(isPresented: $showCollect) {
+            AddTracksToPlaylistSheet(tracks: selectedTracks)
+        }
+        .confirmationDialog(
+            "从歌单移除 \(selectedIDs.count) 首？",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("移除", role: .destructive) {
+                ImportedPlaylistStore.shared.removeEntries(withIDs: selectedIDs, from: playlist)
+                selectedIDs.removeAll()
+                multiSelectMode = false
+                reload()
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .onAppear(perform: reload)
+    }
+
+    // MARK: - Rows
+
+    /// Tapping the row plays it; in select mode it toggles the checkbox
+    /// instead. `.foregroundStyle(.primary)` is explicit because a tint would
+    /// otherwise paint every title in the accent (red) colour.
+    private func row(for entry: LocalTrackEntry) -> some View {
+        HStack(spacing: 10) {
+            if multiSelectMode {
+                SelectionCheckmark(isSelected: selectedIDs.contains(entry.id))
+            }
+            CachedAsyncImage(url: entry.artwork.flatMap(URL.init(string:))) {
+                Rectangle().fill(Color.secondary.opacity(0.12))
+            }
+            .frame(width: 42, height: 42)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("\(entry.artist) · \(entry.platform)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if entry.durationMS > 0 {
+                Text(Duration.milliseconds(entry.durationMS).formatted(.time(pattern: .minuteSecond)))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if multiSelectMode {
+                toggle(entry)
+            } else if !isReordering {
+                play(entry)
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if !multiSelectMode && !isReordering {
+                Button(role: .destructive) {
+                    ImportedPlaylistStore.shared.removeEntries(withIDs: [entry.id], from: playlist)
+                    reload()
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+            }
+        }
+    }
+
+    // MARK: - Actions
+
+    private func reload() {
+        entries = ImportedPlaylistStore.shared.loadEntries(of: playlist)
+    }
+
+    private func toggle(_ entry: LocalTrackEntry) {
+        if selectedIDs.contains(entry.id) {
+            selectedIDs.remove(entry.id)
+        } else {
+            selectedIDs.insert(entry.id)
+        }
+    }
+
+    private func toggleSelectAll() {
+        let keys = Set(visibleEntries.map(\.id))
+        if selectedIDs.count == keys.count && !keys.isEmpty {
+            selectedIDs.removeAll()
+        } else {
+            selectedIDs = keys
+        }
+    }
+
+    private func toggleMultiSelect() {
+        multiSelectMode.toggle()
+        selectedIDs.removeAll()
+        if multiSelectMode { editMode = .inactive }
+    }
+
+    private func play(_ entry: LocalTrackEntry) {
+        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
+        playFrom(index)
+    }
+
+    private func playAll() {
+        guard !entries.isEmpty else { return }
+        playFrom(0)
+    }
+
+    private func playFrom(_ index: Int) {
+        guard !entries.isEmpty else { return }
+        let queue = entries.map(\.track)
         let start = queue[min(index, queue.count - 1)]
         PlayerService.shared.play(
             tracks: queue,
@@ -366,28 +571,84 @@ struct ImportedPlaylistDetailView: View {
         )
     }
 
-    /// Appends the currently playing plugin track to this playlist.
+    private func playSelectedNext() {
+        let tracks = selectedTracks
+        guard !tracks.isEmpty else { return }
+        for track in tracks { player.addToPlayNext(track) }
+        ToastCenter.shared.show(String(localized: "\(tracks.count) 首已排到下一首"))
+        selectedIDs.removeAll()
+        multiSelectMode = false
+    }
+
+    /// Adds whatever is playing; NetEase songs are stored by id, plugin songs
+    /// by their raw item, and both go to the top of the list.
     private func addCurrent() {
-        guard let track = player.currentTrack, let plugin = track.plugin else { return }
-        guard let item = PluginMusicItem(
-            normalizing: [
-                "id": plugin.itemID,
-                "platform": plugin.platform,
-                "bvid": plugin.itemID.hasPrefix("BV") ? plugin.itemID : "",
-                "title": track.name,
-                "artist": track.artistNames,
-                "album": track.album.name,
-                "duration": track.duration,
-                "artwork": track.album.picUrl ?? "",
-            ],
-            platform: plugin.platform
-        ) else { return }
-        do {
-            try ImportedPlaylistStore.shared.addItem(item, to: playlist)
-            items = ImportedPlaylistStore.shared.loadItems(of: playlist)
-            ToastCenter.shared.show(String(localized: "已添加到「\(playlist.name)」"))
-        } catch {
+        guard let track = player.currentTrack, let entry = LocalTrackEntry(track: track) else { return }
+        let added = ImportedPlaylistStore.shared.addEntries([entry], to: playlist)
+        reload()
+        if added == 0 {
             ToastCenter.shared.show(String(localized: "这首歌已经在歌单里了"))
+        } else {
+            ToastCenter.shared.show(String(localized: "已添加到「\(playlist.name)」，放在最前面"))
+        }
+    }
+
+    private func moveEntries(from source: IndexSet, to destination: Int) {
+        ImportedPlaylistStore.shared.moveEntries(from: source, to: destination, in: playlist)
+        reload()
+    }
+
+    private func deleteEntries(at offsets: IndexSet) {
+        let ids = Set(offsets.map { visibleEntries[$0].id })
+        ImportedPlaylistStore.shared.removeEntries(withIDs: ids, from: playlist)
+        reload()
+    }
+}
+
+/// Drag-to-reorder sheet for local playlists.
+struct LocalPlaylistOrderSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var layout = PlaylistLayoutStore.shared
+    @State private var working: [ImportedPlaylist] = []
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(working) { playlist in
+                    HStack(spacing: 10) {
+                        Image(systemName: "line.3.horizontal")
+                            .foregroundStyle(.secondary)
+                        Text(playlist.name)
+                        Spacer()
+                        if layout.isPinned(local: playlist.id) {
+                            Image(systemName: "pin.fill")
+                                .font(.caption)
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                }
+                .onMove { offsets, destination in
+                    working.move(fromOffsets: offsets, toOffset: destination)
+                }
+            }
+            .listStyle(.plain)
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("调整歌单顺序")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        layout.setLocalOrder(working)
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear { working = layout.orderedLocal(ImportedPlaylistStore.shared.playlists) }
         }
     }
 }
@@ -397,7 +658,6 @@ struct ImportedPlaylistDetailView: View {
 private struct PluginTrackRow: View {
     let item: PluginMusicItem
     let onTap: () -> Void
-    let onAddToMixed: () -> Void
 
     var body: some View {
         Button(action: onTap) {
@@ -431,7 +691,6 @@ private struct PluginTrackRow: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button("播放") { onTap() }
-            Button("添加到混装歌单…") { onAddToMixed() }
         }
     }
 }
@@ -635,7 +894,7 @@ struct WebDAVImportView: View {
                 } header: {
                     Text("WebDAV 设置")
                 } footer: {
-                    Text("支持坚果云等 WebDAV 服务。把 MusicFree 导出的歌单 JSON 备份到任意目录后在此导入。「导出备份」会把插件歌单与混装歌单一起写进 KumoneBackup.json。")
+                    Text("支持坚果云等 WebDAV 服务。可以直接导入 Beans 的 localLibrary.json，也可以导入 MusicFree 导出的歌单 JSON。「导出备份」把本地歌单写进 KumoneBackup.json，两种音源的歌都在里面。")
                     Text("导出到：" + exportDestination)
                         .foregroundStyle(.secondary)
                 }
@@ -671,10 +930,7 @@ struct WebDAVImportView: View {
                     Button("导出备份") {
                         Task { await exportBackup() }
                     }
-                    .disabled(
-                        (ImportedPlaylistStore.shared.playlists.isEmpty
-                            && MixedPlaylistStore.shared.playlists.isEmpty) || isExporting
-                    )
+                    .disabled(ImportedPlaylistStore.shared.playlists.isEmpty || isExporting)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
@@ -779,6 +1035,31 @@ struct WebDAVImportView: View {
             )
             let object = try? JSONSerialization.jsonObject(with: data)
 
+            // Format 0: Beans Music backup — the same file Beans writes to
+            // WebDAV, so one backup serves both apps.
+            if let backup = object as? [String: Any],
+               BeansBackupImporter.looksLikeBeansBackup(backup),
+               let parsed = BeansBackupImporter.parse(backup) {
+                var importedCount = 0
+                for playlist in parsed.playlists {
+                    try ImportedPlaylistStore.shared.importEntries(
+                        playlist.entries, name: playlist.name, source: "Beans"
+                    )
+                    importedCount += playlist.entries.count
+                }
+                guard importedCount > 0 else {
+                    errorMessage = String(localized: "这个 Beans 备份里没有可识别的歌曲")
+                    return
+                }
+                var message = String(localized: "已从 Beans 备份导入 \(parsed.playlists.count) 个歌单（\(importedCount) 首）")
+                if parsed.skipped > 0 {
+                    message += String(localized: "，跳过 \(parsed.skipped) 首（QQ / 酷狗音源这个 App 用不了）")
+                }
+                ToastCenter.shared.show(message)
+                dismiss()
+                return
+            }
+
             // Format 1: plain playlist = JSON array of music items.
             if let rawItems = object as? [[String: Any]] {
                 let items = rawItems.compactMap { PluginMusicItem(normalizing: $0, platform: "") }
@@ -794,9 +1075,8 @@ struct WebDAVImportView: View {
             }
 
             // Format 2: real MusicFree backup = { musicSheets: [...], plugins: [{srcUrl, version}] }.
-            // Kumone's own backup adds `mixedSheets` (see exportBackup) — an
-            // older build simply ignores that key, and an older backup has no
-            // such key, so the two stay compatible.
+            // Kumone's own backup writes the same shape (see exportBackup), so a
+            // backup written by an older build still restores here and back.
             if let backup = object as? [String: Any] {
                 let sheets = (backup["musicSheets"] as? [[String: Any]])
                     ?? (backup["playlists"] as? [[String: Any]]) ?? []
@@ -810,23 +1090,6 @@ struct WebDAVImportView: View {
                     importedCount += items.count
                 }
 
-                // Mixed playlists: their entries are `Track` JSON, not plugin
-                // items, so they restore through their own store.
-                let mixedSheets = backup["mixedSheets"] as? [[String: Any]] ?? []
-                var mixedCount = 0
-                var mixedTrackCount = 0
-                for (index, sheet) in mixedSheets.enumerated() {
-                    let title = (sheet["title"] as? String) ?? String(localized: "混装歌单 \(index + 1)")
-                    let musicList = sheet["musicList"] as? [[String: Any]] ?? []
-                    guard let encoded = try? JSONSerialization.data(withJSONObject: musicList),
-                          let restored = try? JSONDecoder().decode([Track].self, from: encoded),
-                          !restored.isEmpty else { continue }
-                    let landed = try MixedPlaylistStore.shared.restorePlaylist(name: title, tracks: restored)
-                    if landed > 0 {
-                        mixedCount += 1
-                        mixedTrackCount += landed
-                    }
-                }
                 // Backup plugins are URLs; install via the mirror-fallback path.
                 var pluginURLs: [String] = []
                 if let array = backup["plugins"] as? [[String: Any]] {
@@ -838,13 +1101,12 @@ struct WebDAVImportView: View {
                         if let srcUrl = value["srcUrl"] as? String { pluginURLs.append(srcUrl) }
                     }
                 }
-                if sheets.isEmpty && mixedSheets.isEmpty && pluginURLs.isEmpty {
+                if sheets.isEmpty && pluginURLs.isEmpty {
                     errorMessage = String(localized: "不认识的文件格式（既不是歌单也不是 MusicFree 备份）")
                     return
                 }
                 var parts: [String] = []
                 if importedCount > 0 { parts.append(String(localized: "\(sheets.count) 个插件歌单（\(importedCount) 首）")) }
-                if mixedTrackCount > 0 { parts.append(String(localized: "\(mixedCount) 个混装歌单（\(mixedTrackCount) 首）")) }
                 if !parts.isEmpty {
                     ToastCenter.shared.show(String(localized: "已从备份导入 ") + parts.joined(separator: String(localized: "、")))
                 }
@@ -893,35 +1155,16 @@ struct WebDAVImportView: View {
         isExporting = true
         defer { isExporting = false }
         let sheets: [[String: Any]] = ImportedPlaylistStore.shared.playlists.map { playlist in
-            let items = ImportedPlaylistStore.shared.loadItems(of: playlist)
+            let entries = ImportedPlaylistStore.shared.loadEntries(of: playlist)
             return [
                 "title": playlist.name,
-                "musicList": items.map { item -> [String: Any] in
-                    if let data = item.rawJSON.data(using: .utf8),
-                       let full = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-                        return full
-                    }
-                    return ["id": item.itemID, "platform": item.platform, "title": item.title,
-                            "artist": item.artist, "album": item.album,
-                            "duration": Double(item.durationMS) / 1000]
-                },
+                "musicList": entries.map(\.dictionary),
             ]
         }
-        // Mixed playlists travel in the same file under their own key, so one
-        // WebDAV backup restores both kinds. A NetEase entry is stored in its
-        // native `Track` shape so it survives the round trip intact.
-        let mixedSheets: [[String: Any]] = MixedPlaylistStore.shared.playlists.compactMap { playlist in
-            let tracks = MixedPlaylistStore.shared.tracks(of: playlist)
-            guard !tracks.isEmpty,
-                  let encoded = try? JSONEncoder().encode(tracks),
-                  let list = (try? JSONSerialization.jsonObject(with: encoded)) as? [[String: Any]] else {
-                return nil
-            }
-            return ["title": playlist.name, "musicList": list]
-        }
+        // A local playlist can hold NetEase entries too; they travel in the
+        // same list under their own `kind` marker and survive re-import.
         let backup: [String: Any] = [
             "musicSheets": sheets,
-            "mixedSheets": mixedSheets,
             "plugins": [],
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: backup, options: [.prettyPrinted]) else {

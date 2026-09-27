@@ -439,94 +439,116 @@ final class ImportedPlaylistStore: ObservableObject {
         }
     }
 
-    /// Imports parsed MusicFree playlist items under a name.
-    func importItems(_ items: [PluginMusicItem], name: String, source: String) throws {
+    /// Imports parsed playlist entries under a name, replacing a same-named
+    /// playlist so re-importing a backup doesn't pile up duplicates.
+    func importEntries(_ entries: [LocalTrackEntry], name: String, source: String) throws {
         let fileName = UUID().uuidString + ".json"
-        try writeItems(items, fileName: fileName)
+        try writeEntries(entries, fileName: fileName)
         playlists.removeAll { $0.name == name }
-        playlists.insert(ImportedPlaylist(name: name, fileName: fileName, itemCount: items.count, source: source), at: 0)
+        playlists.insert(ImportedPlaylist(name: name, fileName: fileName, itemCount: entries.count, source: source), at: 0)
         persist()
+    }
+
+    /// Convenience wrapper for MusicFree imports (plugin items only).
+    func importItems(_ items: [PluginMusicItem], name: String, source: String) throws {
+        try importEntries(items.map { .plugin($0) }, name: name, source: source)
     }
 
     /// Creates an empty local playlist for plugin tracks.
     @discardableResult
     func createPlaylist(name: String) throws -> ImportedPlaylist {
         let fileName = UUID().uuidString + ".json"
-        try writeItems([], fileName: fileName)
+        try writeEntries([], fileName: fileName)
         let playlist = ImportedPlaylist(name: name, fileName: fileName, itemCount: 0, source: String(localized: "本地"))
         playlists.insert(playlist, at: 0)
         persist()
         return playlist
     }
 
-    /// Appends a plugin track to a local playlist (deduplicates by id).
-    func addItem(_ item: PluginMusicItem, to playlist: ImportedPlaylist) throws {
-        var items = loadItems(of: playlist)
-        guard !items.contains(where: { $0.id == item.id }) else {
-            throw WebDAVError.malformedResponse
-        }
-        items.append(item)
-        try writeItems(items, fileName: playlist.fileName)
-        guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
-        playlists[index].itemCount = items.count
-        persist()
-    }
-
-    /// Appends many items at once, writing the file a single time.
+    /// Inserts entries at the TOP of the playlist.
     ///
-    /// Used when a whole mixed playlist is copied over: calling `addItem` per
-    /// entry would re-read and re-write the JSON for every song. Existing
-    /// entries (same `id`) are skipped instead of throwing, so re-running an
-    /// export is harmless. Returns how many were actually appended.
+    /// Newest first is deliberate: a song you just added should be visible
+    /// without scrolling to the bottom of a long list. Existing entries
+    /// (same identity key) are skipped, so re-running an import is harmless.
+    /// Returns how many were actually inserted.
     @discardableResult
-    func addItems(_ newItems: [PluginMusicItem], to playlist: ImportedPlaylist) throws -> Int {
-        var items = loadItems(of: playlist)
-        let existing = Set(items.map(\.id))
-        let additions = newItems.filter { !existing.contains($0.id) }
+    func addEntries(_ newEntries: [LocalTrackEntry], to playlist: ImportedPlaylist) -> Int {
+        var entries = loadEntries(of: playlist)
+        let existing = Set(entries.map(\.id))
+        let additions = newEntries.filter { !existing.contains($0.id) }
         guard !additions.isEmpty else { return 0 }
-        items.append(contentsOf: additions)
-        try writeItems(items, fileName: playlist.fileName)
+        entries.insert(contentsOf: additions, at: 0)
+        guard (try? writeEntries(entries, fileName: playlist.fileName)) != nil else { return 0 }
         guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return 0 }
-        playlists[index].itemCount = items.count
+        playlists[index].itemCount = entries.count
         persist()
         return additions.count
     }
 
-    private func writeItems(_ items: [PluginMusicItem], fileName: String) throws {
-        // Store the FULL original item (bvid/cid/qualities live in rawJSON) —
-        // a reduced dict loses the fields playback resolution needs.
-        let payload: [[String: Any]] = items.map { item in
-            if let data = item.rawJSON.data(using: .utf8),
-               let full = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-                return full
-            }
-            return [
-                "id": item.itemID,
-                "platform": item.platform,
-                "title": item.title,
-                "artist": item.artist,
-                "album": item.album,
-                "duration": Double(item.durationMS) / 1000,
-            ]
-        }
+    /// Adds a single plugin track, keeping the historical throwing contract
+    /// (callers show "already in this playlist" when it fails).
+    func addItem(_ item: PluginMusicItem, to playlist: ImportedPlaylist) throws {
+        let added = addEntries([.plugin(item)], to: playlist)
+        if added == 0 { throw WebDAVError.malformedResponse }
+    }
+
+    /// Removes every entry whose identity key is in `ids`.
+    func removeEntries(withIDs ids: Set<String>, from playlist: ImportedPlaylist) {
+        var entries = loadEntries(of: playlist)
+        entries.removeAll { ids.contains($0.id) }
+        try? writeEntries(entries, fileName: playlist.fileName)
+        guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        playlists[index].itemCount = entries.count
+        persist()
+    }
+
+    /// Applies a drag-reorder, writing the file once.
+    func moveEntries(from source: IndexSet, to destination: Int, in playlist: ImportedPlaylist) {
+        var entries = loadEntries(of: playlist)
+        entries.move(fromOffsets: source, toOffset: destination)
+        try? writeEntries(entries, fileName: playlist.fileName)
+    }
+
+    func rename(_ playlist: ImportedPlaylist, to name: String) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        playlists[index].name = name
+        persist()
+    }
+
+    private func writeEntries(_ entries: [LocalTrackEntry], fileName: String) throws {
+        // Each entry serializes itself: plugin entries keep the FULL original
+        // item (bvid/cid/qualities live in rawJSON), NetEase entries keep the
+        // song id the URL is resolved from at play time.
+        let payload: [[String: Any]] = entries.map(\.dictionary)
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else {
             throw WebDAVError.malformedResponse
         }
         try data.write(to: directory.appendingPathComponent(fileName), options: .atomic)
     }
 
-    /// Loads the stored items of an imported playlist.
-    func loadItems(of playlist: ImportedPlaylist) -> [PluginMusicItem] {
+    /// Loads the stored entries of an imported playlist, both kinds.
+    func loadEntries(of playlist: ImportedPlaylist) -> [LocalTrackEntry] {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent(playlist.fileName)),
               let rawItems = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
             return []
         }
-        return rawItems.compactMap { PluginMusicItem(normalizing: $0, platform: "") }
+        return rawItems.compactMap { LocalTrackEntry(dictionary: $0) }
+    }
+
+    /// Plugin items only — kept for the MusicFree export path.
+    func loadItems(of playlist: ImportedPlaylist) -> [PluginMusicItem] {
+        loadEntries(of: playlist).compactMap { entry in
+            if case .plugin(let item) = entry { return item }
+            return nil
+        }
     }
 
     func remove(_ playlist: ImportedPlaylist) {
         playlists.removeAll { $0.id == playlist.id }
         persist()
+        // Drop the pin/order entries of a playlist that no longer exists,
+        // otherwise the layout store keeps growing with dead ids.
+        PlaylistLayoutStore.shared.pruneLocal(keeping: playlists)
         try? FileManager.default.removeItem(at: directory.appendingPathComponent(playlist.fileName))
     }
 }

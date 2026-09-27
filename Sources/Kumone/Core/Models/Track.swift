@@ -120,6 +120,27 @@ struct Track: Codable, Hashable, Identifiable {
         )
     }
 
+    /// Builds a Track from a NetEase song kept by reference in a local
+    /// playlist. `plugin` stays nil so playback resolves the URL from the real
+    /// song id through the normal NetEase path (unblock included).
+    init(localSong: LocalNeteaseSong) {
+        id = localSong.id
+        name = localSong.name
+        artists = [ArtistRef(id: 0, name: localSong.artist)]
+        album = AlbumRef(id: 0, name: localSong.album, picUrl: localSong.picUrl)
+        durationMS = localSong.durationMS
+        alias = []
+        transNames = []
+        fee = localSong.fee
+        mvID = 0
+        trackNo = 0
+        disc = nil
+        noCopyright = false
+        isCloud = false
+        embeddedPrivilege = nil
+        plugin = nil
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(Int.self, forKey: .id)

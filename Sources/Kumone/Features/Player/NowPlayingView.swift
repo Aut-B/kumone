@@ -1257,11 +1257,11 @@ private struct CompactTrackHeader: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
 
-    /// One enum-driven sheet, so the mixed-playlist picker and the NetEase
+    /// One enum-driven sheet, so the local-playlist picker and the NetEase
     /// playlist picker don't compete for the same presentation slot.
     private enum HeaderSheet: Identifiable {
         case neteasePlaylist
-        case mixedPlaylist
+        case localPlaylist
 
         var id: Int { hashValue }
     }
@@ -1352,9 +1352,9 @@ private struct CompactTrackHeader: View {
                         }
 
                         Button {
-                            activeSheet = .mixedPlaylist
+                            activeSheet = .localPlaylist
                         } label: {
-                            Label("添加到混装歌单…", systemImage: "square.stack.3d.up")
+                            Label("添加到歌单…", systemImage: "folder.badge.plus")
                         }
 
                         #if os(iOS)
@@ -1394,8 +1394,8 @@ private struct CompactTrackHeader: View {
                 switch sheet {
                 case .neteasePlaylist:
                     AddToPlaylistSheet(track: track)
-                case .mixedPlaylist:
-                    MixedPlaylistPickerSheet(track: track)
+                case .localPlaylist:
+                    AddTracksToPlaylistSheet(tracks: [track])
                 }
             }
         }
@@ -2072,12 +2072,12 @@ private struct MinimalTrackInfoRow: View {
     /// One enum-driven sheet for every "more" action.
     ///
     /// These used to be three separate `.sheet(isPresented:)` modifiers on the
-    /// same view; folding them into one stops the new mixed-playlist picker from
+    /// same view; folding them into one stops the local-playlist picker from
     /// competing with them for the same presentation slot.
     private enum MoreSheet: Identifiable {
         case neteasePlaylist
         case pluginPlaylist
-        case mixedPlaylist
+        case localPlaylist
         case share
 
         var id: Int { hashValue }
@@ -2121,8 +2121,8 @@ private struct MinimalTrackInfoRow: View {
                     AddToPlaylistSheet(track: track)
                 case .pluginPlaylist:
                     LocalPlaylistPickerSheet(track: track)
-                case .mixedPlaylist:
-                    MixedPlaylistPickerSheet(track: track)
+                case .localPlaylist:
+                    AddTracksToPlaylistSheet(tracks: [track])
                 case .share:
                     ShareSheet(items: Self.shareItems(for: track))
                 }
@@ -2223,9 +2223,9 @@ private struct MinimalTrackInfoRow: View {
             #endif
 
             Button {
-                moreSheet = .mixedPlaylist
+                moreSheet = .localPlaylist
             } label: {
-                Label("添加到混装歌单…", systemImage: "square.stack.3d.up")
+                Label("添加到歌单…", systemImage: "folder.badge.plus")
             }
 
             if track.isPluginTrack {
@@ -2867,7 +2867,7 @@ struct LocalPlaylistPickerSheet: View {
                 } header: {
                     Text("选择插件歌单")
                 } footer: {
-                    Text("插件歌单只放插件音源的歌。想把网易云的歌也放进来，请用「添加到混装歌单」。")
+                    Text("本地歌单两种音源的歌都能放，新添加的歌会排在最前面。")
                 }
                 Section {
                     Button {
@@ -2895,25 +2895,14 @@ struct LocalPlaylistPickerSheet: View {
     }
 
     private func add(to playlist: ImportedPlaylist) {
-        let item = PluginMusicItem(
-            normalizing: [
-                "id": track.plugin?.itemID ?? String(track.id),
-                "platform": track.plugin?.platform ?? "",
-                "title": track.name,
-                "artist": track.artistNames,
-                "album": track.album.name,
-                "duration": track.duration,
-            ],
-            platform: track.plugin?.platform ?? ""
-        )
-        guard let item else { return }
-        do {
-            try ImportedPlaylistStore.shared.addItem(item, to: playlist)
-            ToastCenter.shared.show(String(localized: "已添加到「\(playlist.name)」"))
-            dismiss()
-        } catch {
+        guard let entry = LocalTrackEntry(track: track) else { return }
+        let added = ImportedPlaylistStore.shared.addEntries([entry], to: playlist)
+        guard added > 0 else {
             ToastCenter.shared.show(String(localized: "这首歌已经在歌单里了"))
+            return
         }
+        ToastCenter.shared.show(String(localized: "已添加到「\(playlist.name)」，放在最前面"))
+        dismiss()
     }
 
     private func createAndAdd() {

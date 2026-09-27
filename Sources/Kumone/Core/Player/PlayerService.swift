@@ -21,13 +21,12 @@ enum PlaySource: Equatable {
     case daily
     case cloud
     /// Queue from a MusicFree-style JS plugin.
-    case plugins
-    /// Queue from a local mixed playlist (NetEase + plugin tracks in one list).
     ///
-    /// Carries no id on purpose: a mixed playlist's id is local to
-    /// `MixedPlaylistStore` and would collide with real NetEase playlist ids in
-    /// the scrobble payload, so it reports 0 rather than a wrong source.
-    case mixedPlaylist
+    /// Local playlists report this too: their mixed NetEase + plugin tracks are
+    /// handed over as a finished queue, and the source carries no id because a
+    /// local playlist id would collide with real NetEase playlist ids in the
+    /// scrobble payload.
+    case plugins
     case none
 
     var sourceID: Int {
@@ -52,8 +51,6 @@ struct PlayContext: Codable, Hashable {
         case daily, cloud, recents, heartbeat, fm
         /// JS plugin queues; restored from persisted track payloads.
         case plugins
-        /// Local mixed playlists; reloaded from `MixedPlaylistStore` by id.
-        case localPlaylist
     }
 
     let kind: Kind
@@ -75,12 +72,6 @@ struct PlayContext: Codable, Hashable {
 
     static func plugins(name: String) -> PlayContext { .init(kind: .plugins, id: 0, name: name) }
 
-    /// A locally built playlist that mixes NetEase and plugin tracks. Unlike
-    /// `.plugins`, this one *can* be reloaded from its id, because the store is
-    /// local and always available.
-    static func localPlaylist(id: Int, name: String) -> PlayContext {
-        .init(kind: .localPlaylist, id: id, name: name)
-    }
     static var daily: PlayContext { .init(kind: .daily, id: 0, name: String(localized: "每日推荐")) }
     static var cloud: PlayContext { .init(kind: .cloud, id: 0, name: String(localized: "音乐云盘")) }
     static var recents: PlayContext { .init(kind: .recents, id: 0, name: String(localized: "最近播放")) }
@@ -1225,11 +1216,6 @@ final class PlayerService: ObservableObject {
             // FM has no static list; plugin queues restore from the persisted
             // track payloads in restoreState() instead of a live API.
             return nil
-        case .localPlaylist:
-            // Unlike plugin queues this one *is* reloadable: it lives in a local
-            // file, so picking it again from 最近播放 works without a network.
-            let tracks = MixedPlaylistStore.shared.tracks(playlistID: context.id)
-            return tracks.isEmpty ? nil : (tracks, .mixedPlaylist)
         case .album:
             return (try await NeteaseAPI.album(id: context.id).songs, .album(context.id))
         case .artist:

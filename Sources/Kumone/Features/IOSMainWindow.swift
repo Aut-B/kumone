@@ -567,9 +567,12 @@ struct IOSMiniPlayerBar: View {
 struct IOSLibraryView: View {
     @Binding var showLogin: Bool
     @EnvironmentObject private var account: AccountStore
+    @ObservedObject private var layout = PlaylistLayoutStore.shared
     @State private var showSettings = false
     @State private var showNewPlaylist = false
     @State private var newPlaylistName = ""
+    @State private var showReorder = false
+    @State private var reorderBase: [PlaylistSummary] = []
 
     var body: some View {
         List {
@@ -642,71 +645,20 @@ struct IOSLibraryView: View {
                 }
 
                 if !account.createdPlaylists.isEmpty {
-                    Section {
-                        ForEach(account.createdPlaylists) { playlist in
-                            NavigationLink(value: Destination.playlist(playlist.id)) {
-                                HStack(spacing: 10) {
-                                    CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
-                                        .frame(width: 32, height: 32)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(playlist.name)
-                                            .font(.system(size: 14))
-                                            .lineLimit(1)
-                                        Text("\(playlist.trackCount) 首")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    } header: {
-                        HStack {
-                            Text("创建的歌单")
-                            Spacer()
-                            Button {
-                                showNewPlaylist = true
-                            } label: {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                        }
-                    }
+                    playlistSection(
+                        title: String(localized: "创建的歌单"),
+                        playlists: account.createdPlaylists,
+                        showsNew: true
+                    )
                 }
 
                 if !account.subscribedPlaylists.isEmpty {
-                    Section("收藏的歌单") {
-                        ForEach(account.subscribedPlaylists) { playlist in
-                            NavigationLink(value: Destination.playlist(playlist.id)) {
-                                HStack(spacing: 10) {
-                                    CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
-                                        .frame(width: 32, height: 32)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(playlist.name)
-                                            .font(.system(size: 14))
-                                            .lineLimit(1)
-                                        Text("\(playlist.trackCount) 首")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    playlistSection(
+                        title: String(localized: "收藏的歌单"),
+                        playlists: account.subscribedPlaylists,
+                        showsNew: false
+                    )
                 }
-            }
-
-            // Deliberately outside the login gate: a mixed playlist is local and
-            // holds plugin tracks too, so it is useful without an account.
-            Section {
-                NavigationLink(value: Destination.mixedPlaylists) {
-                    Label("混装歌单", systemImage: "square.stack.3d.up.fill")
-                }
-            } header: {
-                Text("本地")
-            } footer: {
-                Text("把网易云的歌和插件音源的歌放进同一个歌单里连着听。")
             }
 
             Section {
@@ -723,6 +675,9 @@ struct IOSLibraryView: View {
                     Image(systemName: "gearshape")
                 }
             }
+        }
+        .sheet(isPresented: $showReorder) {
+            CloudPlaylistOrderSheet(playlists: reorderBase)
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
@@ -754,6 +709,73 @@ struct IOSLibraryView: View {
                 }
             }
             Button("取消", role: .cancel) { newPlaylistName = "" }
+        }
+    }
+
+    /// Rows honour the local pin/order layout; NetEase's own order on the
+    /// server is left alone.
+    private func playlistSection(
+        title: String,
+        playlists: [PlaylistSummary],
+        showsNew: Bool
+    ) -> some View {
+        Section {
+            ForEach(layout.orderedCloud(playlists)) { playlist in
+                NavigationLink(value: Destination.playlist(playlist.id)) {
+                    HStack(spacing: 10) {
+                        CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
+                            .frame(width: 32, height: 32)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(playlist.name)
+                                .font(.system(size: 14))
+                                .lineLimit(1)
+                            Text("\(playlist.trackCount) 首")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if layout.isPinned(cloud: playlist.id) {
+                            Image(systemName: "pin.fill")
+                                .font(.caption)
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                }
+                .contextMenu {
+                    Button {
+                        layout.togglePin(cloud: playlist.id)
+                    } label: {
+                        Label(
+                            layout.isPinned(cloud: playlist.id)
+                                ? String(localized: "取消置顶")
+                                : String(localized: "置顶"),
+                            systemImage: layout.isPinned(cloud: playlist.id) ? "pin.slash" : "pin"
+                        )
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Text(title)
+                Spacer()
+                if showsNew {
+                    Button {
+                        showNewPlaylist = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                }
+                Button {
+                    reorderBase = playlists
+                    showReorder = true
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .disabled(playlists.count < 2)
+            }
         }
     }
 }

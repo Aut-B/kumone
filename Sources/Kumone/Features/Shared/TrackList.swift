@@ -51,7 +51,7 @@ struct TrackRow: View {
     /// same view are not reliable in SwiftUI.
     private enum RowSheet: Identifiable {
         case neteasePlaylist
-        case mixedPlaylist
+        case localPlaylist
 
         var id: Int { hashValue }
     }
@@ -190,8 +190,8 @@ struct TrackRow: View {
             switch sheet {
             case .neteasePlaylist:
                 AddToPlaylistSheet(track: track)
-            case .mixedPlaylist:
-                MixedPlaylistPickerSheet(track: track)
+            case .localPlaylist:
+                AddTracksToPlaylistSheet(tracks: [track])
             }
         }
     }
@@ -349,8 +349,8 @@ struct TrackRow: View {
                 activeSheet = .neteasePlaylist
             }
         }
-        Button("添加到混装歌单…") {
-            activeSheet = .mixedPlaylist
+        Button("添加到歌单…") {
+            activeSheet = .localPlaylist
         }
         if let pid = removableFromPlaylistID {
             Button("从歌单中删除", role: .destructive) {

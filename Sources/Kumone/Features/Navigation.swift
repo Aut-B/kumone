@@ -79,10 +79,10 @@ enum Destination: Hashable {
     case collections
     case cloud
     case search(String)
-    /// The list of locally built mixed playlists.
-    case mixedPlaylists
-    /// One locally built mixed playlist, by its `MixedPlaylistStore` id.
-    case mixedPlaylist(Int)
+    /// A locally stored playlist (plugin items and NetEase references), opened
+    /// by pushing it onto the current tab's stack. The playlist travels by
+    /// value so the route does not have to read the store.
+    case localPlaylist(ImportedPlaylist)
 }
 
 extension Array where Element == Destination {
@@ -116,10 +116,8 @@ struct DestinationsModifier: ViewModifier {
                     CollectionsView()
                 case .cloud:
                     CloudView()
-                case .mixedPlaylists:
-                    MixedPlaylistsView()
-                case .mixedPlaylist(let id):
-                    MixedPlaylistDetailView(playlistID: id)
+                case .localPlaylist(let playlist):
+                    ImportedPlaylistDetailView(playlist: playlist)
                 case .search(let query):
                     SearchView(query: query)
                 }
