@@ -60,7 +60,7 @@ public struct IOSMainWindow: View {
             .overlay(alignment: .top) {
                 if let toast = toasts.current {
                     ToastView(toast: toast)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .transition(AnyTransition.move(edge: Edge.top).combined(with: .opacity))
                         .padding(.top, 8)
                 }
             }

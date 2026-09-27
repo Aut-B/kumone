@@ -48,28 +48,52 @@ struct ParsedLyrics: Hashable {
 }
 
 enum LyricsParser {
+    /// iOS 15 has no Swift `Regex`, so every pattern goes through
+    /// `NSRegularExpression` instead.
+    private static func pattern(_ string: String) -> NSRegularExpression? {
+        try? NSRegularExpression(pattern: string, options: [])
+    }
+
+    private static func group(
+        _ index: Int,
+        of match: NSTextCheckingResult,
+        in text: String
+    ) -> String? {
+        let range = match.range(at: index)
+        guard range.location != NSNotFound, let swiftRange = Range(range, in: text) else { return nil }
+        return String(text[swiftRange])
+    }
+
+    private static func allMatches(
+        of pattern: NSRegularExpression?,
+        in text: String
+    ) -> [NSTextCheckingResult] {
+        guard let pattern else { return [] }
+        return pattern.matches(in: text, options: [], range: NSRange(text.startIndex..<text.endIndex, in: text))
+    }
+
     /// Parses an LRC body into (time, text) pairs. Handles multiple timestamps
     /// per line and both `.` / `:` millisecond separators.
     static func parseLRC(_ lrc: String) -> [(time: TimeInterval, text: String)] {
         var result: [(TimeInterval, String)] = []
-        let timeTag = #/\[(\d+):(\d+)(?:[.:](\d+))?\]/#
+        let timeTag = pattern(#"\[(\d+):(\d+)(?:[.:](\d+))?\]"#)
 
         for rawLine in lrc.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty else { continue }
-            let matches = line.matches(of: timeTag)
-            guard !matches.isEmpty else { continue }
-            guard let lastMatch = matches.last else { continue }
-            let content = String(line[lastMatch.range.upperBound...])
+            let found = allMatches(of: timeTag, in: line)
+            guard !found.isEmpty, let lastMatch = found.last,
+                  let upperBound = Range(lastMatch.range, in: line) else { continue }
+            let content = String(line[upperBound.upperBound...])
                 .trimmingCharacters(in: .whitespaces)
-            for match in matches {
-                let min = Double(match.output.1) ?? 0
-                let sec = Double(match.output.2) ?? 0
-                var frac = 0.0
-                if let msStr = match.output.3, let ms = Double(msStr) {
-                    frac = ms / pow(10, Double(msStr.count))
+            for match in found {
+                let minutes = Double(group(1, of: match, in: line) ?? "") ?? 0
+                let seconds = Double(group(2, of: match, in: line) ?? "") ?? 0
+                var fraction = 0.0
+                if let msText = group(3, of: match, in: line), let ms = Double(msText) {
+                    fraction = ms / pow(10, Double(msText.count))
                 }
-                result.append((min * 60 + sec + frac, content))
+                result.append((minutes * 60 + seconds + fraction, content))
             }
         }
         return result.sorted { $0.0 < $1.0 }
@@ -80,20 +104,20 @@ enum LyricsParser {
     /// (credits) lines at the top don't match the `[num,num]` head and are
     /// skipped.
     static func parseYRC(_ yrc: String) -> [LyricLine] {
-        let lineTag = #/^\[(\d+),(\d+)\]/#
-        let wordTag = #/\((\d+),(\d+),\d+\)([^(]*)/#
+        let lineTag = pattern(#"^\[(\d+),(\d+)\]"#)
+        let wordTag = pattern(#"\((\d+),(\d+),\d+\)([^(]*)"#)
         var lines: [LyricLine] = []
         var idx = 0
         for raw in yrc.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            guard let head = line.firstMatch(of: lineTag) else { continue }
-            let lineStart = (Double(head.output.1) ?? 0) / 1000
+            guard let head = allMatches(of: lineTag, in: line).first else { continue }
+            let lineStart = (Double(group(1, of: head, in: line) ?? "") ?? 0) / 1000
             var words: [LyricWord] = []
             var text = ""
-            for w in line.matches(of: wordTag) {
-                let start = (Double(w.output.1) ?? 0) / 1000
-                let duration = (Double(w.output.2) ?? 0) / 1000
-                let piece = String(w.output.3)
+            for word in allMatches(of: wordTag, in: line) {
+                let start = (Double(group(1, of: word, in: line) ?? "") ?? 0) / 1000
+                let duration = (Double(group(2, of: word, in: line) ?? "") ?? 0) / 1000
+                let piece = group(3, of: word, in: line) ?? ""
                 words.append(LyricWord(text: piece, start: start, duration: duration))
                 text += piece
             }
