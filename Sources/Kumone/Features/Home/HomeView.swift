@@ -130,10 +130,12 @@ struct HomeView: View {
 
     private var loadingBody: some View {
         VStack(alignment: .leading, spacing: 32) {
-            HStack(spacing: 16) {
-                ForEach(0..<3, id: \.self) { _ in
-                    SkeletonView(cornerRadius: Theme.Radius.large)
-                        .frame(width: 230, height: 132)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 16) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        SkeletonView(cornerRadius: Theme.Radius.large)
+                            .frame(width: 230, height: 132)
+                    }
                 }
             }
             SkeletonShelf()
