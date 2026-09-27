@@ -135,11 +135,6 @@ struct PlaylistDetailView: View {
 
                             Group {
                                 if multiSelectMode {
-                                    PlaylistSelectionSummaryBar(
-                                        selectedCount: selectedIDs.count,
-                                        totalCount: visibleTracks.count,
-                                        onToggleAll: toggleSelectAll
-                                    )
                                     LazyVStack(spacing: 1) {
                                         ForEach(visibleTracks) { track in
                                             selectableRow(track)
@@ -179,9 +174,16 @@ struct PlaylistDetailView: View {
                         PlayerClearanceSpacer()
                     }
                 }
-                .safeAreaInset(edge: .bottom) {
+                .safeAreaInset(edge: .top) {
+                    // Pinned under the navigation bar, not at the bottom: the
+                    // floating mini player would otherwise cover it.
                     if multiSelectMode {
                         VStack(spacing: 0) {
+                            PlaylistSelectionSummaryBar(
+                                selectedCount: selectedIDs.count,
+                                totalCount: visibleTracks.count,
+                                onToggleAll: toggleSelectAll
+                            )
                             Divider().opacity(0.4)
                             PlaylistSelectionActionBar(
                                 selectedCount: selectedIDs.count,
@@ -190,6 +192,7 @@ struct PlaylistDetailView: View {
                                 onCollect: { showCollect = true },
                                 onDelete: { showDeleteConfirm = true }
                             )
+                            Divider().opacity(0.4)
                         }
                         .background(.bar)
                     }

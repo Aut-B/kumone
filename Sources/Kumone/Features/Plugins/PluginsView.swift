@@ -366,10 +366,19 @@ struct ImportedPlaylistDetailView: View {
     var body: some View {
         VStack(spacing: 0) {
             if multiSelectMode {
+                // Top, not bottom: the floating mini player would cover it.
                 PlaylistSelectionSummaryBar(
                     selectedCount: selectedIDs.count,
                     totalCount: visibleEntries.count,
                     onToggleAll: toggleSelectAll
+                )
+                Divider().opacity(0.4)
+                PlaylistSelectionActionBar(
+                    selectedCount: selectedIDs.count,
+                    canDelete: true,
+                    onPlayNext: playSelectedNext,
+                    onCollect: { showCollect = true },
+                    onDelete: { showDeleteConfirm = true }
                 )
                 Divider().opacity(0.4)
             }
@@ -393,21 +402,6 @@ struct ImportedPlaylistDetailView: View {
             placement: .navigationBarDrawer(displayMode: .automatic),
             prompt: Text("搜索歌单内歌曲")
         )
-        .safeAreaInset(edge: .bottom) {
-            if multiSelectMode {
-                VStack(spacing: 0) {
-                    Divider().opacity(0.4)
-                    PlaylistSelectionActionBar(
-                        selectedCount: selectedIDs.count,
-                        canDelete: true,
-                        onPlayNext: playSelectedNext,
-                        onCollect: { showCollect = true },
-                        onDelete: { showDeleteConfirm = true }
-                    )
-                }
-                .background(.bar)
-            }
-        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -1107,6 +1101,12 @@ struct WebDAVImportView: View {
                 }
                 if sheets.isEmpty && pluginURLs.isEmpty {
                     errorMessage = String(localized: "不认识的文件格式（既不是歌单也不是 MusicFree 备份）")
+                    return
+                }
+                if importedCount == 0 && pluginURLs.isEmpty {
+                    // A silent dismiss here once made Beans backups look like
+                    // the import "did nothing" — always say what happened.
+                    errorMessage = String(localized: "备份里没有可识别的歌曲")
                     return
                 }
                 var parts: [String] = []
