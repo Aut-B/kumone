@@ -421,6 +421,11 @@ struct ImportedPlaylistDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
+                        toggleMultiSelect()
+                    } label: {
+                        Label(multiSelectMode ? "退出多选" : "多选", systemImage: "checklist")
+                    }
+                    Button {
                         editMode = isReordering ? .inactive : .active
                         if isReordering {
                             multiSelectMode = false
@@ -574,8 +579,7 @@ struct ImportedPlaylistDetailView: View {
     private func playSelectedNext() {
         let tracks = selectedTracks
         guard !tracks.isEmpty else { return }
-        for track in tracks { player.addToPlayNext(track) }
-        ToastCenter.shared.show(String(localized: "\(tracks.count) 首已排到下一首"))
+        player.addToPlayNext(tracks)
         selectedIDs.removeAll()
         multiSelectMode = false
     }

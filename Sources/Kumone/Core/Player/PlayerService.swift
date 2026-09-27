@@ -439,6 +439,19 @@ final class PlayerService: ObservableObject {
         }
     }
 
+    /// Insert a batch of tracks right after the current one, keeping list
+    /// order. One toast for the whole batch instead of one per track.
+    /// Nothing playing yet? The first track starts immediately.
+    func addToPlayNext(_ tracks: [Track], playNow: Bool = false) {
+        guard !tracks.isEmpty else { return }
+        playNextList.append(contentsOf: tracks)
+        if playNow || currentTrack == nil {
+            advanceToNext(userInitiated: true)
+        } else {
+            ToastCenter.shared.show(String(localized: "已把 \(tracks.count) 首排到下一首播放"))
+        }
+    }
+
     func togglePlayPause() {
         guard let track = currentTrack else { return }
         if isPlaying {
