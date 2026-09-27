@@ -21,6 +21,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/ios-dd" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             MARKETING_VERSION=0.3.19 CURRENT_PROJECT_VERSION=148 \
+            IPHONEOS_DEPLOYMENT_TARGET=15.0 \
             build
 
       - name: Package IPA
