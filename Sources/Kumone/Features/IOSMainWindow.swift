@@ -288,7 +288,8 @@ public struct IOSMainWindow: View {
     @ViewBuilder
     private func tabStack<Content: View>(
         _ tab: IOSTab,
-        @ViewBuilder _ content: () -> Content
+        // `@escaping` because `AppNavStackPath` stores the closure.
+        @ViewBuilder _ content: @escaping () -> Content
     ) -> some View {
         AppNavStackPath(path: binding(for: tab)) {
             content()
