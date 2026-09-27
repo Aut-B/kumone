@@ -481,17 +481,8 @@ struct SearchFieldView: View {
 }
 
 // MARK: - Toast
-
-struct ToastView: View {
-    let toast: Toast
-
-    var body: some View {
-        Text(toast.message)
-            .font(.system(size: 12.5, weight: .medium))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 9)
-            .compatGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
-    }
-}
+//
+// `ToastView` moved to Features/ToastView.swift: this file is macOS-only now
+// (its sidebar layout needs NavigationSplitView, which an iOS 15 deployment
+// target cannot build), and iOS shows toasts as well.
 #endif
