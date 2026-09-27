@@ -254,8 +254,14 @@ struct SettingsView: View {
         #endif
     }
 
+    /// Version AND build number. Several 0.3.19 builds exist side by side, so
+    /// the short version alone cannot tell which one is actually installed —
+    /// which is exactly what made a newer build look like "nothing changed".
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "dev"
+        guard let build = info?["CFBundleVersion"] as? String, !build.isEmpty else { return version }
+        return "\(version) (\(build))"
     }
 
     private var audioCacheLimit: String {
