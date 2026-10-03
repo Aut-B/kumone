@@ -356,3 +356,20 @@
 "校验未通过，文件可能已损坏" = "Verification failed — the file may be damaged";
 "文件不完整，请重新下载" = "Incomplete file — download it again";
 "校验未通过，请重新下载" = "Verification failed — download it again";
+
+/* Liked playlist search and sorting (iOS) */
+"更多" = "More";
+"在歌单内查找" = "Search in Playlist";
+"排序方式" = "Sort By";
+"添加时间（由新到旧）" = "Date Added (Newest First)";
+"添加时间（由旧到新）" = "Date Added (Oldest First)";
+"歌曲名" = "Song Name";
+"专辑名" = "Album Name";
+"歌手名" = "Artist Name";
+"按歌名、歌手或专辑搜索" = "Search by song, artist, or album";
+"找到 %lld 首匹配歌曲" = "%lld matching songs";
+"清空搜索" = "Clear Search";
+"没有匹配的歌曲" = "No Matching Songs";
+"试试其他歌名、歌手或专辑" = "Try another song, artist, or album";
+"正在加载歌单，搜索结果会继续更新…" = "Loading playlist — search results will keep updating…";
+"歌单未完整加载，搜索结果可能不完整" = "Playlist loading is incomplete; search results may be incomplete";
