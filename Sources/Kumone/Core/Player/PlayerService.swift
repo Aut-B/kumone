@@ -134,6 +134,10 @@ final class PlayerService: ObservableObject {
     @Published private(set) var queue: [Track] = []
     @Published private(set) var shuffledQueue: [Track] = []
     @Published private(set) var playNextList: [Track] = []
+    /// Beans-style tail queue: everything added with「排到队列末尾」waits here
+    /// until the list playback started from has run out, instead of cutting in
+    /// front of it. This is what makes "听完这个歌单再放另一个歌单" possible.
+    @Published private(set) var pendingQueue: [Track] = []
     @Published private(set) var currentIndex = -1
     @Published private(set) var currentTrack: Track?
     @Published private(set) var source: PlaySource = .none
@@ -254,10 +258,15 @@ final class PlayerService: ObservableObject {
     /// The list the player is walking through (shuffled or ordered).
     var activeQueue: [Track] { shuffleEnabled ? shuffledQueue : queue }
 
-    var upcomingTracks: [Track] {
-        guard !activeQueue.isEmpty, currentIndex >= 0 else { return playNextList }
+    /// What is left of the list playback started from, after the current track.
+    var remainingQueueTracks: [Track] {
+        guard !activeQueue.isEmpty, currentIndex >= 0 else { return [] }
         let rest = activeQueue.suffix(from: min(currentIndex + 1, activeQueue.count))
-        return playNextList + Array(rest.prefix(200))
+        return Array(rest.prefix(200))
+    }
+
+    var upcomingTracks: [Track] {
+        playNextList + remainingQueueTracks + pendingQueue
     }
 
     var hasCurrentTrack: Bool { currentTrack != nil }
@@ -404,6 +413,9 @@ final class PlayerService: ObservableObject {
         queue = tracks
         self.source = source
         playNextList.removeAll()
+        // A new play wipes both of them: whatever was waiting behind the old
+        // list should not follow you into the next one.
+        pendingQueue.removeAll()
         let startTrack = track ?? tracks[0]
         if shuffleEnabled {
             reshuffle(keeping: startTrack)
@@ -430,6 +442,30 @@ final class PlayerService: ObservableObject {
             advanceToNext(userInitiated: true)
         } else {
             ToastCenter.shared.show(String(localized: "已添加到下一首播放"))
+        }
+    }
+
+    /// Queue tracks behind everything already lined up.
+    ///
+    /// The whole point of the Beans-style queue: adding another playlist must
+    /// not interrupt the one being listened to — the added songs start once the
+    /// current list has run out (see `advanceToNext`). With nothing playing
+    /// there is nothing to wait behind, so it just plays.
+    ///
+    /// - Parameter sourceName: shown in the toast; pass the playlist name.
+    func addToQueueEnd(_ tracks: [Track], sourceName: String? = nil) {
+        guard !tracks.isEmpty else { return }
+        guard hasCurrentTrack, !activeQueue.isEmpty else {
+            play(tracks: tracks, source: .none)
+            return
+        }
+        pendingQueue.append(contentsOf: tracks)
+        if let sourceName {
+            ToastCenter.shared.show(
+                String(localized: "已把「\(sourceName)」的 \(tracks.count) 首排到队列末尾")
+            )
+        } else {
+            ToastCenter.shared.show(String(localized: "已排到队列末尾（\(tracks.count) 首）"))
         }
     }
 
@@ -546,6 +582,11 @@ final class PlayerService: ObservableObject {
             startPlaying(track, indexUnchanged: true)
             return
         }
+        if let nextIdx = pendingQueue.firstIndex(where: { $0.id == track.id }) {
+            pendingQueue.removeSubrange(0...nextIdx)
+            startPlaying(track, indexUnchanged: true)
+            return
+        }
         if let idx = activeQueue.firstIndex(where: { $0.id == track.id }) {
             currentIndex = idx
             startPlaying(track)
@@ -555,6 +596,10 @@ final class PlayerService: ObservableObject {
     func removeFromUpcoming(_ track: Track) {
         if let idx = playNextList.firstIndex(where: { $0.id == track.id }) {
             playNextList.remove(at: idx)
+            return
+        }
+        if let idx = pendingQueue.firstIndex(where: { $0.id == track.id }) {
+            pendingQueue.remove(at: idx)
             return
         }
         if let idx = queue.firstIndex(where: { $0.id == track.id }), idx != currentIndex || shuffleEnabled {
@@ -576,6 +621,7 @@ final class PlayerService: ObservableObject {
         queue = []
         shuffledQueue = []
         playNextList = []
+        pendingQueue = []
         currentIndex = -1
         source = .none
         Task { await fmAdvance() }
@@ -630,9 +676,24 @@ final class PlayerService: ObservableObject {
             startPlaying(track, indexUnchanged: true)
             return
         }
-        guard !activeQueue.isEmpty else { return }
+        guard !activeQueue.isEmpty else {
+            // Source list is empty (single "play next" tracks, say): the tail
+            // queue is still owed to the listener.
+            if !pendingQueue.isEmpty {
+                let track = pendingQueue.removeFirst()
+                startPlaying(track, indexUnchanged: true)
+            }
+            return
+        }
         var idx = currentIndex + 1
         if idx >= activeQueue.count {
+            // The list being played through has run out — hand over to what was
+            // queued behind it before looping back to the top.
+            if !pendingQueue.isEmpty {
+                let track = pendingQueue.removeFirst()
+                startPlaying(track, indexUnchanged: true)
+                return
+            }
             guard repeatMode == .all else {
                 if userInitiated {
                     ToastCenter.shared.show(String(localized: "已经是最后一首了"))

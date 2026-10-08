@@ -284,41 +284,29 @@ struct ImportedPlaylistDetailView: View {
     @State private var items: [PluginMusicItem] = []
     /// Plugin item picked for "添加到混装歌单" from this list.
     @State private var mixedTarget: PluginMusicItem? = nil
+    /// Free-text filter over this playlist's songs.
+    @State private var filter = ""
+
+    private var visibleItems: [PluginMusicItem] {
+        TrackFilter.filterItems(items, by: filter)
+    }
 
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    Button {
-                        play(from: index)
-                        dismiss()
-                    } label: {
-                        HStack(spacing: 10) {
-                            CachedAsyncImage(url: item.artwork.flatMap(URL.init(string:))) {
-                                Rectangle().fill(Color.secondary.opacity(0.12))
-                            }
-                            .frame(width: 42, height: 42)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.title)
-                                    .font(.subheadline.weight(.medium))
-                                    .lineLimit(1)
-                                Text("\(item.artist) · \(item.platform)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            if item.durationMS > 0 {
-                                Text(Duration.milliseconds(item.durationMS).formatted(.time(pattern: .minuteSecond)))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
+            VStack(spacing: 0) {
+                TrackFilterField(text: $filter)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
+
+                List {
+                    ForEach(visibleItems) { item in
+                        row(item)
                     }
-                    .contextMenu {
-                        Button("播放") { play(from: index) }
-                        Button("添加到混装歌单…") { mixedTarget = item }
+                }
+                .overlay {
+                    if items.count > 8, visibleItems.isEmpty {
+                        EmptyStateView(icon: "magnifyingglass", title: "没有匹配的歌曲",
+                                       subtitle: "换一个歌名或歌手试试")
                     }
                 }
             }
@@ -330,12 +318,20 @@ struct ImportedPlaylistDetailView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarLeading) {
                     Button {
-                        play(from: 0)
+                        if let first = itemToStartFrom() { play(itemToPlay: first) }
                         dismiss()
                     } label: {
                         Image(systemName: "play.circle")
                     }
+                    .disabled(items.isEmpty)
                     .accessibilityLabel("播放全部")
+                    Button {
+                        queueToEnd()
+                    } label: {
+                        Image(systemName: "text.badge.plus")
+                    }
+                    .disabled(items.isEmpty)
+                    .accessibilityLabel("排到队列末尾")
                     Button {
                         addCurrent()
                     } label: {
@@ -354,10 +350,66 @@ struct ImportedPlaylistDetailView: View {
         }
     }
 
-    private func play(from index: Int) {
+    /// What "播放全部" starts from: the top of the filtered list when searching,
+    /// otherwise the top of the playlist itself.
+    private func itemToStartFrom() -> PluginMusicItem? {
+        visibleItems.first ?? items.first
+    }
+
+    @ViewBuilder
+    private func row(_ item: PluginMusicItem) -> some View {
+        Button {
+            play(itemToPlay: item)
+            dismiss()
+        } label: {
+            HStack(spacing: 10) {
+                CachedAsyncImage(url: item.artwork.flatMap(URL.init(string:))) {
+                    Rectangle().fill(Color.secondary.opacity(0.12))
+                }
+                .frame(width: 42, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.title)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                    Text("\(item.artist) · \(item.platform)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if item.durationMS > 0 {
+                    Text(Duration.milliseconds(item.durationMS).formatted(.time(pattern: .minuteSecond)))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .contextMenu {
+            Button("播放") { play(itemToPlay: item) }
+            Button("下一首播放") {
+                PlayerService.shared.addToPlayNext(Track(pluginItem: item))
+            }
+            Button("排到队列末尾") {
+                PlayerService.shared.addToQueueEnd([Track(pluginItem: item)])
+            }
+            Button("添加到混装歌单…") { mixedTarget = item }
+        }
+    }
+
+    /// Beans-style: this playlist waits behind whatever is already playing.
+    private func queueToEnd() {
+        let queue = items.map { Track(pluginItem: $0) }
+        PlayerService.shared.addToQueueEnd(queue, sourceName: playlist.name)
+    }
+
+    private func play(itemToPlay item: PluginMusicItem) {
         guard !items.isEmpty else { return }
         let queue = items.map { Track(pluginItem: $0) }
-        let start = queue[min(index, queue.count - 1)]
+        // Start from the tapped song, even when the visible list is filtered:
+        // playing the whole playlist and starting here is what the tap means.
+        let start = queue.first { $0.plugin?.itemID == item.itemID
+            && $0.plugin?.platform == item.platform } ?? queue[0]
         PlayerService.shared.play(
             tracks: queue,
             source: .plugins,

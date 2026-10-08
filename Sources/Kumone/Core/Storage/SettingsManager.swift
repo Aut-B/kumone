@@ -127,6 +127,9 @@ final class SettingsManager: ObservableObject {
         static let lyricTiltX = "settings.lyricTiltX"                 // -30...30
         static let lyricTiltY = "settings.lyricTiltY"                 // -20...20
         static let lyricGlow = "settings.lyricGlow"                   // 0...5
+        /// Show all six tabs laid out flat instead of letting the system fold
+        /// them into a "More" tab on iOS 26.
+        static let flattenTabs = "settings.flattenTabs"
     }
 
     /// Progress bar style: 0 流光 / 1 辉光 / 2 极光 / 3 波浪.
@@ -279,6 +282,15 @@ final class SettingsManager: ObservableObject {
     }
     #endif
 
+    /// Keep the six tabs visible side by side.
+    ///
+    /// iOS 26's native TabView only lays out so many tabs and folds the rest
+    /// into a "More" tab — on a 15 Pro Max that swallowed both 搜索 and 插件.
+    /// Turning this off hands the tab bar back to the system.
+    @Published var flattenTabs: Bool {
+        didSet { UserDefaults.standard.set(flattenTabs, forKey: Keys.flattenTabs) }
+    }
+
     private init() {
         let defaults = UserDefaults.standard
         audioQuality = defaults.string(forKey: Keys.quality).flatMap(AudioQuality.init) ?? .exhigh
@@ -320,5 +332,6 @@ final class SettingsManager: ObservableObject {
         lyricTiltX = defaults.object(forKey: Keys.lyricTiltX) as? Double ?? 8
         lyricTiltY = defaults.object(forKey: Keys.lyricTiltY) as? Double ?? 0
         lyricGlow = defaults.object(forKey: Keys.lyricGlow) as? Double ?? 2.5
+        flattenTabs = defaults.object(forKey: Keys.flattenTabs) as? Bool ?? true
     }
 }

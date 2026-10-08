@@ -1304,6 +1304,12 @@ private struct CompactTrackHeader: View {
                             Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
                         }
 
+                        Button {
+                            player.addToQueueEnd([track])
+                        } label: {
+                            Label("排到队列末尾", systemImage: "text.badge.plus")
+                        }
+
                         if track.plugin == nil {
                             Button {
                                 activeSheet = .neteasePlaylist
@@ -1555,11 +1561,23 @@ private struct CompactQueueContent: View {
             } else {
                 ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 4) {
-                        ForEach(
-                            Array(player.upcomingTracks.prefix(100).enumerated()),
-                            id: \.offset
-                        ) { _, track in
-                            CompactQueueRow(track: track)
+                        // Labelled runs so "插播" and "排队的另一个歌单" are
+                        // told apart — otherwise the tail queue is invisible
+                        // until everything above it has played.
+                        ForEach(Array(queueSections.enumerated()), id: \.offset) { _, section in
+                            if !section.tracks.isEmpty {
+                                Text(section.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.white.opacity(0.42))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, 8)
+                                ForEach(
+                                    Array(section.tracks.prefix(100).enumerated()),
+                                    id: \.offset
+                                ) { _, track in
+                                    CompactQueueRow(track: track)
+                                }
+                            }
                         }
                     }
                 }
@@ -1573,6 +1591,15 @@ private struct CompactQueueContent: View {
             }
         }
         .padding(.top, 6)
+    }
+
+    /// The upcoming list split by how each part got there, in playback order.
+    private var queueSections: [(title: LocalizedStringKey, tracks: [Track])] {
+        [
+            ("下一首播放", player.playNextList),
+            ("即将播放", player.remainingQueueTracks),
+            ("稍后播放", player.pendingQueue),
+        ]
     }
 
     private func modeButton(
@@ -2096,6 +2123,12 @@ private struct MinimalTrackInfoRow: View {
                 Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
 
+            Button {
+                player.addToQueueEnd([track])
+            } label: {
+                Label("排到队列末尾", systemImage: "text.badge.plus")
+            }
+
             Menu {
                 ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0], id: \.self) { rateOption in
                     Button {
@@ -2319,14 +2352,16 @@ private struct MinimalQueueSheet: View {
                         MinimalQueueSectionLabel("正在播放")
                         MinimalQueueRow(track: current, isCurrent: true)
 
-                        if !player.upcomingTracks.isEmpty {
-                            MinimalQueueSectionLabel("即将播放")
-                                .padding(.top, 10)
-                            ForEach(
-                                Array(player.upcomingTracks.prefix(100).enumerated()),
-                                id: \.offset
-                            ) { _, track in
-                                MinimalQueueRow(track: track, isCurrent: false)
+                        ForEach(Array(queueSections.enumerated()), id: \.offset) { _, section in
+                            if !section.tracks.isEmpty {
+                                MinimalQueueSectionLabel(section.title)
+                                    .padding(.top, 10)
+                                ForEach(
+                                    Array(section.tracks.prefix(100).enumerated()),
+                                    id: \.offset
+                                ) { _, track in
+                                    MinimalQueueRow(track: track, isCurrent: false)
+                                }
                             }
                         }
                     } else {
@@ -2353,6 +2388,15 @@ private struct MinimalQueueSheet: View {
             }
         }
         .background(queueBackdrop)
+    }
+
+    /// The upcoming list split by how each part got there, in playback order.
+    private var queueSections: [(title: LocalizedStringKey, tracks: [Track])] {
+        [
+            ("下一首播放", player.playNextList),
+            ("即将播放", player.remainingQueueTracks),
+            ("稍后播放", player.pendingQueue),
+        ]
     }
 
     private var queueBackdrop: some View {

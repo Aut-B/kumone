@@ -17,13 +17,7 @@ final class PlaylistDetailViewModel: ObservableObject {
     }
 
     var filteredTracks: [Track] {
-        let query = filter.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return tracks }
-        return tracks.filter {
-            $0.name.lowercased().contains(query)
-                || $0.artistNames.lowercased().contains(query)
-                || $0.album.name.lowercased().contains(query)
-        }
+        TrackFilter.filter(tracks, by: filter)
     }
 
     func load() async {
@@ -244,6 +238,21 @@ struct PlaylistDetailView: View {
                 }
                 .buttonStyle(.pressable)
 
+                // Beans-style tail queue: songs wait behind what is playing
+                // instead of cutting in as the very next track.
+                Button {
+                    queueToEnd()
+                } label: {
+                    Image(systemName: "text.badge.plus")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 38, height: 38)
+                        .background(.primary.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.pressable)
+                .disabled(playable.isEmpty)
+                .accessibilityLabel("排到队列末尾")
+
                 if isLikedList {
                     Button {
                         startHeartbeat()
@@ -268,6 +277,8 @@ struct PlaylistDetailView: View {
                     .buttonStyle(.pressable)
                 }
             }
+
+            TrackFilterField(text: $model.filter)
         }
     }
 
@@ -351,6 +362,18 @@ struct PlaylistDetailView: View {
             }
             .buttonStyle(.pressable)
 
+            Button {
+                queueToEnd()
+            } label: {
+                Label("排到队列末尾", systemImage: "text.badge.plus")
+                    .font(.system(size: 13, weight: .medium))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.primary.opacity(0.06), in: Capsule())
+            }
+            .buttonStyle(.pressable)
+            .disabled(playable.isEmpty)
+
             if isLikedList {
                 Button {
                     startHeartbeat()
@@ -378,18 +401,8 @@ struct PlaylistDetailView: View {
 
             Spacer()
 
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                TextField("搜索歌单内歌曲", text: $model.filter)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .frame(width: 130)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.primary.opacity(0.05), in: Capsule())
+            TrackFilterField(text: $model.filter)
+                .frame(width: 190)
         }
     }
 
@@ -400,6 +413,12 @@ struct PlaylistDetailView: View {
                            isLoggedIn: account.isLoggedIn,
                            vipType: account.vipType) == .playable
         }
+    }
+
+    /// Beans-style: everything here waits behind whatever is already queued
+    /// rather than becoming the next song.
+    private func queueToEnd() {
+        player.addToQueueEnd(playable, sourceName: model.detail?.name)
     }
 
     private func startHeartbeat() {

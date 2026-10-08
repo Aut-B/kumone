@@ -188,6 +188,9 @@ struct MixedPlaylistDetailView: View {
         }
     }
 
+    /// Free-text filter over this playlist's songs.
+    @State private var filter = ""
+
     /// Everything the copy needs, captured up front so the sheet does not have
     /// to read the store while the playlist is being mutated. The id is
     /// carried so the copy targets the exact playlist even if two share a name.
@@ -209,42 +212,71 @@ struct MixedPlaylistDetailView: View {
     private struct PlaylistRow: Identifiable {
         let key: String
         let track: Track
+        /// Position in the real playlist, so tapping or deleting a search
+        /// result still acts on the right song.
+        let index: Int
 
         var id: String { key }
     }
 
     private var rows: [PlaylistRow] {
-        tracks.map { PlaylistRow(key: MixedPlaylistStore.identity(of: $0), track: $0) }
+        // Indices are taken before filtering — a hit is still entry #37 of the
+        // playlist even when the search hides everything above it.
+        tracks.enumerated().compactMap { index, track in
+            guard TrackFilter.matches(track, by: filter) else { return nil }
+            return PlaylistRow(
+                key: MixedPlaylistStore.identity(of: track),
+                track: track,
+                index: index
+            )
+        }
     }
 
     var body: some View {
         Group {
             if let playlist {
                 List {
-                    if rows.isEmpty {
+                    TrackFilterField(text: $filter)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16))
+
+                    if tracks.isEmpty {
                         EmptyStateView(
                             icon: "music.note",
                             title: "这个歌单还是空的",
                             subtitle: "在歌曲的「更多」菜单里选「添加到混装歌单」"
                         )
                         .listRowBackground(Color.clear)
+                    } else if rows.isEmpty {
+                        EmptyStateView(icon: "magnifyingglass", title: "没有匹配的歌曲",
+                                       subtitle: "换一个歌名或歌手试试")
+                        .listRowBackground(Color.clear)
                     } else {
-                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                        ForEach(rows) { row in
                             TrackRow(
                                 track: row.track,
-                                index: index + 1,
+                                index: row.index + 1,
                                 playability: .playable,
                                 sourceTag: sourceTag(for: row.track),
-                                onRemoveLocal: { remove(at: index) },
-                                onPlay: { play(from: index) }
+                                onRemoveLocal: { remove(at: row.index) },
+                                onPlay: { play(from: row.index) }
                             )
                         }
                         .onMove { source, destination in
+                            // Reordering only makes sense with the whole list in
+                            // front of you, not through a search filter.
+                            guard filter.isEmpty else { return }
                             tracks.move(fromOffsets: source, toOffset: destination)
                             store.move(fromOffsets: source, toOffset: destination, in: playlist)
                         }
                         .onDelete { offsets in
-                            for index in offsets.sorted(by: >) { remove(at: index) }
+                            // Offsets address `rows`; translate them into real
+                            // playlist positions before touching the store.
+                            let indices = offsets.compactMap { offset in
+                                rows.indices.contains(offset) ? rows[offset].index : nil
+                            }
+                            for index in indices.sorted(by: >) { remove(at: index) }
                         }
                     }
 
@@ -258,17 +290,22 @@ struct MixedPlaylistDetailView: View {
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarLeading) {
                         Button {
-                            play(from: 0)
+                            play(from: rows.first?.index ?? 0)
                         } label: {
                             Image(systemName: "play.circle")
                         }
                         .disabled(rows.isEmpty)
                         .accessibilityLabel("播放全部")
                         EditButton()
-                            .disabled(rows.isEmpty)
+                            .disabled(rows.isEmpty || !filter.isEmpty)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
+                            Button {
+                                queueToEnd()
+                            } label: {
+                                Label("排到队列末尾", systemImage: "text.badge.plus")
+                            }
                             Button {
                                 showWebDAVSync = true
                             } label: {
@@ -282,7 +319,7 @@ struct MixedPlaylistDetailView: View {
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
-                        .disabled(rows.isEmpty)
+                        .disabled(tracks.isEmpty)
                         .accessibilityLabel("更多")
                     }
                 }
@@ -332,6 +369,12 @@ struct MixedPlaylistDetailView: View {
             startAt: tracks[index],
             context: .localPlaylist(id: playlist.id, name: playlist.name)
         )
+    }
+
+    /// Beans-style: this whole list waits behind whatever is already playing.
+    private func queueToEnd() {
+        guard let playlist else { return }
+        PlayerService.shared.addToQueueEnd(tracks, sourceName: playlist.name)
     }
 
     private func remove(at index: Int) {

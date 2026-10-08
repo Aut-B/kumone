@@ -175,13 +175,19 @@ struct QueuePanel: View {
                         sectionLabel("正在播放")
                         QueueRow(track: current, isCurrent: true)
 
-                        if !player.upcomingTracks.isEmpty {
-                            sectionLabel("即将播放")
-                                .padding(.top, 10)
-                            ForEach(Array(player.upcomingTracks.prefix(100).enumerated()),
-                                    id: \.offset) { _, track in
-                                QueueRow(track: track, isCurrent: false)
-                            }
+                        // Three labelled runs rather than one flat list: the
+                        // listener needs to see *where* something was queued,
+                        // otherwise "下一首播放" and "排到队列末尾" look alike.
+                        if !player.playNextList.isEmpty {
+                            queueSection("插播（下一首播放）", player.playNextList)
+                        }
+
+                        if !player.remainingQueueTracks.isEmpty {
+                            queueSection("即将播放", player.remainingQueueTracks)
+                        }
+
+                        if !player.pendingQueue.isEmpty {
+                            queueSection("稍后播放（排队的歌单）", player.pendingQueue)
                         }
                     }
                     .padding(10)
@@ -230,6 +236,22 @@ struct QueuePanel: View {
             .foregroundStyle(.tertiary)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
+    }
+
+    /// One labelled run of upcoming songs.
+    ///
+    /// The id combines position and track id so a song that appears in two runs
+    /// (queued twice) still renders as two distinct rows.
+    @ViewBuilder
+    private func queueSection(_ title: LocalizedStringKey, _ tracks: [Track]) -> some View {
+        let limited = Array(tracks.prefix(100).enumerated())
+        if !limited.isEmpty {
+            sectionLabel(title)
+                .padding(.top, 10)
+            ForEach(limited, id: \.offset) { _, track in
+                QueueRow(track: track, isCurrent: false)
+            }
+        }
     }
 }
 

@@ -161,7 +161,11 @@ public struct IOSMainWindow: View {
 
     @ViewBuilder
     private var tabInterface: some View {
-        if #available(iOS 26.0, *) {
+        // The capsule bar lays all six tabs out flat, so 搜索 and 插件 sit side
+        // by side. The native iOS 26 TabView is kept behind a switch because it
+        // only fits so many items and folds the overflow into a "More" tab —
+        // on a 15 Pro Max that hid exactly the two tabs worth surfacing.
+        if #available(iOS 26.0, *), !settings.flattenTabs {
             iOS26TabInterface
         } else {
             customTabInterface
