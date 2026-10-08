@@ -377,7 +377,6 @@ struct PlaylistDetailView: View {
                 await model.load()
             }
         }
-        }
     }
 
     // MARK: - Multi-select
