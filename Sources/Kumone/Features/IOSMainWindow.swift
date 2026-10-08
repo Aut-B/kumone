@@ -178,7 +178,11 @@ public struct IOSMainWindow: View {
 
     @ViewBuilder
     private var tabInterface: some View {
-        if #available(iOS 26.0, *) {
+        // iOS 26's native TabView pushes whatever does not fit into a "更多"
+        // tab — on a 15 Pro Max that swallows 搜索 and 插件. The hand-built
+        // bar lays all six out flat, so it wins unless the escape hatch is
+        // switched off in settings.
+        if #available(iOS 26.0, *), !settings.flattenTabs {
             iOS26TabInterface
         } else {
             customTabInterface

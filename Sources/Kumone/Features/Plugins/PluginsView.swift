@@ -377,6 +377,7 @@ struct ImportedPlaylistDetailView: View {
                     selectedCount: selectedIDs.count,
                     canDelete: true,
                     onPlayNext: playSelectedNext,
+                    onQueueEnd: queueSelectedAtEnd,
                     onCollect: { showCollect = true },
                     onDelete: { showDeleteConfirm = true }
                 )
@@ -442,6 +443,12 @@ struct ImportedPlaylistDetailView: View {
                         Label("把正在播放的歌曲加进来", systemImage: "plus.circle")
                     }
                     .disabled(player.currentTrack == nil)
+                    Button {
+                        queueAllAtEnd()
+                    } label: {
+                        Label("把整个歌单排到队列末尾", systemImage: "text.line.last.and.arrowtriangle.forward")
+                    }
+                    .disabled(entries.isEmpty)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -517,6 +524,18 @@ struct ImportedPlaylistDetailView: View {
                 }
             }
         }
+        .contextMenu {
+            Button {
+                player.addToPlayNext(entry.track)
+            } label: {
+                Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
+            }
+            Button {
+                player.addToQueueEnd([entry.track])
+            } label: {
+                Label("排到队列末尾", systemImage: "text.line.last.and.arrowtriangle.forward")
+            }
+        }
     }
 
     // MARK: - Actions
@@ -576,6 +595,23 @@ struct ImportedPlaylistDetailView: View {
         player.addToPlayNext(tracks)
         selectedIDs.removeAll()
         multiSelectMode = false
+    }
+
+    /// Beans-style: the selection waits behind what is already playing.
+    private func queueSelectedAtEnd() {
+        let tracks = selectedTracks
+        guard !tracks.isEmpty else { return }
+        player.addToQueueEnd(tracks)
+        selectedIDs.removeAll()
+        multiSelectMode = false
+    }
+
+    /// Queue the whole playlist behind the current one, so switching lists
+    /// does not interrupt the song that is playing.
+    private func queueAllAtEnd() {
+        let queue = visibleEntries.map(\.track)
+        guard !queue.isEmpty else { return }
+        player.addToQueueEnd(queue)
     }
 
     /// Adds whatever is playing; NetEase songs are stored by id, plugin songs

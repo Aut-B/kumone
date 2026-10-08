@@ -4,7 +4,13 @@ import SwiftUI
 final class PlaylistDetailViewModel: ObservableObject {
     let playlistID: Int
     @Published var detail: PlaylistDetail?
-    @Published var tracks: [Track] = []
+    @Published var tracks: [Track] = [] {
+        didSet { orderedTracks = sortOrder.sorted(tracks) }
+    }
+    @Published var sortOrder: PlaylistTrackSort = .addedNewestFirst {
+        didSet { orderedTracks = sortOrder.sorted(tracks) }
+    }
+    private(set) var orderedTracks: [Track] = []
     @Published var privileges: [Int: TrackPrivilege] = [:]
     @Published var isLoading = true
     @Published var isLoadingMore = false
@@ -17,12 +23,12 @@ final class PlaylistDetailViewModel: ObservableObject {
     }
 
     var filteredTracks: [Track] {
-        let query = filter.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return tracks }
-        return tracks.filter {
-            $0.name.lowercased().contains(query)
-                || $0.artistNames.lowercased().contains(query)
-                || $0.album.name.lowercased().contains(query)
+        let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return orderedTracks }
+        return orderedTracks.filter {
+            $0.name.localizedStandardContains(query)
+                || $0.artistNames.localizedStandardContains(query)
+                || $0.album.name.localizedStandardContains(query)
         }
     }
 
@@ -31,25 +37,30 @@ final class PlaylistDetailViewModel: ObservableObject {
         errorMessage = nil
         do {
             let response = try await NeteaseAPI.playlistDetail(id: playlistID)
+            try Task.checkCancellation()
             detail = response.playlist
             tracks = response.playlist.tracks.filter { !reducedRecommendationIDs.contains($0.id) }
             merge(privileges: response.privileges)
             isLoading = false
-            await loadRemainingTracks()
+            try await loadRemainingTracks()
         } catch {
             isLoading = false
-            if tracks.isEmpty { errorMessage = error.localizedDescription }
+            guard !Task.isCancelled else { return }
+            errorMessage = error.localizedDescription
         }
     }
 
-    private func loadRemainingTracks() async {
-        guard let detail, tracks.count < detail.trackIds.count else { return }
+    private func loadRemainingTracks() async throws {
+        guard let detail else { return }
+        let loadedIDs = Set(tracks.map(\.id)).union(reducedRecommendationIDs)
+        let remaining = detail.trackIds.map(\.id).filter { !loadedIDs.contains($0) }
+        guard !remaining.isEmpty else { return }
         isLoadingMore = true
         defer { isLoadingMore = false }
-        let remaining = detail.trackIds.map(\.id).dropFirst(tracks.count)
-        for chunk in stride(from: 0, to: remaining.count, by: 500)
-            .map({ Array(remaining.dropFirst($0).prefix(500)) }) {
-            guard let response = try? await NeteaseAPI.songDetails(ids: chunk) else { break }
+        for offset in stride(from: 0, to: remaining.count, by: 500) {
+            let chunk = Array(remaining[offset..<min(offset + 500, remaining.count)])
+            let response = try await NeteaseAPI.songDetails(ids: chunk)
+            try Task.checkCancellation()
             tracks += response.songs.filter { !reducedRecommendationIDs.contains($0.id) }
             merge(privileges: response.privileges)
         }
@@ -95,6 +106,10 @@ struct PlaylistDetailView: View {
     @State private var showCollect = false
     @State private var showDeleteConfirm = false
     @State private var isDeleting = false
+    #if os(iOS)
+    @State private var showSearch = false
+    @State private var searchFocused = false
+    #endif
 
     init(playlistID: Int, isLikedList: Bool = false, recommendationContext: RecommendationContext? = nil) {
         self.playlistID = playlistID
@@ -115,152 +130,253 @@ struct PlaylistDetailView: View {
         #endif
     }
 
-    var body: some View {
-        Group {
-            if sorting {
-                reorderList
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: isCompact ? 16 : 20) {
-                        if let detail = model.detail {
-                            if isCompact {
-                                compactHeader(detail)
-                                    .padding(.horizontal, 16)
-                                    .padding(.top, 12)
-                            } else {
-                                regularHeader(detail)
-                                    .padding(.horizontal, Theme.Layout.contentInset)
-                                    .padding(.top, 16)
-                            }
+    /// Search inside the list. Upstream gated this on the liked-songs list
+    /// only; finding a song matters just as much in a long collected
+    /// playlist, so every playlist gets it.
+    private var supportsPlaylistSearch: Bool {
+        #if os(iOS)
+        return true
+        #else
+        return false
+        #endif
+    }
 
-                            Group {
-                                if multiSelectMode {
-                                    LazyVStack(spacing: 1) {
-                                        ForEach(visibleTracks) { track in
-                                            selectableRow(track)
+    private var isSearchActive: Bool {
+        #if os(iOS)
+        return supportsPlaylistSearch && showSearch
+        #else
+        return false
+        #endif
+    }
+
+    private var activeQuery: String {
+        model.filter.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            Group {
+                if sorting {
+                    reorderList
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: isCompact ? 16 : 20) {
+                            if let detail = model.detail {
+                                if !isSearchActive {
+                                    if isCompact {
+                                        compactHeader(detail)
+                                            .padding(.horizontal, 16)
+                                            .padding(.top, 12)
+                                    } else {
+                                        regularHeader(detail)
+                                            .padding(.horizontal, Theme.Layout.contentInset)
+                                            .padding(.top, 16)
+                                    }
+                                }
+
+                                #if os(iOS)
+                                if isSearchActive {
+                                    HStack(spacing: 4) {
+                                        PlaylistSearchField(text: $model.filter, isFocused: $searchFocused)
+                                        Button("取消") {
+                                            model.filter = ""
+                                            searchFocused = false
+                                            withAnimation(AppAnimation.standard) { showSearch = false }
+                                        }
+                                        .buttonStyle(.plain)
+                                        .padding(.trailing, 8)
+                                    }
+                                    .frame(height: 52)
+                                    .padding(.horizontal, isCompact ? 8 : Theme.Layout.contentInset - 8)
+                                    .padding(.top, 8)
+                                    .transition(.opacity)
+                                }
+
+                                if !activeQuery.isEmpty {
+                                    HStack {
+                                        Text("找到 \(visibleTracks.count) 首匹配歌曲")
+                                        if !isSearchActive {
+                                            Spacer()
+                                            Button("清空搜索") { model.filter = "" }
                                         }
                                     }
-                                } else {
-                                    TrackListView(
-                                        tracks: visibleTracks,
-                                        privileges: model.privileges,
-                                        source: .playlist(playlistID),
-                                        context: model.detail.map { .playlist(id: playlistID, name: $0.name) },
-                                        removableFromPlaylistID: isOwnPlaylist ? playlistID : nil,
-                                        onRemoved: { model.remove($0) },
-                                        recommendationContext: recommendationContext,
-                                        onRecommendationReduced: { model.replaceRecommendation($0, with: $1) }
-                                    )
-                                }
-                            }
-                            .padding(.horizontal, isCompact ? 6 : Theme.Layout.contentInset - 10)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, isCompact ? 16 : Theme.Layout.contentInset)
 
-                            if model.isLoadingMore {
-                                HStack {
-                                    Spacer()
-                                    ProgressView().controlSize(.small)
-                                    Spacer()
+                                    if visibleTracks.isEmpty && !model.isLoadingMore && model.errorMessage == nil {
+                                        EmptyStateView(icon: "magnifyingglass", title: "没有匹配的歌曲",
+                                                       subtitle: "试试其他歌名、歌手或专辑")
+                                            .frame(minHeight: 180)
+                                    }
                                 }
-                                .padding(.vertical, 12)
+                                #endif
+
+                                Group {
+                                    if multiSelectMode {
+                                        LazyVStack(spacing: 1) {
+                                            ForEach(visibleTracks) { track in
+                                                selectableRow(track)
+                                            }
+                                        }
+                                    } else {
+                                        TrackListView(
+                                            tracks: visibleTracks,
+                                            privileges: model.privileges,
+                                            source: .playlist(playlistID),
+                                            context: model.detail.map { .playlist(id: playlistID, name: $0.name) },
+                                            removableFromPlaylistID: isOwnPlaylist ? playlistID : nil,
+                                            onRemoved: { model.remove($0) },
+                                            recommendationContext: recommendationContext,
+                                            onRecommendationReduced: { model.replaceRecommendation($0, with: $1) }
+                                        )
+                                    }
+                                }
+                                .padding(.horizontal, isCompact ? 6 : Theme.Layout.contentInset - 10)
+
+                                if model.isLoadingMore {
+                                    HStack {
+                                        Spacer()
+                                        ProgressView().controlSize(.small)
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, 12)
+                                }
+                            } else if model.isLoading {
+                                loadingHeader
+                            } else if let message = model.errorMessage {
+                                ErrorStateView(message: message) {
+                                    Task { await model.load() }
+                                }
+                                .frame(minHeight: 400)
                             }
-                        } else if model.isLoading {
-                            loadingHeader
-                        } else if let message = model.errorMessage {
-                            ErrorStateView(message: message) {
-                                Task { await model.load() }
-                            }
-                            .frame(minHeight: 400)
+                            PlayerClearanceSpacer()
                         }
-                        PlayerClearanceSpacer()
+                        .id("playlistTop")
+                        #if os(iOS)
+                        .background {
+                            PlaylistSearchScrollGesture(isSearchActive: showSearch, onPullDown: {
+                                withAnimation(AppAnimation.standard) { showSearch = true }
+                                searchFocused = true
+                            }, onScrollUp: {
+                                searchFocused = false
+                                withAnimation(AppAnimation.standard) { showSearch = false }
+                            })
+                        }
+                        #endif
                     }
-                }
-                .safeAreaInset(edge: .top) {
-                    // Pinned under the navigation bar, not at the bottom: the
-                    // floating mini player would otherwise cover it.
-                    if multiSelectMode {
-                        VStack(spacing: 0) {
-                            PlaylistSelectionSummaryBar(
-                                selectedCount: selectedIDs.count,
-                                totalCount: visibleTracks.count,
-                                onToggleAll: toggleSelectAll
-                            )
-                            Divider().opacity(0.4)
-                            PlaylistSelectionActionBar(
-                                selectedCount: selectedIDs.count,
-                                canDelete: isOwnPlaylist,
-                                onPlayNext: playSelectedNext,
-                                onCollect: { showCollect = true },
-                                onDelete: { showDeleteConfirm = true }
-                            )
-                            Divider().opacity(0.4)
+                    .safeAreaInset(edge: .top) {
+                        // Pinned under the navigation bar, not at the bottom: the
+                        // floating mini player would otherwise cover it.
+                        if multiSelectMode {
+                            VStack(spacing: 0) {
+                                PlaylistSelectionSummaryBar(
+                                    selectedCount: selectedIDs.count,
+                                    totalCount: visibleTracks.count,
+                                    onToggleAll: toggleSelectAll
+                                )
+                                Divider().opacity(0.4)
+                                PlaylistSelectionActionBar(
+                                    selectedCount: selectedIDs.count,
+                                    canDelete: isOwnPlaylist,
+                                    onPlayNext: playSelectedNext,
+                                    onQueueEnd: queueSelectedAtEnd,
+                                    onCollect: { showCollect = true },
+                                    onDelete: { showDeleteConfirm = true }
+                                )
+                                Divider().opacity(0.4)
+                            }
+                            .background(.bar)
                         }
-                        .background(.bar)
                     }
                 }
             }
-        }
-        #if os(macOS)
-        .navigationTitle(model.detail?.name ?? String(localized: "歌单"))
-        #else
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    toggleMultiSelect()
-                } label: {
-                    Image(systemName: multiSelectMode ? "xmark.circle" : "checklist")
-                        .font(.system(size: 16, weight: .semibold))
-                }
-                .accessibilityLabel(multiSelectMode ? "退出多选" : "多选")
-                .disabled(model.detail == nil || sorting)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
+            #if os(macOS)
+            .navigationTitle(model.detail?.name ?? String(localized: "歌单"))
+            #else
+            .navigationTitle(isSearchActive ? String(localized: "搜索歌单内歌曲") : "")
+            .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         toggleMultiSelect()
                     } label: {
-                        Label(multiSelectMode ? "退出多选" : "多选", systemImage: "checklist")
+                        Image(systemName: multiSelectMode ? "xmark.circle" : "checklist")
+                            .font(.system(size: 16, weight: .semibold))
                     }
-                    Button {
-                        sorting.toggle()
-                        if sorting {
-                            multiSelectMode = false
-                            selectedIDs.removeAll()
-                        }
-                    } label: {
-                        Label(sorting ? "完成排序" : "调整歌曲顺序",
-                              systemImage: sorting ? "checkmark" : "arrow.up.arrow.down")
-                    }
-                    .disabled(model.tracks.count < 2)
-                    Button {
-                        layout.clearTrackOrder(playlistID: playlistID)
-                    } label: {
-                        Label("恢复默认顺序", systemImage: "arrow.uturn.left")
-                    }
-                    .disabled(!layout.hasCustomTrackOrder(playlistID: playlistID))
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+                    .accessibilityLabel(multiSelectMode ? "退出多选" : "多选")
+                    .disabled(model.detail == nil || sorting)
                 }
-                .accessibilityLabel("更多")
-                .disabled(model.detail == nil)
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        if !isSearchActive {
+                            Button {
+                                withAnimation(AppAnimation.standard) {
+                                    showSearch = true
+                                    proxy.scrollTo("playlistTop", anchor: .top)
+                                }
+                                searchFocused = true
+                            } label: {
+                                Label("在歌单内查找", systemImage: "magnifyingglass")
+                            }
+                        }
+                        Button {
+                            toggleMultiSelect()
+                        } label: {
+                            Label(multiSelectMode ? "退出多选" : "多选", systemImage: "checklist")
+                        }
+                        Button {
+                            sorting.toggle()
+                            if sorting {
+                                multiSelectMode = false
+                                selectedIDs.removeAll()
+                            }
+                        } label: {
+                            Label(sorting ? "完成排序" : "调整歌曲顺序",
+                                  systemImage: sorting ? "checkmark" : "arrow.up.arrow.down")
+                        }
+                        .disabled(model.tracks.count < 2)
+                        Menu {
+                            Picker("排序方式", selection: $model.sortOrder) {
+                                ForEach(PlaylistTrackSort.allCases, id: \.self) { order in
+                                    Text(LocalizedStringKey(order.rawValue)).tag(order)
+                                }
+                            }
+                        } label: {
+                            Label("排序方式", systemImage: "arrow.up.arrow.down")
+                        }
+                        Button {
+                            layout.clearTrackOrder(playlistID: playlistID)
+                        } label: {
+                            Label("恢复默认顺序", systemImage: "arrow.uturn.left")
+                        }
+                        .disabled(!layout.hasCustomTrackOrder(playlistID: playlistID))
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("更多")
+                    .disabled(model.detail == nil)
+                }
+            }
+            #endif
+            .sheet(isPresented: $showCollect) {
+                AddTracksToPlaylistSheet(tracks: selectedTracks)
+            }
+            .confirmationDialog(
+                "从歌单移除 \(selectedIDs.count) 首？",
+                isPresented: $showDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("移除", role: .destructive) {
+                    Task { await deleteSelected() }
+                }
+                Button("取消", role: .cancel) {}
+            }
+            .task(id: playlistID) {
+                await model.load()
             }
         }
-        .sheet(isPresented: $showCollect) {
-            AddTracksToPlaylistSheet(tracks: selectedTracks)
-        }
-        .confirmationDialog(
-            "从歌单移除 \(selectedIDs.count) 首？",
-            isPresented: $showDeleteConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("移除", role: .destructive) {
-                Task { await deleteSelected() }
-            }
-            Button("取消", role: .cancel) {}
-        }
-        .task(id: playlistID) {
-            await model.load()
         }
     }
 
@@ -328,6 +444,16 @@ struct PlaylistDetailView: View {
         let tracks = selectedTracks
         guard !tracks.isEmpty else { return }
         player.addToPlayNext(tracks)
+        selectedIDs.removeAll()
+        multiSelectMode = false
+    }
+
+    /// "Play these after whatever I am listening to right now" — the Beans
+    /// behaviour, as opposed to cutting in after the current song.
+    private func queueSelectedAtEnd() {
+        let tracks = selectedTracks
+        guard !tracks.isEmpty else { return }
+        player.addToQueueEnd(tracks)
         selectedIDs.removeAll()
         multiSelectMode = false
     }
@@ -464,18 +590,7 @@ struct PlaylistDetailView: View {
                 }
                 .buttonStyle(.pressable)
 
-                if isLikedList {
-                    Button {
-                        startHeartbeat()
-                    } label: {
-                        Image(systemName: "heart.circle.fill")
-                            .font(.system(size: 18))
-                            .foregroundStyle(Theme.accent)
-                            .frame(width: 38, height: 38)
-                            .background(.primary.opacity(0.06), in: Circle())
-                    }
-                    .buttonStyle(.pressable)
-                } else if !isOwnPlaylist, account.isLoggedIn {
+                if !isLikedList && !isOwnPlaylist, account.isLoggedIn {
                     Button {
                         toggleSubscribe(detail)
                     } label: {
@@ -596,6 +711,7 @@ struct PlaylistDetailView: View {
                 .buttonStyle(.pressable)
             }
 
+            #if os(macOS)
             Spacer()
 
             HStack(spacing: 6) {
@@ -610,12 +726,14 @@ struct PlaylistDetailView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(.primary.opacity(0.05), in: Capsule())
+            #endif
         }
     }
 
     private var playable: [Track] {
-        if SettingsManager.shared.canResolveUnblockedTracks { return model.tracks }
-        return model.tracks.filter {
+        let tracks = model.orderedTracks
+        if SettingsManager.shared.canResolveUnblockedTracks { return tracks }
+        return tracks.filter {
             $0.playability(privilege: model.privileges[$0.id],
                            isLoggedIn: account.isLoggedIn,
                            vipType: account.vipType) == .playable

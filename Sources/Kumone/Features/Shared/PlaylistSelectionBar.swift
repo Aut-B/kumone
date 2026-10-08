@@ -40,6 +40,9 @@ struct PlaylistSelectionActionBar: View {
     let selectedCount: Int
     var canDelete = true
     let onPlayNext: () -> Void
+    /// Queue the selection behind everything already waiting, instead of
+    /// cutting in front of the song that is playing.
+    var onQueueEnd: (() -> Void)? = nil
     let onCollect: () -> Void
     let onDelete: () -> Void
 
@@ -51,6 +54,14 @@ struct PlaylistSelectionActionBar: View {
                 tint: .primary,
                 action: onPlayNext
             )
+            if let onQueueEnd {
+                actionButton(
+                    icon: "text.line.last.and.arrowtriangle.forward",
+                    label: "排到队尾",
+                    tint: .primary,
+                    action: onQueueEnd
+                )
+            }
             actionButton(
                 icon: "folder.badge.plus",
                 label: "添加到歌单",

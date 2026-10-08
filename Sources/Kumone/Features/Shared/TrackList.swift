@@ -339,6 +339,9 @@ struct TrackRow: View {
         Button("下一首播放") {
             player.addToPlayNext(track)
         }
+        Button("排到队列末尾") {
+            player.addToQueueEnd([track])
+        }
         Divider()
         if !isPluginTrack {
             let liked = account.isLiked(track.id)

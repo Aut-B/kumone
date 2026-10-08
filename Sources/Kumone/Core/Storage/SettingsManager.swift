@@ -91,7 +91,10 @@ public enum NowPlayingMode: String, CaseIterable, Identifiable {
 final class SettingsManager: ObservableObject {
     static let shared = SettingsManager()
 
-    private enum Keys {
+    /// Internal rather than private: `AudioCache` reads its own limit straight
+    /// from `UserDefaults` before any settings object exists, and must spell
+    /// the key the same way.
+    enum Keys {
         static let quality = "settings.audioQuality"
         static let appearance = "settings.appearance"
         static let nowPlayingMode = "settings.nowPlayingMode"
@@ -107,6 +110,15 @@ final class SettingsManager: ObservableObject {
         static let unblockSources = "settings.enabledUnblockSources"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
+        #if os(macOS)
+        static let automix = "settings.automixEnabled"
+        static let automixTransitions = "settings.automixTransitions"
+        static let automixOrder = "settings.automixOrder"
+        static let automixStems = "settings.automixStems"
+        static let loudnessCompensation = "settings.loudnessCompensation"
+        static let audioCacheLimit = "settings.audioCacheLimit"
+        static let outputDevice = "settings.outputDeviceUID"
+        #endif
         static let desktopLyricsCentered = "settings.desktopLyricsCentered"
         static let mainWindowAmbientBackground = "settings.showMainWindowAmbientBackground"
         static let mainWindowAmbientBackgroundIntensity = "settings.mainWindowAmbientBackgroundIntensity"
@@ -128,6 +140,9 @@ final class SettingsManager: ObservableObject {
         static let lyricTiltX = "settings.lyricTiltX"                 // -30...30
         static let lyricTiltY = "settings.lyricTiltY"                 // -20...20
         static let lyricGlow = "settings.lyricGlow"                   // 0...5
+        /// iOS 26 folds overflowing tabs into a "更多" tab; this keeps the
+        /// hand-built bar with every tab laid out flat instead.
+        static let flattenTabs = "settings.flattenTabs"
     }
 
     /// Progress bar style: 0 流光 / 1 辉光 / 2 极光 / 3 波浪.
@@ -295,6 +310,67 @@ final class SettingsManager: ObservableObject {
     @Published var showDesktopLyrics: Bool {
         didSet { UserDefaults.standard.set(showDesktopLyrics, forKey: Keys.desktopLyrics) }
     }
+    #if os(macOS)
+
+    /// The AutoMix master switch. Off means no per-track analysis at all, and
+    /// every sub-setting below is inert. Opt-in: AutoMix costs CPU (analysis),
+    /// sometimes network (the order's candidates) and sometimes GPU (stems),
+    /// so it does not turn itself on. macOS-only for now (spec §7).
+    @Published var automixEnabled: Bool {
+        didSet { UserDefaults.standard.set(automixEnabled, forKey: Keys.automix) }
+    }
+
+    /// Beat-matched / crossfaded hand-overs between queue tracks. Off still
+    /// gives gapless playback, and off is *only* a statement about the seam:
+    /// analysis still runs when another sub-setting below wants it.
+    @Published var automixTransitionsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(automixTransitionsEnabled,
+                                      forKey: Keys.automixTransitions)
+        }
+    }
+
+    /// The `.autoMix` queue order — reorder the queue by how well the seams
+    /// come out. It scores candidates, which means downloading tracks the
+    /// listener has not asked for yet, so it is off by default even under an
+    /// AutoMix that is on.
+    @Published var automixOrderEnabled: Bool {
+        didSet { UserDefaults.standard.set(automixOrderEnabled, forKey: Keys.automixOrder) }
+    }
+
+    /// Let a hand-over separate stems on the GPU. Real money in heat and
+    /// battery, and it needs a model on disk, so it is opt-in on top of
+    /// opt-in; without it every gesture plays its whole-mix form.
+    @Published var automixStemsEnabled: Bool {
+        didSet { UserDefaults.standard.set(automixStemsEnabled, forKey: Keys.automixStems) }
+    }
+
+    /// Even out mastering loudness differences between songs, so the next
+    /// track does not arrive several dB louder. Needs AutoMix's per-track
+    /// analysis, so it is inert while AutoMix is off.
+    @Published var loudnessCompensationEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(loudnessCompensationEnabled,
+                                      forKey: Keys.loudnessCompensation)
+        }
+    }
+
+    /// Audio cache LRU limit in bytes; 0 = unlimited. AudioCache reads the
+    /// same defaults key at startup and receives changes from here.
+    @Published var audioCacheLimit: Int64 {
+        didSet {
+            UserDefaults.standard.set(audioCacheLimit, forKey: Keys.audioCacheLimit)
+            Task { await EngineAudioCache.shared.setLimitBytes(audioCacheLimit) }
+        }
+    }
+
+    /// CoreAudio UID of the chosen output device; "" follows the system
+    /// default. UID rather than the numeric AudioDeviceID, which is not
+    /// stable across launches. Written by `AudioOutputController`.
+    @Published var outputDeviceUID: String {
+        didSet { UserDefaults.standard.set(outputDeviceUID, forKey: Keys.outputDevice) }
+    }
+    #endif
 
     /// Lock the desktop-lyrics capsule to the horizontal centre of the screen
     /// instead of the free-drag position (#48).
@@ -303,6 +379,12 @@ final class SettingsManager: ObservableObject {
     }
 
     static let mainWindowAmbientBackgroundIntensityRange = 0.5...1.5
+
+    #if os(macOS)
+    /// Default song-cache ceiling, shared with `AudioCache` so the two cannot
+    /// disagree about what "unset" means.
+    nonisolated static let defaultAudioCacheLimit: Int64 = 2_147_483_648  // 2 GB
+    #endif
 
     /// Artwork-tinted overlay on the main app interface.
     @Published var showMainWindowAmbientBackground: Bool {
@@ -323,6 +405,12 @@ final class SettingsManager: ObservableObject {
             )
         }
     }
+    /// Draw the tab bar ourselves instead of letting iOS 26 collapse the
+    /// overflow (搜索 / 插件) into a single "更多" tab.
+    @Published var flattenTabs: Bool {
+        didSet { UserDefaults.standard.set(flattenTabs, forKey: Keys.flattenTabs) }
+    }
+
     private init() {
         let defaults = UserDefaults.standard
         audioQuality = defaults.string(forKey: Keys.quality).flatMap(AudioQuality.init) ?? .exhigh
@@ -348,6 +436,18 @@ final class SettingsManager: ObservableObject {
         }
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
+        #if os(macOS)
+        automixEnabled = defaults.object(forKey: Keys.automix) as? Bool ?? false
+        automixTransitionsEnabled =
+            defaults.object(forKey: Keys.automixTransitions) as? Bool ?? true
+        automixOrderEnabled = defaults.object(forKey: Keys.automixOrder) as? Bool ?? false
+        automixStemsEnabled = defaults.object(forKey: Keys.automixStems) as? Bool ?? false
+        loudnessCompensationEnabled =
+            defaults.object(forKey: Keys.loudnessCompensation) as? Bool ?? true
+        audioCacheLimit = (defaults.object(forKey: Keys.audioCacheLimit) as? Int64)
+            ?? Self.defaultAudioCacheLimit
+        outputDeviceUID = defaults.string(forKey: Keys.outputDevice) ?? ""
+        #endif
         desktopLyricsCentered = defaults.object(forKey: Keys.desktopLyricsCentered) as? Bool ?? false
         showMainWindowAmbientBackground = defaults.object(
             forKey: Keys.mainWindowAmbientBackground
@@ -373,5 +473,6 @@ final class SettingsManager: ObservableObject {
         lyricTiltX = defaults.object(forKey: Keys.lyricTiltX) as? Double ?? 8
         lyricTiltY = defaults.object(forKey: Keys.lyricTiltY) as? Double ?? 0
         lyricGlow = defaults.object(forKey: Keys.lyricGlow) as? Double ?? 2.5
+        flattenTabs = defaults.object(forKey: Keys.flattenTabs) as? Bool ?? true
     }
 }

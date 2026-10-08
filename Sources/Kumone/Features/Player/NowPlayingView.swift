@@ -802,12 +802,16 @@ struct NowPlayingView: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
+                // All three queue orders on the one button; the cycle skips
+                // AutoMix wherever it could do nothing (AutoMix off, order
+                // off), so this row keeps its present width and its two-state
+                // behaviour there — as it does on iOS, which has no AutoMix at
+                // all. Only the three values below differ per platform.
                 circleButton(
-                    icon: "shuffle", size: 14,
-                    tint: player.shuffleEnabled ? Theme.accent : nil
-                ) {
-                    player.toggleShuffle()
-                }
+                    icon: queueOrderIcon, size: 14,
+                    tint: queueOrderIsActive ? Theme.accent : nil,
+                    action: cycleQueueOrder
+                )
                 .frame(maxWidth: .infinity)
                 circleButton(icon: "backward.fill", size: 16) {
                     player.previous()
@@ -861,6 +865,35 @@ struct NowPlayingView: View {
             }
         }
         .buttonStyle(.pressable)
+    }
+
+    // MARK: - Queue-order control
+
+    /// The queue-order button's three platform-dependent values. macOS cycles
+    /// `listed → shuffled → autoMix`; iOS has no AutoMix and toggles shuffle.
+
+    private var queueOrderIcon: String {
+        #if os(macOS)
+        player.queueOrder.symbolName
+        #else
+        "shuffle"
+        #endif
+    }
+
+    private var queueOrderIsActive: Bool {
+        #if os(macOS)
+        player.queueOrder != .listed
+        #else
+        player.shuffleEnabled
+        #endif
+    }
+
+    private func cycleQueueOrder() {
+        #if os(macOS)
+        player.cycleQueueOrder()
+        #else
+        player.toggleShuffle()
+        #endif
     }
 
     private func circleButton(icon: String, size: CGFloat,
@@ -1646,12 +1679,33 @@ private struct CompactQueueContent: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: 4) {
-                        ForEach(
-                            Array(player.upcomingTracks.prefix(100).enumerated()),
-                            id: \.offset
-                        ) { _, track in
-                            CompactQueueRow(track: track)
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        if !player.queueSections.inserted.isEmpty {
+                            compactSectionLabel("插播")
+                            ForEach(
+                                Array(player.queueSections.inserted.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { _, track in
+                                CompactQueueRow(track: track)
+                            }
+                        }
+                        if !player.queueSections.upcoming.isEmpty {
+                            compactSectionLabel("即将播放")
+                            ForEach(
+                                Array(player.queueSections.upcoming.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { _, track in
+                                CompactQueueRow(track: track)
+                            }
+                        }
+                        if !player.queueSections.pending.isEmpty {
+                            compactSectionLabel("稍后播放")
+                            ForEach(
+                                Array(player.queueSections.pending.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { _, track in
+                                CompactQueueRow(track: track)
+                            }
                         }
                     }
                 }
@@ -1665,6 +1719,14 @@ private struct CompactQueueContent: View {
             }
         }
         .padding(.top, 6)
+    }
+
+    private func compactSectionLabel(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.5))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
     }
 
     private func modeButton(
@@ -2400,11 +2462,33 @@ private struct MinimalQueueSheet: View {
                         MinimalQueueSectionLabel("正在播放")
                         MinimalQueueRow(track: current, isCurrent: true)
 
-                        if !player.upcomingTracks.isEmpty {
+                        if !player.queueSections.inserted.isEmpty {
+                            MinimalQueueSectionLabel("插播")
+                                .padding(.top, 10)
+                            ForEach(
+                                Array(player.queueSections.inserted.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { _, track in
+                                MinimalQueueRow(track: track, isCurrent: false)
+                            }
+                        }
+
+                        if !player.queueSections.upcoming.isEmpty {
                             MinimalQueueSectionLabel("即将播放")
                                 .padding(.top, 10)
                             ForEach(
-                                Array(player.upcomingTracks.prefix(100).enumerated()),
+                                Array(player.queueSections.upcoming.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { _, track in
+                                MinimalQueueRow(track: track, isCurrent: false)
+                            }
+                        }
+
+                        if !player.queueSections.pending.isEmpty {
+                            MinimalQueueSectionLabel("稍后播放")
+                                .padding(.top, 10)
+                            ForEach(
+                                Array(player.queueSections.pending.prefix(100).enumerated()),
                                 id: \.offset
                             ) { _, track in
                                 MinimalQueueRow(track: track, isCurrent: false)
