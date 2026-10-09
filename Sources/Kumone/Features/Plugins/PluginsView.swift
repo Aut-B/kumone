@@ -822,7 +822,7 @@ struct PluginManagerView: View {
         Section {
             TextField("https://example.com/plugin.js", text: $urlText)
                 .keyboardType(.URL)
-                .autocorrectionDisabled()
+                .compatAutocorrectionDisabled()
                 .textInputAutocapitalization(.never)
             Button {
                 Task { await install(url: urlText) }
@@ -910,10 +910,10 @@ struct WebDAVImportView: View {
                 Section {
                     TextField("https://dav.jianguoyun.com/dav/", text: $server)
                         .keyboardType(.URL)
-                        .autocorrectionDisabled()
+                        .compatAutocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     TextField("用户名", text: $username)
-                        .autocorrectionDisabled()
+                        .compatAutocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     SecureField("密码（应用授权密码）", text: $password)
                     Button {

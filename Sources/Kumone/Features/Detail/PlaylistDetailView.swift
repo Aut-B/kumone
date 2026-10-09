@@ -296,7 +296,7 @@ struct PlaylistDetailView: View {
             #else
             .navigationTitle(isSearchActive ? String(localized: "搜索歌单内歌曲") : "")
             .navigationBarTitleDisplayMode(.inline)
-            .scrollDismissesKeyboard(.interactively)
+            .compatScrollDismissesKeyboardInteractively()
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {

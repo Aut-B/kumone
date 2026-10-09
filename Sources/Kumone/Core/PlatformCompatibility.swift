@@ -174,6 +174,15 @@ extension View {
         }
         return AnyView(self)
     }
+
+    /// autocorrectionDisabled is iOS 16+ / macOS 13+; older systems keep the
+    /// default autocorrection behaviour for URL and account fields.
+    func compatAutocorrectionDisabled() -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.autocorrectionDisabled())
+        }
+        return AnyView(self)
+    }
 }
 
 /// mm:ss for a millisecond value —  formatting is iOS 16+.
@@ -184,3 +193,16 @@ enum CompatDuration {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
+
+#if os(iOS)
+extension View {
+    /// scrollDismissesKeyboard is iOS 16+; on iOS 15 the search field keeps the
+    /// default dismissal behaviour (tapping outside / scroll still works).
+    func compatScrollDismissesKeyboardInteractively() -> AnyView {
+        if #available(iOS 16.0, *) {
+            return AnyView(self.scrollDismissesKeyboard(.interactively))
+        }
+        return AnyView(self)
+    }
+}
+#endif
