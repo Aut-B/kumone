@@ -901,6 +901,8 @@ struct WebDAVImportView: View {
     @State private var currentDirectoryURL: String?
     @State private var isLoading = false
     @State private var isExporting = false
+    /// 导出过程中的进度提示（读网易云歌单时逐个通报）。
+    @State private var exportStatus: String?
     @State private var errorMessage: String?
     @State private var importingName: String?
 
@@ -928,9 +930,13 @@ struct WebDAVImportView: View {
                 } header: {
                     Text("WebDAV 设置")
                 } footer: {
-                    Text("支持坚果云等 WebDAV 服务。可以直接导入 Beans 的 localLibrary.json，也可以导入 MusicFree 导出的歌单 JSON。「导出备份」把本地歌单写进 KumoneBackup.json，两种音源的歌都在里面。")
+                    Text("支持坚果云等 WebDAV 服务。可以直接导入 Beans 的 localLibrary.json，也可以导入 MusicFree 导出的歌单 JSON。「导出备份」把本地歌单、网易云歌单和已装插件一起写进 KumoneBackup.json。")
                     Text("导出到：" + exportDestination)
                         .foregroundStyle(.secondary)
+                    if let exportStatus {
+                        Text(exportStatus)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section {
@@ -964,7 +970,7 @@ struct WebDAVImportView: View {
                     Button("导出备份") {
                         Task { await exportBackup() }
                     }
-                    .disabled(ImportedPlaylistStore.shared.playlists.isEmpty || isExporting)
+                    .disabled(backupIsEmpty || isExporting)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
@@ -1183,6 +1189,14 @@ struct WebDAVImportView: View {
         return WebDAVClient.directoryDescription(of: exportBase + "KumoneBackup.json")
     }
 
+    /// 有没有东西可导。以前只看本地歌单，结果一个本地歌单都没有、但网易云
+    /// 歌单和插件都有的用户，按钮是灰的，什么都导不出去。
+    private var backupIsEmpty: Bool {
+        ImportedPlaylistStore.shared.playlists.isEmpty
+            && AccountStore.shared.userPlaylists.isEmpty
+            && PluginManager.shared.plugins.isEmpty
+    }
+
     /// Exports all imported playlists as a MusicFree-format backup JSON and
     /// uploads it to the folder currently being browsed (KumoneBackup.json) —
     /// re-import on any device via this same sheet.
@@ -1193,19 +1207,24 @@ struct WebDAVImportView: View {
             return
         }
         isExporting = true
-        defer { isExporting = false }
-        let sheets: [[String: Any]] = ImportedPlaylistStore.shared.playlists.map { playlist in
-            let entries = ImportedPlaylistStore.shared.loadEntries(of: playlist)
-            return [
-                "title": playlist.name,
-                "musicList": entries.map(\.dictionary),
-            ]
+        exportStatus = nil
+        defer { isExporting = false; exportStatus = nil }
+
+        let sheets = await backupSheets()
+
+        // Plugins travel as the URL they were installed from, so MusicFree can
+        // fetch them itself. This array used to be hardcoded empty, which is why
+        // every source had to be added by hand after a restore.
+        let pluginEntries: [[String: Any]] = PluginManager.shared.plugins.compactMap { plugin in
+            guard let srcUrl = plugin.sourceURL, !srcUrl.isEmpty else { return nil }
+            return ["srcUrl": srcUrl, "version": plugin.version ?? ""]
         }
+
         // A local playlist can hold NetEase entries too; they travel in the
         // same list under their own `kind` marker and survive re-import.
         let backup: [String: Any] = [
             "musicSheets": sheets,
-            "plugins": [],
+            "plugins": pluginEntries,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: backup, options: [.prettyPrinted]) else {
             errorMessage = String(localized: "备份序列化失败")
@@ -1215,8 +1234,13 @@ struct WebDAVImportView: View {
         let target = base + "KumoneBackup.json"
         do {
             try await WebDAVClient.upload(data: data, urlString: target, username: username, password: password)
+            let songCount = sheets.reduce(0) { total, sheet in
+                total + ((sheet["musicList"] as? [[String: Any]])?.count ?? 0)
+            }
             ToastCenter.shared.show(
-                String(localized: "已备份到 ") + WebDAVClient.directoryDescription(of: target)
+                String(localized: "已备份到 ")
+                    + WebDAVClient.directoryDescription(of: target)
+                    + String(localized: "（\(sheets.count) 个歌单 / \(songCount) 首 / \(pluginEntries.count) 个插件）")
             )
             // Refresh the listing so the new file is visible — that also proves
             // the write landed where the user expects.
@@ -1228,6 +1252,70 @@ struct WebDAVImportView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Every sheet the backup should carry, local ones first.
+    ///
+    /// 本地歌单之外还必须带上网易云歌单：主界面那条「新建歌单」建在网易云服务器
+    /// 上（`NeteaseAPI.createPlaylist`），从来不在 `ImportedPlaylistStore` 里，
+    /// 老代码只导本地存储，于是用户自建的歌单（比如「八月循环」）整份消失。
+    private func backupSheets() async -> [[String: Any]] {
+        var sheets: [[String: Any]] = ImportedPlaylistStore.shared.playlists.map { playlist in
+            let entries = ImportedPlaylistStore.shared.loadEntries(of: playlist)
+            return [
+                "title": playlist.name,
+                "musicList": entries.map(\.dictionary),
+            ]
+        }
+        sheets.append(contentsOf: await cloudSheets())
+        return sheets
+    }
+
+    /// 网易云歌单（自建 + 我喜欢的音乐 + 订阅）转成 MusicFree 的 sheet。
+    ///
+    /// 每首歌写成 `kind: "netease"` 引用条目——和本地歌单里收藏的网易云歌同一
+    /// 种写法，对方按 id 重新解析播放地址，过期链接不会卡住播放。
+    /// 上限 50 个歌单：订阅列表可能上百个，逐个拉详情会把同步拖到几分钟。
+    private func cloudSheets() async -> [[String: Any]] {
+        let account = AccountStore.shared
+        guard account.isLoggedIn else { return [] }
+        var playlists = account.createdPlaylists
+        if let liked = account.likedSongsPlaylist {
+            playlists.insert(liked, at: 0)
+        }
+        playlists.append(contentsOf: account.subscribedPlaylists)
+
+        var sheets: [[String: Any]] = []
+        let total = min(playlists.count, 50)
+        for playlist in playlists.prefix(50) {
+            exportStatus = String(localized: "正在读取歌单「\(playlist.name)」（\(sheets.count + 1)/\(total)）")
+            guard let detail = try? await NeteaseAPI.playlistDetail(id: playlist.id) else { continue }
+            var tracks = detail.playlist.tracks
+            // 个别歌单只回 trackIds 不回 tracks；这时按 id 补一次详情，免得
+            // 对方收到一个空歌单，看着就像「没同步」。
+            if tracks.isEmpty, !detail.playlist.trackIds.isEmpty {
+                let ids = detail.playlist.trackIds.prefix(500).map(\.id)
+                if let songs = try? await NeteaseAPI.songDetails(ids: ids) {
+                    tracks = songs.songs
+                }
+            }
+            let musicList: [[String: Any]] = tracks.map { track in
+                LocalTrackEntry.netease(LocalNeteaseSong(
+                    id: track.id,
+                    name: track.name,
+                    artist: track.artistNames,
+                    album: track.album.name,
+                    picUrl: track.album.picUrl,
+                    durationMS: track.durationMS,
+                    fee: track.fee
+                )).dictionary
+            }
+            sheets.append([
+                "title": detail.playlist.name,
+                "musicList": musicList,
+            ])
+        }
+        return sheets
     }
 
     private func installBackupPlugins() async {
