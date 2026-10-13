@@ -381,7 +381,10 @@ final class PluginEngine {
             throw PluginEngineError.script((object["error"] as? String) ?? String(localized: "插件加载失败"))
         }
         let variables = (object["userVariables"] as? [[String: Any]]) ?? []
-        return PluginMountResult(platform: platform, userVariables: variables)
+        // 插件声明的 version 原样带回；没声明、不是字符串或空串都算没有。
+        let rawVersion = object["version"] as? String
+        let version = (rawVersion?.isEmpty ?? true) ? nil : rawVersion
+        return PluginMountResult(platform: platform, version: version, userVariables: variables)
     }
 
     /// Calls `method(args...)` on the mounted plugin. Returns the JSON value.

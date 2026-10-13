@@ -65,6 +65,8 @@ struct PluginMediaSource: Sendable {
 /// Result of mounting plugin code in the JS engine.
 struct PluginMountResult: Sendable {
     let platform: String
+    /// 插件 module.exports 里声明的 version，没有声明时为 nil。
+    let version: String?
     /// `userVariables` declarations from the plugin: [{key, name, defaultValue}].
     let userVariables: [[String: Any]]
 }
