@@ -1286,19 +1286,15 @@ struct WebDAVImportView: View {
         playlists.append(contentsOf: account.subscribedPlaylists)
 
         var sheets: [[String: Any]] = []
+        var failed = 0
         let total = min(playlists.count, 50)
         for playlist in playlists.prefix(50) {
             exportStatus = String(localized: "正在读取歌单「\(playlist.name)」（\(sheets.count + 1)/\(total)）")
-            guard let detail = try? await NeteaseAPI.playlistDetail(id: playlist.id) else { continue }
-            var tracks = detail.playlist.tracks
-            // 个别歌单只回 trackIds 不回 tracks；这时按 id 补一次详情，免得
-            // 对方收到一个空歌单，看着就像「没同步」。
-            if tracks.isEmpty, !detail.playlist.trackIds.isEmpty {
-                let ids = detail.playlist.trackIds.prefix(500).map(\.id)
-                if let songs = try? await NeteaseAPI.songDetails(ids: ids) {
-                    tracks = songs.songs
-                }
+            guard let detail = try? await NeteaseAPI.playlistDetail(id: playlist.id) else {
+                failed += 1
+                continue
             }
+            let tracks = await cloudTracks(of: detail.playlist)
             let musicList: [[String: Any]] = tracks.map { track in
                 LocalTrackEntry.netease(LocalNeteaseSong(
                     id: track.id,
@@ -1315,7 +1311,37 @@ struct WebDAVImportView: View {
                 "musicList": musicList,
             ])
         }
+        // 读不回来时不闷声吞掉：登录过期会让云歌单整批消失，那正是「歌单没同步」
+        // 的旧病因，得让人看见。
+        if failed > 0 {
+            errorMessage = String(
+                localized:
+                    "\(failed) 个网易云歌单没读回来（登录可能过期了），其余 \(sheets.count) 个已写进备份"
+            )
+        }
         return sheets
+    }
+
+    /// 歌单的全部歌曲，顺序按网易云的 `trackIds`。
+    ///
+    /// `/v6/playlist/detail` 对上千首的大歌单只回前一部分 `tracks`；缺的按 id
+    /// 补拉一次歌曲详情，再按 `trackIds` 排回去——否则导出半个歌单还看不出异常。
+    private func cloudTracks(of detail: PlaylistDetail) async -> [Track] {
+        let ids = detail.trackIds.map(\.id)
+        guard !ids.isEmpty else { return detail.tracks }
+        var byID: [Int: Track] = [:]
+        for track in detail.tracks { byID[track.id] = track }
+        let missing = ids.filter { byID[$0] == nil }
+        var cursor = missing.startIndex
+        while cursor < missing.endIndex {
+            let end = cursor + 500 < missing.endIndex ? cursor + 500 : missing.endIndex
+            let chunk = Array(missing[cursor..<end])
+            cursor = end
+            if let songs = try? await NeteaseAPI.songDetails(ids: chunk) {
+                for track in songs.songs { byID[track.id] = track }
+            }
+        }
+        return ids.compactMap { byID[$0] }
     }
 
     private func installBackupPlugins() async {
