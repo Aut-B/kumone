@@ -1217,7 +1217,9 @@ struct WebDAVImportView: View {
         // every source had to be added by hand after a restore.
         let pluginEntries: [[String: Any]] = PluginManager.shared.plugins.compactMap { plugin in
             guard let srcUrl = plugin.sourceURL, !srcUrl.isEmpty else { return nil }
-            return ["srcUrl": srcUrl, "version": plugin.version ?? ""]
+            // 空串不是合法 semver，MusicFree 的 compare-versions 见到会抛异常、
+            // 把整份恢复带崩；拿不到版本就写 0.0.0，语义上也说得通（当最旧）。
+            return ["srcUrl": srcUrl, "version": plugin.version ?? "0.0.0"]
         }
 
         // A local playlist can hold NetEase entries too; they travel in the
@@ -1268,7 +1270,30 @@ struct WebDAVImportView: View {
             ]
         }
         sheets.append(contentsOf: await cloudSheets())
-        return sheets
+        return mergeSheetsByTitle(sheets)
+    }
+
+    /// 同名歌单并成一份。
+    ///
+    /// 本地歌单和网易云歌单可能重名（从网易云导入过的歌单两边都有一份）。 MusicFree
+    /// 那边同标题的歌单会被建成两份，所以这里先按标题并成一份，曲目拼接、先出现的
+    /// （本地歌单）排在前面。
+    private func mergeSheetsByTitle(_ sheets: [[String: Any]]) -> [[String: Any]] {
+        var order: [String] = []
+        var byTitle: [String: [String: Any]] = [:]
+        for sheet in sheets {
+            let title = sheet["title"] as? String ?? ""
+            guard var existing = byTitle[title] else {
+                byTitle[title] = sheet
+                order.append(title)
+                continue
+            }
+            var merged = existing["musicList"] as? [[String: Any]] ?? []
+            merged.append(contentsOf: sheet["musicList"] as? [[String: Any]] ?? [])
+            existing["musicList"] = merged
+            byTitle[title] = existing
+        }
+        return order.compactMap { byTitle[$0] }
     }
 
     /// 网易云歌单（自建 + 我喜欢的音乐 + 订阅）转成 MusicFree 的 sheet。

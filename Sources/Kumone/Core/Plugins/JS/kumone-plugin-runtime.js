@@ -361,6 +361,7 @@
       return JSON.stringify({
         ok: true,
         platform: inst.platform,
+        version: typeof inst.version === 'string' ? inst.version : '',
         userVariables: Array.isArray(inst.userVariables) ? inst.userVariables : [],
       });
     } catch (e) {

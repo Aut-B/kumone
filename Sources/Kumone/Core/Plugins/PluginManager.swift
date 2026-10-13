@@ -106,10 +106,22 @@ final class PluginManager: ObservableObject {
     }
 
     private func mountEnabled() async {
+        var dirty = false
         for plugin in plugins where plugin.enabled {
             let codeURL = baseDirectory.appendingPathComponent(plugin.fileName)
             guard let code = try? String(contentsOf: codeURL, encoding: .utf8) else { continue }
-            _ = try? await engine.mount(code: code, installName: plugin.name)
+            guard let mount = try? await engine.mount(code: code, installName: plugin.name) else { continue }
+            // 早期版本装插件时 version 一律写 nil，备份里就只能填空串，而 MusicFree
+            // 的 compare-versions 见到空串会直接抛异常。启动时补一次，把真版本号
+            // 补进注册表，之后导出的备份才带得上。
+            guard let version = mount.version,
+                  let index = plugins.firstIndex(where: { $0.platform == plugin.platform }),
+                  plugins[index].version == nil else { continue }
+            plugins[index].version = version
+            dirty = true
+        }
+        if dirty {
+            persistRegistry()
         }
     }
 
@@ -173,7 +185,7 @@ final class PluginManager: ObservableObject {
         let installed = InstalledPlugin(
             platform: mount.platform,
             name: mount.platform,
-            version: nil,
+            version: mount.version,
             sourceURL: sourceURL,
             enabled: true,
             fileName: fileName,
