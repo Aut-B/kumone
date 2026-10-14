@@ -74,12 +74,6 @@ enum NeteaseAPI {
         }
     }
 
-    static func logout(detachedCookies: [String: String]? = nil) async {
-        let oldCookies = detachedCookies ?? client.authenticationCookies()
-        if detachedCookies == nil { client.clearAuthCookies() }
-        _ = try? await client.weapi("/logout", cookieOverrides: oldCookies, absorbResponseCookies: false)
-    }
-
     static func refreshLogin() async {
         _ = try? await client.weapi("/login/token/refresh")
     }
@@ -89,8 +83,9 @@ enum NeteaseAPI {
         let profile: UserProfile?
     }
 
-    static func userAccount() async throws -> UserProfile? {
-        try await weapi(AccountResponse.self, "/w/nuser/account/get").profile
+    static func userAccount(using client: NeteaseClient = .shared) async throws -> UserProfile? {
+        let data = try await client.weapi("/w/nuser/account/get")
+        return try client.decoded(AccountResponse.self, from: data).profile
     }
 
     // MARK: - User library

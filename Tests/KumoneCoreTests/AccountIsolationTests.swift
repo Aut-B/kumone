@@ -39,7 +39,7 @@ struct AccountIsolationTests {
             client.setCookies(["fixture-\(index)": String(index)])
         }
         client.setCookies(["MUSIC_U": "synthetic-session"])
-        client.clearAuthCookies()
+        try client.clearAuthCookies()
         let reopened = NeteaseClient(cookieDirectory: root)
         #expect(!reopened.isLoggedIn && reopened.authenticationFingerprint == nil)
         for index in 0..<100 { #expect(reopened.cookie(named: "fixture-\(index)") == String(index)) }
@@ -96,7 +96,7 @@ struct AccountIsolationTests {
         let request = Task { try await client.weapi(path) }
         for _ in 0..<200 where DeferredAPIProtocol.state.get() == nil { try await Task.sleep(for: .milliseconds(5)) }
         let pending = try #require(DeferredAPIProtocol.state.get())
-        client.clearAuthCookies()
+        try client.clearAuthCookies()
         if switchAccount { client.setCookies(["MUSIC_U": "synthetic-session-b"]) }
         pending.finish()
         await #expect(throws: CancellationError.self) { _ = try await request.value }
