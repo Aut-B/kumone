@@ -30,10 +30,6 @@ struct SyncRecord<Payload: Codable>: Codable, Identifiable {
         self.payload = payload
     }
 
-    func validateVersion() throws {
-        guard schemaVersion == 1 else { throw SyncError.newerVersion }
-    }
-
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, revision, deviceName, updatedAt, payload
     }

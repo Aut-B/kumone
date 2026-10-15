@@ -23,11 +23,13 @@ final class SyncService: ObservableObject {
     // Loaded before connecting; an inaccessible identity must not publish a new device.
     private var deviceID = UUID()
     private let deviceIdentity: @Sendable () async throws -> UUID
+    private let playbackContext: @MainActor () -> (session: PlaybackSession?, accountID: Int?)
     private let deviceName: String
     private var counter: UInt64
     private var preferences: SyncedPreferences
     private var observedPreferences: [String: PreferenceValue]
     private var lastPlayback: PlaybackSession?
+    private var hasPublishedPlayback = false
     private var lastLogin: SyncedLogin?
     private var hasPublishedLogin = false
     private var subscriptions: Set<AnyCancellable> = []
@@ -61,9 +63,12 @@ final class SyncService: ObservableObject {
 
     init(defaults: UserDefaults, deviceIdentity: @escaping @Sendable () async throws -> UUID = {
         try await SyncDeviceIdentity.load()
+    }, playbackContext: @escaping @MainActor () -> (session: PlaybackSession?, accountID: Int?) = {
+        (PlayerService.shared.playbackSession, AccountStore.shared.authenticatedAccountID)
     }) {
         self.defaults = defaults
         self.deviceIdentity = deviceIdentity
+        self.playbackContext = playbackContext
         enabled = defaults.bool(forKey: Keys.enabled)
         loginEnabled = defaults.bool(forKey: Keys.login)
         #if os(iOS)
@@ -225,6 +230,7 @@ final class SyncService: ObservableObject {
         enabled = true
         defaults.set(true, forKey: Keys.enabled)
         lastPlayback = nil
+        hasPublishedPlayback = false
         lastLogin = nil
         hasPublishedLogin = false
         preferencesNeedUpload = true
@@ -254,7 +260,6 @@ final class SyncService: ObservableObject {
     }
 
     func resume(_ record: SyncRecord<PlaybackSession>) throws {
-        try record.validateVersion()
         guard let session = record.payload else {
             throw SyncError.invalidRecord
         }
@@ -267,7 +272,6 @@ final class SyncService: ObservableObject {
         let connection = connectionID
         importingLogin = true
         defer { importingLogin = false }
-        try record.validateVersion()
         guard let login = record.payload else { throw SyncError.invalidRecord }
         try await AccountStore.shared.importLogin(login, authorization: {
             self.enabled && self.connected && self.connectionID == connection
@@ -360,6 +364,7 @@ final class SyncService: ObservableObject {
                     guard enabled, connection == connectionID else { return }
                     let records = received.records
                     counter = max(counter, received.counter)
+                    hasPublishedPlayback = received.activeDevices.contains(deviceID)
                     if received.waitingForQueues {
                         domainsNeedingRead.insert(.playback)
                         failures.append(SyncError.downloading.localizedDescription)
@@ -368,12 +373,24 @@ final class SyncService: ObservableObject {
                         .sorted { $0.updatedAt > $1.updatedAt }
                     if !sessions.elementsEqual(incoming, by: { $0.revision == $1.revision }) { sessions = incoming }
                 }
-                if publishPlayback, let session = PlayerService.shared.playbackSession,
-                   session.progress != lastPlayback?.progress || session != lastPlayback {
-                    let record = try makeRecord(session)
-                    try await repository.writePlayback(record, connectionID: connection)
-                    guard enabled, connection == connectionID else { return }
-                    lastPlayback = session
+                if publishPlayback {
+                    let context = playbackContext()
+                    if let session = context.session,
+                       let accountID = context.accountID, accountID > 0, session.accountID == accountID {
+                        if session.progress != lastPlayback?.progress || session != lastPlayback {
+                            let record = try makeRecord(session)
+                            try await repository.writePlayback(record, connectionID: connection)
+                            guard enabled, connection == connectionID else { return }
+                            lastPlayback = session
+                            hasPublishedPlayback = true
+                        }
+                    } else if hasPublishedPlayback {
+                        let tombstone: SyncRecord<PlaybackSession> = try makeRecord(nil)
+                        try await repository.writePlayback(tombstone, connectionID: connection)
+                        guard enabled, connection == connectionID else { return }
+                        lastPlayback = nil
+                        hasPublishedPlayback = false
+                    }
                 }
             } catch {
                 guard enabled, connection == connectionID else { return }

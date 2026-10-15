@@ -48,7 +48,8 @@ struct PlaybackRepositoryTests {
                 let records = try await repository.read(.preferences, as: DecodeProbe.self, connectionID: connection)
                 #expect(records.first?.payload?.value == "AAAA")
             }
-            #expect(counter.withLock { $0 } == 1)
+            // A successful write seeds the decoded cache before presenter echoes.
+            #expect(counter.withLock { $0 } == 0)
             let replacement = SyncRecord(revision: first.revision, deviceName: first.deviceName,
                                          updatedAt: first.updatedAt, payload: DecodeProbe("BBBB"))
             let bytes = try JSONEncoder().encode(replacement)
@@ -56,7 +57,7 @@ struct PlaybackRepositoryTests {
             if let originalDate { try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: file.path) }
             let replaced = try await repository.read(.preferences, as: DecodeProbe.self, connectionID: connection)
             #expect(replaced.first?.payload?.value == "BBBB")
-            #expect(counter.withLock { $0 } == 2)
+            #expect(counter.withLock { $0 } == 1)
 
             let original = try JSONEncoder().encode(first)
             #expect(bytes.count == original.count)
@@ -66,7 +67,7 @@ struct PlaybackRepositoryTests {
             if let originalDate { try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: file.path) }
             let edited = try await repository.read(.preferences, as: DecodeProbe.self, connectionID: connection)
             #expect(edited.first?.payload?.value == "AAAA")
-            #expect(counter.withLock { $0 } == 3)
+            #expect(counter.withLock { $0 } == 2)
 
             try Data("broken".utf8).write(to: file, options: .atomic)
             await #expect(throws: SyncError.self) {
@@ -76,10 +77,10 @@ struct PlaybackRepositoryTests {
             #expect(try await repository.read(.preferences, as: DecodeProbe.self, connectionID: connection).isEmpty)
             try bytes.write(to: file, options: .atomic)
             _ = try await repository.read(.preferences, as: DecodeProbe.self, connectionID: connection)
-            #expect(counter.withLock { $0 } == 4)
+            #expect(counter.withLock { $0 } == 3)
             _ = try await repository.restore(bookmark: bookmark, connectionID: connection)
             _ = try await repository.read(.preferences, as: DecodeProbe.self, connectionID: connection)
-            #expect(counter.withLock { $0 } == 5)
+            #expect(counter.withLock { $0 } == 4)
         }
         await repository.disconnect(connectionID: connection)
     }
@@ -117,6 +118,25 @@ struct PlaybackRepositoryTests {
         let received = try await repository.readPlayback(connectionID: connection)
         #expect(!received.waitingForQueues)
         #expect(received.records.first?.payload == next)
+        await repository.disconnect(connectionID: connection)
+    }
+
+    @Test func writtenCacheKeepsPayloadTypesSeparate() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-cache-types-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = SyncRepository()
+        let connection = UUID()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let record = SyncRecord(revision: .init(counter: 1, deviceID: UUID()), deviceName: "Fixture", payload: DecodeProbe("AAAA"))
+        try await repository.write(record, domain: .preferences, connectionID: connection)
+        let counter = Mutex(0)
+        try await DecodeProbe.$onDecode.withValue({ counter.withLock { $0 += 1 } }) {
+            let strings = try await repository.read(.preferences, as: String.self, connectionID: connection)
+            #expect(strings.first?.payload == "AAAA")
+            let probes = try await repository.read(.preferences, as: DecodeProbe.self, connectionID: connection)
+            #expect(probes.first?.payload?.value == "AAAA")
+            #expect(counter.withLock { $0 } == 1)
+        }
         await repository.disconnect(connectionID: connection)
     }
 

@@ -21,7 +21,6 @@ struct SyncedLogin: Codable, Equatable {
         }.filter { record in
             guard record.id != deviceID else { return false }
             do {
-                try record.validateVersion()
                 guard let login = record.payload else { return false }
                 try login.validate()
                 return true

@@ -5,6 +5,87 @@ import Testing
 
 @Suite("Cross-device sync")
 struct SyncTests {
+    @Test(arguments: [Int?(42), Int?(99), nil], [Int?(42), Int?(99), Int?(0), nil])
+    @MainActor func playbackPublicationRequiresMatchingAccountsAndWithdrawsAfterSignOut(
+        sessionAccountID: Int?, accountID: Int?
+    ) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-playback-consent-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-playback-consent-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let device = UUID()
+        let track = try JSONDecoder().decode(Track.self, from: Data("{\"id\":1}".utf8))
+        var session = PlaybackSession(accountID: sessionAccountID, queue: [track], orderedQueue: [track],
+                                      currentIndex: 0, currentTrack: track, playNext: [], source: .none,
+                                      repeatMode: "off", shuffled: false, automaticOrder: false, isFM: false, progress: 20)
+        var currentAccount = accountID
+        let service = SyncService(defaults: defaults, deviceIdentity: { device }, playbackContext: { (session, currentAccount) })
+        await service.connect(to: root)
+        #expect(service.connected)
+        let file = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/playback.json")
+        if let accountID, accountID > 0, sessionAccountID == accountID {
+            #expect(FileManager.default.fileExists(atPath: file.path))
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: file.path))
+            #expect(!FileManager.default.fileExists(atPath: file.deletingLastPathComponent().appendingPathComponent("Queues").path))
+        }
+        currentAccount = 42
+        session = PlaybackSession(accountID: 42, queue: [track], orderedQueue: [track],
+                                  currentIndex: 0, currentTrack: track, playNext: [], source: .none,
+                                  repeatMode: "off", shuffled: false, automaticOrder: false, isFM: false, progress: 30)
+        await service.synchronize(refreshing: [])
+        let published = try JSONDecoder().decode(SyncRecord<PlaybackCheckpoint>.self, from: Data(contentsOf: file))
+        #expect(published.payload?.progress == 30)
+        // Keep the old queue's account provenance; losing authentication must
+        // withdraw the offer without changing the player's local session.
+        currentAccount = nil
+        await service.synchronize(refreshing: [])
+        let bytes = try Data(contentsOf: file)
+        let withdrawn = try JSONDecoder().decode(SyncRecord<PlaybackCheckpoint>.self, from: bytes)
+        #expect(withdrawn.payload == nil && withdrawn.revision > published.revision)
+        await service.synchronize()
+        #expect(try Data(contentsOf: file) == bytes)
+        await service.disable()
+    }
+
+    @Test @MainActor func reconnectWithdrawsAnOldOfferEvenWhenItsQueueIsMissing() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-withdraw-missing-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-withdraw-missing-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repository = SyncRepository()
+        let connection = UUID()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let local = UUID()
+        let remote = UUID()
+        let track = try JSONDecoder().decode(Track.self, from: Data("{\"id\":1}".utf8))
+        let session = PlaybackSession(accountID: 42, queue: [track], orderedQueue: [track],
+                                      currentIndex: 0, currentTrack: track, playNext: [], source: .none,
+                                      repeatMode: "off", shuffled: false, automaticOrder: false, isFM: false, progress: 10)
+        for device in [local, remote] {
+            try await repository.writePlayback(SyncRecord(revision: .init(counter: 50, deviceID: device),
+                                                           deviceName: "Fixture", payload: session), connectionID: connection)
+        }
+        let folder = root.appendingPathComponent("Kumone/Devices/\(local.uuidString)/Queues")
+        let queue = try #require(FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).first)
+        try FileManager.default.removeItem(at: queue)
+        let remoteFile = root.appendingPathComponent("Kumone/Devices/\(remote.uuidString)/playback.json")
+        let remoteBytes = try Data(contentsOf: remoteFile)
+        let service = SyncService(defaults: defaults, deviceIdentity: { local }, playbackContext: { (nil, nil) })
+        await service.connect(to: root)
+        let records = try await repository.read(.playback, as: PlaybackCheckpoint.self, connectionID: connection)
+        let withdrawn = try #require(records.first { $0.id == local })
+        #expect(withdrawn.payload == nil && withdrawn.revision.counter > 50)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+        #expect(try Data(contentsOf: remoteFile) == remoteBytes)
+        await service.synchronize()
+        #expect(service.errorMessage == nil)
+        await service.disable()
+        await repository.disconnect(connectionID: connection)
+    }
+
     @Test func deviceIdentityPersistsAcrossConcurrentAndSubsequentLoads() async throws {
         let keychainService = "kumone-sync-identity-test-\(UUID())"
         defer {

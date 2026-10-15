@@ -24,10 +24,13 @@ struct PlaybackQueueSnapshot: Codable, Equatable {
     }
 
     func validate() throws {
-        guard !(shuffled && automaticOrder),
-              Dictionary(grouping: queue, by: \.id).mapValues(\.count)
-                == Dictionary(grouping: orderedQueue, by: \.id).mapValues(\.count)
-        else { throw SyncError.invalidRecord }
+        guard !(shuffled && automaticOrder), queue.count == orderedQueue.count else { throw SyncError.invalidRecord }
+        var occurrences: [Int: Int] = [:]
+        for track in queue { occurrences[track.id, default: 0] += 1 }
+        for track in orderedQueue {
+            guard let count = occurrences[track.id], count > 0 else { throw SyncError.invalidRecord }
+            occurrences[track.id] = count - 1
+        }
     }
 
     private enum CodingKeys: String, CodingKey {

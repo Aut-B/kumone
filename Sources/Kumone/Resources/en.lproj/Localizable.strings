@@ -501,7 +501,6 @@
 "以%@登录" = "Sign in as %@";
 "在已连接的设备间同步登录状态" = "Sync sign-in across connected devices.";
 "允许已连接的设备登录此账号，仅连接你信任的同步位置" = "Allow connected devices to sign in to this account. Connect only to sync locations you trust.";
-"来自 %@" = "From %@";
 "接续" = "Continue";
 "同步目录不可用" = "Sync folder unavailable";
 "等待 iCloud 下载" = "Waiting for iCloud download";

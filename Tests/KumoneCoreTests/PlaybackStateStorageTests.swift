@@ -1,6 +1,18 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import KumoneCore
+
+private struct CheckpointWriteProbe: Encodable {
+    let value: Int
+    let onEncode: (Int) -> Void
+
+    func encode(to encoder: Encoder) throws {
+        onEncode(value)
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
+}
 
 @Suite("Local playback checkpoints")
 struct PlaybackStateStorageTests {
@@ -68,5 +80,34 @@ struct PlaybackStateStorageTests {
         #expect(restored.progress == 95.5)
         #expect(restored.accountID == nil)
         #expect(restored.currentTrack == track)
+    }
+
+    @Test func pendingSnapshotsCoalesceWhileAnOlderWriteIsInFlight() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-checkpoint-coalesce-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("player-state.json")
+        let other = root.appendingPathComponent("other-state.json")
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let encoded = Mutex<[Int]>([])
+        PlaybackStateStorage.save(CheckpointWriteProbe(value: 0, onEncode: { value in
+            encoded.withLock { $0.append(value) }
+            started.signal()
+            release.wait()
+        }), to: file)
+        try #require(started.wait(timeout: .now() + 5) == .success)
+        for value in 1...1000 {
+            PlaybackStateStorage.save(CheckpointWriteProbe(value: value, onEncode: { value in
+                encoded.withLock { $0.append(value) }
+            }), to: file)
+        }
+        PlaybackStateStorage.save(7, to: other)
+        release.signal()
+        PlaybackStateStorage.flush()
+        #expect(encoded.withLock { $0 } == [0, 1000])
+        #expect(try JSONDecoder().decode(Int.self, from: Data(contentsOf: file)) == 1000)
+        #expect(try JSONDecoder().decode(Int.self, from: Data(contentsOf: other)) == 7)
     }
 }
