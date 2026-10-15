@@ -4,6 +4,9 @@ import UniformTypeIdentifiers
 struct SyncSettingsSection: View {
     @ObservedObject private var sync = SyncService.shared
     @State private var showDirectoryPicker = false
+    @State private var connectionError: String?
+
+    private var errorMessage: String? { connectionError ?? sync.errorMessage }
 
     var body: some View {
         Section("iCloud") {
@@ -12,10 +15,11 @@ struct SyncSettingsSection: View {
                     get: { sync.enabled },
                     set: { enabled in
                         Task {
+                            connectionError = nil
                             if enabled {
                                 do { showDirectoryPicker = try await !sync.enable() }
                                 catch is CancellationError { return }
-                                catch { ToastCenter.shared.show(error.localizedDescription) }
+                                catch { connectionError = error.localizedDescription }
                             } else { await sync.disable() }
                         }
                     }
@@ -33,22 +37,28 @@ struct SyncSettingsSection: View {
                 Text("允许已连接的设备登录此账号，仅连接你信任的同步位置")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                if !sync.connected {
-                    Button("重新连接") { showDirectoryPicker = true }
-                        #if os(macOS)
-                        .controlSize(.small)
-                        #endif
-                }
             }
-            if let error = sync.errorMessage {
+            if !sync.connected, sync.enabled || errorMessage != nil {
+                Button("重新连接") {
+                    showDirectoryPicker = true
+                }
+                #if os(macOS)
+                .controlSize(.small)
+                #endif
+            }
+            if let error = errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
         }
         .fileImporter(isPresented: $showDirectoryPicker, allowedContentTypes: [.folder]) { result in
             switch result {
-            case .success(let directory): Task { await sync.connect(to: directory) }
-            case .failure(let error): ToastCenter.shared.show(error.localizedDescription)
+            case .success(let directory):
+                connectionError = nil
+                Task { await sync.connect(to: directory) }
+            case .failure(let error):
+                if (error as? CocoaError)?.code != .userCancelled {
+                    connectionError = error.localizedDescription
+                }
             }
         }
     }

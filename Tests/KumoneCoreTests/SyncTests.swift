@@ -5,6 +5,83 @@ import Testing
 
 @Suite("Cross-device sync")
 struct SyncTests {
+    @Test(arguments: ["invalid-bookmark", "deleted-folder", "invalid-manifest"])
+    @MainActor func failedRestoreCanReconnectWithoutDiscardingTheOldAuthorization(failure: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-restore-error-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-restore-error-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repository = SyncRepository()
+        let connection = UUID()
+        let bookmark = try await repository.connect(to: root, connectionID: connection)
+        await repository.disconnect(connectionID: connection)
+        let folder = root.appendingPathComponent("Kumone")
+        var saved = bookmark
+        switch failure {
+        case "invalid-bookmark": saved = Data("invalid bookmark".utf8)
+        case "deleted-folder": try FileManager.default.removeItem(at: folder)
+        default: try Data("invalid JSON".utf8).write(to: folder.appendingPathComponent("repository.json"))
+        }
+        defaults.set(saved, forKey: "sync.directoryBookmark")
+        let service = SyncService(defaults: defaults, deviceIdentity: { UUID() }, playbackContext: { (nil, nil) })
+        await #expect(throws: SyncError.self) { try await service.enable() }
+        #expect(!service.connected && !service.enabled)
+        #expect(defaults.data(forKey: "sync.directoryBookmark") == saved)
+        if failure == "deleted-folder" { #expect(!FileManager.default.fileExists(atPath: folder.path)) }
+        // Explicitly choosing a new location replaces the unusable grant, without
+        // resetting the app or deleting the rejected repository's contents.
+        let replacement = root.appendingPathComponent("Replacement")
+        await service.connect(to: replacement)
+        #expect(service.connected && service.enabled && service.errorMessage == nil)
+        #expect(defaults.data(forKey: "sync.directoryBookmark") != saved)
+        #expect(FileManager.default.fileExists(atPath: replacement.appendingPathComponent("Kumone/repository.json").path))
+        await service.disable()
+    }
+
+    @Test(arguments: [false, true])
+    @MainActor func removedRepositoryRevokesOffersAndRequiresExplicitReconnect(replacedWithFile: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-directory-loss-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-directory-loss-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repository = SyncRepository()
+        let connection = UUID()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let remote = UUID()
+        let track = try JSONDecoder().decode(Track.self, from: Data("{\"id\":1}".utf8))
+        let session = PlaybackSession(accountID: 42, queue: [track], orderedQueue: [track],
+                                      currentIndex: 0, currentTrack: track, playNext: [], source: .none,
+                                      repeatMode: "off", shuffled: false, automaticOrder: false, isFM: false, progress: 20)
+        try await repository.writePlayback(SyncRecord(revision: .init(counter: 1, deviceID: remote),
+                                                       deviceName: "Fixture", payload: session), connectionID: connection)
+        let login = SyncedLogin(accountID: 42, nickname: "Fixture", cookies: ["MUSIC_U": "synthetic-session"])
+        try await repository.write(SyncRecord(revision: .init(counter: 2, deviceID: remote), deviceName: "Fixture", payload: login),
+                                   domain: .login, connectionID: connection)
+        await repository.disconnect(connectionID: connection)
+        let service = SyncService(defaults: defaults, deviceIdentity: { UUID() }, playbackContext: { (session, 42) })
+        await service.connect(to: root)
+        #expect(service.sessions.count == 1 && service.logins.count == 1)
+        let bookmark = defaults.data(forKey: "sync.directoryBookmark")
+        let folder = root.appendingPathComponent("Kumone")
+        try FileManager.default.removeItem(at: folder)
+        if replacedWithFile { try Data("not a directory".utf8).write(to: folder) }
+        await service.synchronize()
+        #expect(service.enabled && !service.connected)
+        #expect(service.sessions.isEmpty && service.logins.isEmpty)
+        #expect(service.errorMessage == SyncError.unavailable.localizedDescription)
+        #expect(defaults.data(forKey: "sync.directoryBookmark") == bookmark)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("Devices").path))
+        // Further player events must not recreate or overwrite the removed folder.
+        await service.synchronize(refreshing: [])
+        if replacedWithFile { #expect(try Data(contentsOf: folder) == Data("not a directory".utf8)) }
+        else { #expect(!FileManager.default.fileExists(atPath: folder.path)) }
+        await service.connect(to: root.appendingPathComponent("Replacement"))
+        #expect(service.connected && service.errorMessage == nil)
+        await service.disable()
+    }
+
     @Test(arguments: [Int?(42), Int?(99), nil], [Int?(42), Int?(99), Int?(0), nil])
     @MainActor func playbackPublicationRequiresMatchingAccountsAndWithdrawsAfterSignOut(
         sessionAccountID: Int?, accountID: Int?

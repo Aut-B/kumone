@@ -53,11 +53,18 @@ actor SyncRepository {
                 try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             }
             try validateRepository(at: root)
-            #if os(macOS)
-            let bookmark = try root.bookmarkData(options: .withSecurityScope)
-            #else
-            let bookmark = try root.bookmarkData(options: .minimalBookmark)
-            #endif
+            let bookmark: Data
+            do {
+                #if os(macOS)
+                bookmark = try root.bookmarkData(options: .withSecurityScope)
+                #else
+                bookmark = try root.bookmarkData(options: .minimalBookmark)
+                #endif
+            } catch {
+                let failure = error as NSError
+                log.error("Could not save directory authorization: \(failure.domain, privacy: .public) (\(failure.code)): \(failure.localizedDescription, privacy: .public)")
+                throw SyncError.unavailable
+            }
             directory = root
             self.connectionID = connectionID
             return bookmark
@@ -68,13 +75,26 @@ actor SyncRepository {
     }
 
     func restore(bookmark: Data, connectionID: UUID) throws -> Data {
+        disconnect()
         var stale = false
         #if os(macOS)
         let options: URL.BookmarkResolutionOptions = [.withSecurityScope, .withoutUI]
         #else
         let options: URL.BookmarkResolutionOptions = .withoutUI
         #endif
-        let url = try URL(resolvingBookmarkData: bookmark, options: options, bookmarkDataIsStale: &stale)
+        let url: URL
+        do {
+            url = try URL(resolvingBookmarkData: bookmark, options: options, bookmarkDataIsStale: &stale)
+        } catch {
+            let failure = error as NSError
+            log.error("Could not restore directory authorization: \(failure.domain, privacy: .public) (\(failure.code)): \(failure.localizedDescription, privacy: .public)")
+            throw SyncError.unavailable
+        }
+        // A deleted authorized folder requires a new grant. Do not recreate it
+        // through an old bookmark or publish into a location the user removed.
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        try checkDirectory(url)
         return try connect(to: url, connectionID: connectionID)
     }
 
@@ -114,7 +134,7 @@ actor SyncRepository {
     }
 
     func read<Payload: Codable>(_ domain: Domain, as type: Payload.Type, connectionID: UUID) throws -> [SyncRecord<Payload>] {
-        guard self.connectionID == connectionID, let directory else { throw CancellationError() }
+        let directory = try connectedDirectory(connectionID: connectionID)
         let devices: [URL] = try coordinate(directory, writing: false) { root in
             let devices = root.appendingPathComponent("Devices", isDirectory: true)
             guard FileManager.default.fileExists(atPath: devices.path) else { return [] }
@@ -201,7 +221,7 @@ actor SyncRepository {
     }
 
     func write<Payload: Codable>(_ record: SyncRecord<Payload>, domain: Domain, connectionID: UUID) throws {
-        guard self.connectionID == connectionID, let directory else { throw CancellationError() }
+        let directory = try connectedDirectory(connectionID: connectionID)
         let file = directory.appendingPathComponent("Devices/\(record.id.uuidString)/\(domain.rawValue).json")
         try write(record, to: file)
     }
@@ -235,13 +255,33 @@ actor SyncRepository {
     }
 
     func readPlayback(connectionID: UUID) throws -> PlaybackSyncStore.ReadResult {
-        guard self.connectionID == connectionID, let directory else { throw CancellationError() }
+        let directory = try connectedDirectory(connectionID: connectionID)
         return try playbackStore.read(from: self, directory: directory, connectionID: connectionID)
     }
 
     func writePlayback(_ record: SyncRecord<PlaybackSession>, connectionID: UUID) throws {
-        guard self.connectionID == connectionID, let directory else { throw CancellationError() }
+        let directory = try connectedDirectory(connectionID: connectionID)
         try playbackStore.write(record, to: self, directory: directory, connectionID: connectionID)
+    }
+
+    private func connectedDirectory(connectionID: UUID) throws -> URL {
+        guard self.connectionID == connectionID, let directory else { throw CancellationError() }
+        try checkDirectory(directory)
+        return directory
+    }
+
+    private func checkDirectory(_ url: URL) throws {
+        do {
+            var currentURL = url
+            currentURL.removeAllCachedResourceValues()
+            guard try currentURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+                throw SyncError.unavailable
+            }
+        } catch {
+            let failure = error as NSError
+            log.error("Sync directory is unavailable: \(failure.domain, privacy: .public) (\(failure.code)): \(failure.localizedDescription, privacy: .public)")
+            throw SyncError.unavailable
+        }
     }
 
     private func validateRepository(at directory: URL) throws {

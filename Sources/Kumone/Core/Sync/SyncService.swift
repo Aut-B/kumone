@@ -155,6 +155,7 @@ final class SyncService: ObservableObject {
         connected = false
         sessions = []
         logins = []
+        errorMessage = nil
         do {
             let identity = try await deviceIdentity()
             guard connectionID == connection else { throw CancellationError() }
@@ -182,6 +183,7 @@ final class SyncService: ObservableObject {
         connected = false
         sessions = []
         logins = []
+        errorMessage = nil
         do {
             let identity = try await deviceIdentity()
             guard connectionID == connection else { return }
@@ -310,7 +312,7 @@ final class SyncService: ObservableObject {
             let connection = connectionID
             let reads = domainsNeedingRead
             domainsNeedingRead.removeAll()
-            var failures: [String] = []
+            var failures: [Error] = []
             do {
                 try capturePreferenceChanges()
                 if reads.contains(.preferences) {
@@ -355,7 +357,7 @@ final class SyncService: ObservableObject {
             } catch {
                 guard enabled, connection == connectionID else { return }
                 domainsNeedingRead.insert(.preferences)
-                failures.append(error.localizedDescription)
+                failures.append(error)
             }
 
             do {
@@ -367,7 +369,7 @@ final class SyncService: ObservableObject {
                     hasPublishedPlayback = received.activeDevices.contains(deviceID)
                     if received.waitingForQueues {
                         domainsNeedingRead.insert(.playback)
-                        failures.append(SyncError.downloading.localizedDescription)
+                        failures.append(SyncError.downloading)
                     }
                     let incoming = records.filter { $0.id != deviceID && $0.payload != nil }
                         .sorted { $0.updatedAt > $1.updatedAt }
@@ -395,7 +397,7 @@ final class SyncService: ObservableObject {
             } catch {
                 guard enabled, connection == connectionID else { return }
                 domainsNeedingRead.insert(.playback)
-                failures.append(error.localizedDescription)
+                failures.append(error)
             }
 
             do {
@@ -437,9 +439,22 @@ final class SyncService: ObservableObject {
                 domainsNeedingRead.insert(.login)
                 // Credentials are no longer offered when their repository cannot be read.
                 logins = []
-                failures.append(error.localizedDescription)
+                failures.append(error)
             }
-            errorMessage = failures.isEmpty ? nil : Array(Set(failures)).sorted().joined(separator: "\n")
+            if failures.contains(where: { error in
+                if case SyncError.unavailable = error { return true }
+                return false
+            }) {
+                connected = false
+                sessions = []
+                logins = []
+                remoteLogins = []
+                refreshTask?.cancel()
+                refreshTask = nil
+                await repository.disconnect(connectionID: connection)
+                guard enabled, connection == connectionID else { return }
+            }
+            errorMessage = failures.isEmpty ? nil : Set(failures.map(\.localizedDescription)).sorted().joined(separator: "\n")
         } while syncPending && enabled && connected
     }
 
