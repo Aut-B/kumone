@@ -148,13 +148,20 @@ struct PlaybackSyncStore {
         try repository.write(checkpoint, domain: .playback, connectionID: connectionID)
         let instant = now()
         if lastQueueCleanup[record.id].map({ $0.duration(to: instant) >= .seconds(24 * 60 * 60) }) ?? true {
-            try removeExpiredQueues(for: record.id, directory: directory, repository: repository)
-            // Update only on success so the next publication retries failures.
-            lastQueueCleanup[record.id] = instant
+            do {
+                if try removeExpiredQueues(for: record.id, directory: directory, repository: repository) {
+                    // Update only on success so the next publication retries failures.
+                    lastQueueCleanup[record.id] = instant
+                }
+            } catch {
+                // Maintenance follows a committed checkpoint. It must not turn
+                // successful publication into a failure or revoke the connection.
+                log.error("Could not maintain playback queues: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
-    private func removeExpiredQueues(for deviceID: UUID, directory: URL, repository: isolated SyncRepository) throws {
+    private func removeExpiredQueues(for deviceID: UUID, directory: URL, repository: isolated SyncRepository) throws -> Bool {
         let device = directory.appendingPathComponent("Devices/\(deviceID.uuidString)")
         let checkpoint = device.appendingPathComponent("playback.json")
         // Re-read current/conflicting pointers under coordination before deleting.
@@ -163,7 +170,7 @@ struct PlaybackSyncStore {
         let folder = device.appendingPathComponent("Queues", isDirectory: true)
         // Hold both items for the entire operation: a new pointer/conflict must
         // not arrive between gathering references and removing queue files.
-        try repository.coordinate(reading: checkpoint, writing: folder) { pointer, queues in
+        return try repository.coordinate(reading: checkpoint, writing: folder) { pointer, queues in
             let records: [SyncRecord<PlaybackCheckpoint>] = try repository.readVersions(at: pointer)
             var retained = try Set(records.compactMap { record -> UUID? in
                 guard record.id == deviceID else { throw SyncError.invalidRecord }
@@ -171,17 +178,27 @@ struct PlaybackSyncStore {
             })
             if let previous = self.publishedQueues[deviceID]?.previousRevision { retained.insert(previous) }
             let files = try FileManager.default.contentsOfDirectory(at: queues, includingPropertiesForKeys: [.contentModificationDateKey])
+            var complete = true
             for file in files where file.pathExtension == "json" {
                 guard let revision = UUID(uuidString: file.deletingPathExtension().lastPathComponent),
                       !retained.contains(revision) else { continue }
-                guard let modified = try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else {
-                    throw SyncError.unavailable
-                }
-                if modified < cutoff {
-                    try FileManager.default.removeItem(at: file)
-                    repository.invalidateCache(at: file)
+                do {
+                    guard let modified = try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else {
+                        // A provider may not expose dates. Retain the file and
+                        // revisit on the normal cadence instead of scanning on every write.
+                        log.notice("Keeping queue \(revision.uuidString, privacy: .public) without a modification date")
+                        continue
+                    }
+                    if modified < cutoff {
+                        try FileManager.default.removeItem(at: file)
+                        repository.invalidateCache(at: file)
+                    }
+                } catch {
+                    complete = false
+                    log.error("Could not maintain queue \(revision.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 }
             }
+            return complete
         }
     }
 }

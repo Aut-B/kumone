@@ -421,6 +421,80 @@ struct PlaybackRepositoryTests {
         await repository.disconnect(connectionID: connection)
     }
 
+    @Test func failedQueueRemovalDoesNotBlockPublicationOrOtherFilesAndRetriesNextWrite() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-cleanup-removal-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = Mutex(ContinuousClock.now)
+        let repository = SyncRepository(now: { clock.withLock { $0 } })
+        let connection = UUID()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let device = UUID()
+        try await repository.writePlayback(SyncRecord(revision: .init(counter: 1, deviceID: device), deviceName: "Fixture",
+                                                       payload: try session()), connectionID: connection)
+        let folder = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/Queues")
+        let locked = folder.appendingPathComponent("\(UUID()).json")
+        let removable = folder.appendingPathComponent("\(UUID()).json")
+        let oldDate = Date().addingTimeInterval(-8 * 24 * 60 * 60)
+        for file in [locked, removable] {
+            try Data().write(to: file)
+            try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: file.path)
+        }
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: locked.path) }
+        clock.withLock { $0 = $0.advanced(by: .seconds(24 * 60 * 60)) }
+        try await repository.writePlayback(SyncRecord(revision: .init(counter: 2, deviceID: device), deviceName: "Fixture",
+                                                       payload: try session(progress: 10)), connectionID: connection)
+        #expect(FileManager.default.fileExists(atPath: locked.path))
+        #expect(!FileManager.default.fileExists(atPath: removable.path))
+        #expect(try await repository.readPlayback(connectionID: connection).records.first?.payload?.progress == 10)
+
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: locked.path)
+        // The failed pass must not advance the maintenance clock.
+        try await repository.writePlayback(SyncRecord(revision: .init(counter: 3, deviceID: device), deviceName: "Fixture",
+                                                       payload: try session(progress: 20)), connectionID: connection)
+        #expect(!FileManager.default.fileExists(atPath: locked.path))
+        // A successful retry restores the normal daily cadence.
+        try Data().write(to: removable)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: removable.path)
+        try await repository.writePlayback(SyncRecord(revision: .init(counter: 4, deviceID: device), deviceName: "Fixture",
+                                                       payload: try session(progress: 30)), connectionID: connection)
+        #expect(FileManager.default.fileExists(atPath: removable.path))
+        #expect(try await repository.readPlayback(connectionID: connection).records.first?.payload?.progress == 30)
+        await repository.disconnect(connectionID: connection)
+    }
+
+    @Test func unreadableMaintenanceDirectoryDoesNotFailCommittedCheckpoint() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-cleanup-enumeration-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clock = Mutex(ContinuousClock.now)
+        let repository = SyncRepository(now: { clock.withLock { $0 } })
+        let connection = UUID()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let device = UUID()
+        try await repository.writePlayback(SyncRecord(revision: .init(counter: 1, deviceID: device), deviceName: "Fixture",
+                                                       payload: try session()), connectionID: connection)
+        let folder = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/Queues")
+        let orphan = folder.appendingPathComponent("\(UUID()).json")
+        try Data().write(to: orphan)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-8 * 24 * 60 * 60)],
+                                              ofItemAtPath: orphan.path)
+        // Keep known file paths accessible but deny directory enumeration.
+        try FileManager.default.setAttributes([.posixPermissions: 0o333], ofItemAtPath: folder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
+        #expect(throws: (any Error).self) {
+            try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        }
+        clock.withLock { $0 = $0.advanced(by: .seconds(24 * 60 * 60)) }
+        try await repository.writePlayback(SyncRecord(revision: .init(counter: 2, deviceID: device), deviceName: "Fixture",
+                                                       payload: try session(progress: 10)), connectionID: connection)
+        #expect(try await repository.readPlayback(connectionID: connection).records.first?.payload?.progress == 10)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+        try await repository.writePlayback(SyncRecord(revision: .init(counter: 3, deviceID: device), deviceName: "Fixture",
+                                                       payload: try session(progress: 20)), connectionID: connection)
+        #expect(!FileManager.default.fileExists(atPath: orphan.path))
+        await repository.disconnect(connectionID: connection)
+    }
+
     @Test func cleanupWaitsForMaintenanceIntervalAndRunsWithoutQueueChanges() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-cleanup-cadence-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

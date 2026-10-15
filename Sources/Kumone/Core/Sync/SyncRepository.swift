@@ -52,22 +52,7 @@ actor SyncRepository {
             try coordinate(root, writing: true) { url in
                 try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             }
-            try validateRepository(at: root)
-            let bookmark: Data
-            do {
-                #if os(macOS)
-                bookmark = try root.bookmarkData(options: .withSecurityScope)
-                #else
-                bookmark = try root.bookmarkData(options: .minimalBookmark)
-                #endif
-            } catch {
-                let failure = error as NSError
-                log.error("Could not save directory authorization: \(failure.domain, privacy: .public) (\(failure.code)): \(failure.localizedDescription, privacy: .public)")
-                throw SyncError.unavailable
-            }
-            directory = root
-            self.connectionID = connectionID
-            return bookmark
+            return try connectAuthorizedDirectory(root, connectionID: connectionID)
         } catch {
             disconnect()
             throw error
@@ -92,10 +77,34 @@ actor SyncRepository {
         }
         // A deleted authorized folder requires a new grant. Do not recreate it
         // through an old bookmark or publish into a location the user removed.
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        try checkDirectory(url)
-        return try connect(to: url, connectionID: connectionID)
+        if url.startAccessingSecurityScopedResource() { scopedURL = url }
+        do {
+            try checkDirectory(url)
+            return try connectAuthorizedDirectory(url, connectionID: connectionID)
+        } catch {
+            disconnect()
+            throw error
+        }
+    }
+
+    /// The caller owns directory authorization until failure or disconnect.
+    private func connectAuthorizedDirectory(_ root: URL, connectionID: UUID) throws -> Data {
+        try validateRepository(at: root)
+        let bookmark: Data
+        do {
+            #if os(macOS)
+            bookmark = try root.bookmarkData(options: .withSecurityScope)
+            #else
+            bookmark = try root.bookmarkData(options: .minimalBookmark)
+            #endif
+        } catch {
+            let failure = error as NSError
+            log.error("Could not save directory authorization: \(failure.domain, privacy: .public) (\(failure.code)): \(failure.localizedDescription, privacy: .public)")
+            throw SyncError.unavailable
+        }
+        directory = root
+        self.connectionID = connectionID
+        return bookmark
     }
 
     func connectContainer(connectionID: UUID) throws -> Bool {
