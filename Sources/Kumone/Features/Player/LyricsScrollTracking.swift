@@ -44,7 +44,11 @@ private struct LyricsScrollTracking: ViewModifier {
             }
         }
         .onDisappear {
+            // The flag lives in the parent, which can outlive this list (lyrics
+            // reloading on a track change), so clear it with the timer or it
+            // stays stuck on and the list never follows the song again.
             resumeTask?.cancel()
+            isUserScrolling = false
         }
     }
 
