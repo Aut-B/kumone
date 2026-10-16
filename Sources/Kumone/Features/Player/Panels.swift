@@ -142,10 +142,11 @@ struct LyricsPanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .opacity(isActive ? 1 : 0.75)
-            .blur(radius: isActive ? 0 : 0.3)
+            .blur(radius: isActive || isUserScrolling ? 0 : 0.3)
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isActive)
+        .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
 }
 

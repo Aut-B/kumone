@@ -998,11 +998,12 @@ struct NowPlayingView: View {
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .blur(radius: isActive ? 0 : 0.6)
+            .blur(radius: isActive || isUserScrolling ? 0 : 0.6)
             .scaleEffect(isActive ? 1.02 : 1, anchor: .leading)
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isActive)
+        .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
 }
 
@@ -1189,11 +1190,12 @@ private struct IOSImmersiveLyricsColumn: View {
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .blur(radius: isActive ? 0 : 0.4)
+            .blur(radius: isActive || isUserScrolling ? 0 : 0.4)
             .scaleEffect(isActive ? 1.02 : 1.0, anchor: .leading)
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isActive)
+        .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
 }
 
