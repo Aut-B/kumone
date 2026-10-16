@@ -9,7 +9,6 @@ struct LyricsPanel: View {
 
     @State private var activeIndex: Int?
     @State private var isUserScrolling = false
-    @State private var resumeTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -84,17 +83,7 @@ struct LyricsPanel: View {
                     activeIndex = nil
                     proxy.scrollTo(0, anchor: .top)
                 }
-                .simultaneousGesture(
-                    DragGesture().onChanged { _ in
-                        isUserScrolling = true
-                        resumeTask?.cancel()
-                        resumeTask = Task {
-                            try? await Task.sleep(for: .seconds(3))
-                            guard !Task.isCancelled else { return }
-                            isUserScrolling = false
-                        }
-                    }
-                )
+                .lyricsScrollTracking(isUserScrolling: $isUserScrolling)
             }
         } else if player.lyrics?.isInstrumental == true {
             EmptyStateView(icon: "music.quarternote.3", title: "纯音乐", subtitle: "请欣赏")
