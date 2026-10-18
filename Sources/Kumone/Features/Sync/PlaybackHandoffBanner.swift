@@ -9,7 +9,7 @@ struct PlaybackHandoffBanner: View {
     @ObservedObject private var player = PlayerService.shared
     @State private var dismissedRecordID: UUID?
 
-    private var activeSessionRecord: SyncRecord<PlaybackSession>? {
+    private var activeSessionRecord: SyncRecord<PlaybackCheckpoint>? {
         guard !player.hasCurrentTrack,
               let accountID = account.authenticatedAccountID else { return nil }
         return sync.sessions.first { record in
@@ -40,8 +40,11 @@ struct PlaybackHandoffBanner: View {
                 Spacer(minLength: 8)
 
                 Button {
-                    do { try sync.resume(record) }
-                    catch { ToastCenter.shared.show(error.localizedDescription) }
+                    Task {
+                        do { try await sync.resume(record) }
+                        catch is CancellationError { }
+                        catch { ToastCenter.shared.show(error.localizedDescription) }
+                    }
                 } label: {
                     Text("接续")
                         .font(.system(size: 12, weight: .semibold))
@@ -49,8 +52,13 @@ struct PlaybackHandoffBanner: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 5)
                         .background(Theme.accent, in: Capsule())
+                        .opacity(sync.resumingDeviceID == record.id ? 0 : 1)
+                        .overlay {
+                            if sync.resumingDeviceID == record.id { ProgressView().controlSize(.small) }
+                        }
                 }
                 .buttonStyle(.plain)
+                .disabled(sync.resumingDeviceID == record.id)
 
                 Button {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {

@@ -264,8 +264,13 @@ actor SyncRepository {
     }
 
     func readPlayback(connectionID: UUID) throws -> PlaybackSyncStore.ReadResult {
+        _ = try connectedDirectory(connectionID: connectionID)
+        return try playbackStore.read(from: self, connectionID: connectionID)
+    }
+
+    func loadPlayback(_ record: SyncRecord<PlaybackCheckpoint>, connectionID: UUID) throws -> PlaybackSession {
         let directory = try connectedDirectory(connectionID: connectionID)
-        return try playbackStore.read(from: self, directory: directory, connectionID: connectionID)
+        return try playbackStore.load(record, from: self, directory: directory)
     }
 
     func writePlayback(_ record: SyncRecord<PlaybackSession>, connectionID: UUID) throws {

@@ -74,6 +74,7 @@ struct PlaybackQueueSnapshot: Codable, Equatable {
 }
 
 struct PlaybackCheckpoint: Codable {
+    let accountID: Int?
     let queueRevision: UUID
     let currentIndex: Int
     // A play-next or FM song need not be present in the published queue.
@@ -82,6 +83,7 @@ struct PlaybackCheckpoint: Codable {
     let repeatMode: String
 
     init(_ session: PlaybackSession, queueRevision: UUID) {
+        accountID = session.accountID
         self.queueRevision = queueRevision
         currentIndex = session.currentIndex
         currentTrack = session.currentTrack
@@ -89,10 +91,17 @@ struct PlaybackCheckpoint: Codable {
         repeatMode = session.repeatMode
     }
 
+    func validate() throws {
+        guard progress.isFinite, progress >= 0, currentIndex >= -1,
+              RepeatMode(rawValue: repeatMode) != nil,
+              accountID.map({ $0 > 0 }) ?? true else { throw SyncError.invalidRecord }
+    }
+
     /// The queue was validated at its serialization boundary. Only the cursor
     /// depends on both files; do not revalidate a large queue on each heartbeat.
     func session(using queue: PlaybackQueueSnapshot) throws -> PlaybackSession {
-        guard RepeatMode(rawValue: repeatMode) != nil else { throw SyncError.invalidRecord }
+        try validate()
+        guard accountID == queue.accountID else { throw SyncError.invalidRecord }
         try PlaybackSession.validatePosition(currentIndex, progress: progress, count: queue.orderedQueue.count)
         return PlaybackSession(accountID: queue.accountID, queue: queue.queue, orderedQueue: queue.orderedQueue,
                                currentIndex: currentIndex, currentTrack: currentTrack, playNext: queue.playNext,

@@ -4,7 +4,7 @@ struct PlaybackHandoffList: View {
     @ObservedObject private var sync = SyncService.shared
     @ObservedObject private var account = AccountStore.shared
 
-    private var availableSessions: [SyncRecord<PlaybackSession>] {
+    private var availableSessions: [SyncRecord<PlaybackCheckpoint>] {
         guard let accountID = account.authenticatedAccountID else { return [] }
         return sync.sessions.filter { $0.payload?.accountID == accountID }
     }
@@ -34,8 +34,11 @@ struct PlaybackHandoffList: View {
                             Spacer(minLength: 8)
 
                             Button {
-                                do { try sync.resume(record) }
-                                catch { ToastCenter.shared.show(error.localizedDescription) }
+                                Task {
+                                    do { try await sync.resume(record) }
+                                    catch is CancellationError { }
+                                    catch { ToastCenter.shared.show(error.localizedDescription) }
+                                }
                             } label: {
                                 Text("接续")
                                     .font(.system(size: 11.5, weight: .semibold))
@@ -43,8 +46,13 @@ struct PlaybackHandoffList: View {
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 4)
                                     .background(Theme.accent.opacity(0.12), in: Capsule())
+                                    .opacity(sync.resumingDeviceID == record.id ? 0 : 1)
+                                    .overlay {
+                                        if sync.resumingDeviceID == record.id { ProgressView().controlSize(.small) }
+                                    }
                             }
                             .buttonStyle(.plain)
+                            .disabled(sync.resumingDeviceID == record.id)
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)

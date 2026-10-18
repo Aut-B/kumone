@@ -19,6 +19,12 @@ private struct DecodeProbe: Codable {
 
 @Suite("Playback repository snapshots")
 struct PlaybackRepositoryTests {
+    private func restoredSession(from repository: SyncRepository, connection: UUID) async throws -> PlaybackSession {
+        let received = try await repository.readPlayback(connectionID: connection)
+        let record = try #require(received.records.first)
+        return try await repository.loadPlayback(record, connectionID: connection)
+    }
+
     private func session(progress: Double = 0, count: Int = 4, accountID: Int? = 42,
                          repeatMode: String = "all") throws -> PlaybackSession {
         let tracks = try (0..<count).map {
@@ -115,9 +121,7 @@ struct PlaybackRepositoryTests {
         let object = try #require(JSONSerialization.jsonObject(with: cursorBytes) as? [String: Any])
         let payload = try #require(object["payload"] as? [String: Any])
         #expect(payload["tracks"] == nil && payload["queue"] == nil)
-        let received = try await repository.readPlayback(connectionID: connection)
-        #expect(!received.waitingForQueues)
-        #expect(received.records.first?.payload == next)
+        #expect(try await restoredSession(from: repository, connection: connection) == next)
         await repository.disconnect(connectionID: connection)
     }
 
@@ -140,7 +144,7 @@ struct PlaybackRepositoryTests {
         await repository.disconnect(connectionID: connection)
     }
 
-    @Test func pointerBeforeQueueRetainsOnlyACompleteSessionAndThenConverges() async throws {
+    @Test func discoveryDoesNotLoadQueuesAndSelectedSessionConvergesAfterDownload() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-pointer-order-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let writer = SyncRepository()
@@ -154,7 +158,7 @@ struct PlaybackRepositoryTests {
                                        connectionID: connection)
         let pointer = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/playback.json")
         let oldPointer = try Data(contentsOf: pointer)
-        #expect(try await reader.readPlayback(connectionID: connection).records.first?.payload == old)
+        #expect(try await restoredSession(from: reader, connection: connection) == old)
         let next = try session(progress: 90, count: 8, accountID: 99)
         try await writer.writePlayback(SyncRecord(revision: .init(counter: 2, deviceID: device), deviceName: "Fixture", payload: next),
                                        connectionID: connection)
@@ -162,27 +166,30 @@ struct PlaybackRepositoryTests {
         let record = try JSONDecoder().decode(SyncRecord<PlaybackCheckpoint>.self, from: newPointer)
         // Queue arrives first: it cannot change the session before its pointer.
         try oldPointer.write(to: pointer, options: .atomic)
-        #expect(try await reader.readPlayback(connectionID: connection).records.first?.payload == old)
+        #expect(try await restoredSession(from: reader, connection: connection) == old)
         try newPointer.write(to: pointer, options: .atomic)
         let revision = try #require(record.payload?.queueRevision)
         let queue = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/Queues/\(revision.uuidString).json")
         let delayed = root.appendingPathComponent("delayed.json")
         try FileManager.default.moveItem(at: queue, to: delayed)
         let pending = try await reader.readPlayback(connectionID: connection)
-        #expect(pending.waitingForQueues && pending.records.first?.payload == old)
+        #expect(pending.records.first?.payload?.accountID == 99)
+        #expect(pending.records.first?.payload?.progress == 90)
         #expect(pending.counter == 2)
-        let empty = try await freshReader.readPlayback(connectionID: connection)
-        #expect(empty.waitingForQueues && empty.records.isEmpty)
+        let fresh = try await freshReader.readPlayback(connectionID: connection)
+        #expect(fresh.records.count == 1 && fresh.counter == 2)
+        await #expect(throws: SyncError.downloading) {
+            try await reader.loadPlayback(record, connectionID: connection)
+        }
         try FileManager.default.moveItem(at: delayed, to: queue)
         for repository in [reader, freshReader] {
-            let received = try await repository.readPlayback(connectionID: connection)
-            #expect(!received.waitingForQueues && received.records.first?.payload == next)
+            #expect(try await restoredSession(from: repository, connection: connection) == next)
         }
         let tombstone = SyncRecord<PlaybackCheckpoint>(revision: .init(counter: 3, deviceID: device),
                                                         deviceName: "Fixture", payload: nil)
         try await writer.write(tombstone, domain: .playback, connectionID: connection)
         let withdrawn = try await reader.readPlayback(connectionID: connection)
-        #expect(!withdrawn.waitingForQueues && withdrawn.records.first?.payload == nil)
+        #expect(withdrawn.records.first?.payload == nil)
         for repository in [writer, reader, freshReader] { await repository.disconnect(connectionID: connection) }
     }
 
@@ -207,7 +214,7 @@ struct PlaybackRepositoryTests {
             let next = try session(count: 426, repeatMode: mode)
             try await repository.writePlayback(SyncRecord(revision: .init(counter: UInt64(revision), deviceID: device),
                                                            deviceName: "Fixture", payload: next), connectionID: connection)
-            #expect(try await repository.readPlayback(connectionID: connection).records.first?.payload == next)
+            #expect(try await restoredSession(from: repository, connection: connection) == next)
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).count == 1)
         #expect(try Data(contentsOf: file) == bytes)
@@ -241,7 +248,7 @@ struct PlaybackRepositoryTests {
             #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).count == 1)
             #expect(try Data(contentsOf: file) == bytes)
             #expect(try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate == modified)
-            #expect(try await writer.readPlayback(connectionID: connection).records.first?.payload == next)
+            #expect(try await restoredSession(from: writer, connection: connection) == next)
             await writer.disconnect(connectionID: connection)
         }
         // A genuine content change still publishes a new immutable snapshot.
@@ -271,13 +278,15 @@ struct PlaybackRepositoryTests {
             try FileManager.default.removeItem(at: file)
             if offset > 0 { _ = try await writer.restore(bookmark: bookmark, connectionID: connection) }
             let incomplete = try await writer.readPlayback(connectionID: connection)
-            #expect(incomplete.waitingForQueues)
+            let offer = try #require(incomplete.records.first)
+            await #expect(throws: SyncError.downloading) {
+                try await writer.loadPlayback(offer, connectionID: connection)
+            }
             let next = try session(progress: 25, count: changedQueue ? 5 + offset : 4)
             let revision = UInt64(offset * 2 + 2)
             try await writer.writePlayback(SyncRecord(revision: .init(counter: revision, deviceID: device),
                                                        deviceName: "Fixture", payload: next), connectionID: connection)
-            let recovered = try await writer.readPlayback(connectionID: connection)
-            #expect(!recovered.waitingForQueues && recovered.records.first?.payload == next)
+            #expect(try await restoredSession(from: writer, connection: connection) == next)
             let checkpoint = try JSONDecoder().decode(SyncRecord<PlaybackCheckpoint>.self, from: Data(contentsOf: pointer))
             let queueID = try #require(checkpoint.payload?.queueRevision)
             #expect(checkpoint.revision.counter == revision)
@@ -349,7 +358,7 @@ struct PlaybackRepositoryTests {
         await repository.disconnect(connectionID: connection)
     }
 
-    @Test(arguments: ["owner", "index", "progress", "queue-reference", "repeatMode"])
+    @Test(arguments: ["owner", "index", "progress", "queue-reference", "repeatMode", "account"])
     func splitFilesRejectInvalidOwnershipCursorAndQueueReferences(field: String) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-invalid-split-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -362,10 +371,10 @@ struct PlaybackRepositoryTests {
         let pointer = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/playback.json")
         let checkpoint = try JSONDecoder().decode(SyncRecord<PlaybackCheckpoint>.self, from: Data(contentsOf: pointer))
         let id = try #require(checkpoint.payload?.queueRevision)
-        let file = field == "owner" || field == "queue-reference"
+        let file = ["owner", "queue-reference", "account"].contains(field)
             ? root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/Queues/\(id.uuidString).json") : pointer
         // Warm the cache before modifying a file outside the repository API.
-        _ = try await repository.readPlayback(connectionID: connection)
+        _ = try await restoredSession(from: repository, connection: connection)
         var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         if field == "owner" {
             var revision = try #require(object["revision"] as? [String: Any])
@@ -377,13 +386,44 @@ struct PlaybackRepositoryTests {
             case "index": payload["currentIndex"] = 100
             case "progress": payload["progress"] = -1
             case "repeatMode": payload["repeatMode"] = "invalid"
+            case "account": payload["accountID"] = 99
             default: payload["queue"] = [-1]
             }
             object["payload"] = payload
         }
         try JSONSerialization.data(withJSONObject: object).write(to: file, options: .atomic)
-        await #expect(throws: SyncError.self) { try await repository.readPlayback(connectionID: connection) }
+        await #expect(throws: SyncError.self) { try await restoredSession(from: repository, connection: connection) }
         await repository.disconnect(connectionID: connection)
+    }
+
+    @Test func unrelatedBrokenQueueDoesNotBlockDiscoveryOrSelectedDevice() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-lazy-queues-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = SyncRepository()
+        let connection = UUID()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let devices = [UUID(), UUID()]
+        let value = try session(count: 1000)
+        for device in devices {
+            try await repository.writePlayback(SyncRecord(revision: .init(counter: 1, deviceID: device),
+                                                          deviceName: "Fixture", payload: value), connectionID: connection)
+        }
+        let folder = root.appendingPathComponent("Kumone/Devices/\(devices[1].uuidString)/Queues")
+        let file = try #require(FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).first)
+        try Data("broken".utf8).write(to: file, options: .atomic)
+        // A fresh repository cannot satisfy discovery from a warmed queue cache.
+        let reader = SyncRepository()
+        _ = try await reader.connect(to: root, connectionID: connection)
+        let offers = try await reader.readPlayback(connectionID: connection)
+        #expect(offers.records.count == 2)
+        let selected = try #require(offers.records.first { $0.id == devices[0] })
+        #expect(try await reader.loadPlayback(selected, connectionID: connection) == value)
+        let broken = try #require(offers.records.first { $0.id == devices[1] })
+        await #expect(throws: SyncError.invalidRecord) {
+            try await reader.loadPlayback(broken, connectionID: connection)
+        }
+        await repository.disconnect(connectionID: connection)
+        await reader.disconnect(connectionID: connection)
     }
 
     @Test func cleanupRetainsCurrentPreviousRecentAndOtherDevicesQueues() async throws {

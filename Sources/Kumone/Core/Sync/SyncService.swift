@@ -12,11 +12,12 @@ final class SyncService: ObservableObject {
 
     @Published private(set) var enabled: Bool
     @Published private(set) var loginEnabled: Bool
-    @Published private(set) var sessions: [SyncRecord<PlaybackSession>] = []
+    @Published private(set) var sessions: [SyncRecord<PlaybackCheckpoint>] = []
     @Published private(set) var logins: [SyncRecord<SyncedLogin>] = []
     @Published private(set) var errorMessage: String?
     @Published private(set) var connected = false
     @Published private(set) var importingLogin = false
+    @Published private(set) var resumingDeviceID: UUID?
 
     private let repository = SyncRepository()
     private let defaults: UserDefaults
@@ -38,6 +39,7 @@ final class SyncService: ObservableObject {
     private var directoryTask: Task<Void, Never>?
     private var directoryDomains: Set<SyncRepository.Domain> = []
     private var connectionID = UUID()
+    private var resumeRequestID = UUID()
     private var started = false
     private var syncing = false
     private var syncPending = false
@@ -261,10 +263,30 @@ final class SyncService: ObservableObject {
         await synchronize()
     }
 
-    func resume(_ record: SyncRecord<PlaybackSession>) throws {
-        guard let session = record.payload else {
-            throw SyncError.invalidRecord
+    func resume(_ record: SyncRecord<PlaybackCheckpoint>) async throws {
+        guard enabled, connected else { throw SyncError.unavailable }
+        guard let checkpoint = record.payload else { throw SyncError.invalidRecord }
+        guard let accountID = AccountStore.shared.authenticatedAccountID,
+              checkpoint.accountID == accountID else { throw SyncError.accountMismatch }
+        guard resumingDeviceID != record.id else { return }
+        let connection = connectionID
+        let request = UUID()
+        resumeRequestID = request
+        resumingDeviceID = record.id
+        defer { if resumeRequestID == request { resumingDeviceID = nil } }
+        let session: PlaybackSession
+        do { session = try await repository.loadPlayback(record, connectionID: connection) }
+        catch {
+            guard enabled, connected, connection == connectionID, resumeRequestID == request else {
+                throw CancellationError()
+            }
+            throw error
         }
+        try Task.checkCancellation()
+        guard enabled, connected, connection == connectionID, resumeRequestID == request,
+              AccountStore.shared.authenticatedAccountID == accountID,
+              sessions.contains(where: { $0.id == record.id && $0.payload?.accountID == accountID })
+        else { throw CancellationError() }
         try PlayerService.shared.resume(session)
     }
 
@@ -366,11 +388,7 @@ final class SyncService: ObservableObject {
                     guard enabled, connection == connectionID else { return }
                     let records = received.records
                     counter = max(counter, received.counter)
-                    hasPublishedPlayback = received.activeDevices.contains(deviceID)
-                    if received.waitingForQueues {
-                        domainsNeedingRead.insert(.playback)
-                        failures.append(SyncError.downloading)
-                    }
+                    hasPublishedPlayback = records.contains { $0.id == deviceID && $0.payload != nil }
                     let incoming = records.filter { $0.id != deviceID && $0.payload != nil }
                         .sorted { $0.updatedAt > $1.updatedAt }
                     if !sessions.elementsEqual(incoming, by: { $0.revision == $1.revision }) { sessions = incoming }
