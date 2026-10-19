@@ -31,6 +31,31 @@ private final class DeferredAPIProtocol: URLProtocol, @unchecked Sendable {
 
 @Suite("Account response isolation", .serialized)
 struct AccountIsolationTests {
+    @Test(arguments: [200, 301, 500])
+    func serverLogoutUsesAnIsolatedSessionAndSurfacesFailures(code: Int) async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DeferredAPIProtocol.self]
+        let logoutClient = NeteaseClient(configuration: configuration, persistsCookies: false)
+        let liveClient = NeteaseClient(configuration: .ephemeral, persistsCookies: false)
+        liveClient.setCookies(["MUSIC_U": "synthetic-old"])
+        let cookies = liveClient.authenticationCookies()
+        try liveClient.clearAuthCookies()
+        let logout = Task { try await NeteaseAPI.logout(detachedCookies: cookies, using: logoutClient) }
+        for _ in 0..<200 where DeferredAPIProtocol.state.get("/weapi/logout") == nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let pending = try #require(DeferredAPIProtocol.state.get("/weapi/logout"))
+        let usesOldSession = pending.request.value(forHTTPHeaderField: "Cookie")?.contains("MUSIC_U=synthetic-old") == true
+        #expect(usesOldSession)
+        liveClient.setCookies(["MUSIC_U": "synthetic-new"])
+        pending.finish(code: code)
+        if code == 200 { try await logout.value }
+        else { await #expect(throws: NeteaseAPIError.self) { try await logout.value } }
+        let keptNewSession = liveClient.cookie(named: "MUSIC_U") == "synthetic-new"
+        let ignoredResponseCookie = logoutClient.cookie(named: "MUSIC_U") == "synthetic-old"
+        #expect(keptNewSession && ignoredResponseCookie)
+    }
+
     @Test func concurrentCookieWritesPersistTheLatestCompleteSnapshot() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

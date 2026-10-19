@@ -157,13 +157,16 @@ final class AccountStore: ObservableObject {
         NowPlayingManager.shared.refreshLikeState()
     }
 
-    /// Shared credentials can still be in use on another device. Sign out locally
-    /// without revoking the NetEase session; sync withdraws this device's record.
-    func logout() throws {
+    /// Revoke by default. Only an enabled, published login is kept alive for
+    /// other devices; sync still withdraws this device's record after sign-out.
+    func logout() async throws {
+        let cookies = NeteaseClient.shared.authenticationCookies()
+        let revokeSession = SyncService.shared.shouldRevokeLoginSession(cookies: cookies)
         try NeteaseClient.shared.clearAuthCookies()
         bootstrapGeneration += 1
         AccountSnapshotStorage.shared.clear()
         applyProfile(nil, binding: nil)
+        if revokeSession { try await NeteaseAPI.logout(detachedCookies: cookies) }
     }
 
     /// Verify a received session in isolation. A failed or superseded import must

@@ -255,6 +255,11 @@ final class SyncService: ObservableObject {
         await synchronizeNow(refreshing: [.login], publishing: [.login])
     }
 
+    func shouldRevokeLoginSession(cookies: [String: String]) -> Bool {
+        guard enabled, loginEnabled, let revisionClock else { return true }
+        return !loginSync.hasPublishedSession(cookies: cookies, deviceID: revisionClock.deviceID)
+    }
+
     func resume(_ record: SyncRecord<PlaybackCheckpoint>) async throws {
         guard enabled, connected else { throw SyncError.unavailable }
         guard let checkpoint = record.payload else { throw SyncError.invalidRecord }

@@ -74,6 +74,16 @@ enum NeteaseAPI {
         }
     }
 
+    /// An isolated client keeps a late logout response away from a newer login.
+    static func logout(
+        detachedCookies: [String: String],
+        using client: NeteaseClient = NeteaseClient(configuration: .ephemeral, persistsCookies: false)
+    ) async throws {
+        client.setCookies(detachedCookies)
+        let data = try await client.weapi("/logout", absorbResponseCookies: false)
+        _ = try client.decoded(CodeOnly.self, from: data)
+    }
+
     static func refreshLogin() async {
         _ = try? await client.weapi("/login/token/refresh")
     }

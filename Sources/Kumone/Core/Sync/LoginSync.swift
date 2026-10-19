@@ -12,6 +12,12 @@ final class LoginSync {
         hasPublishedLogin = false
     }
 
+    func hasPublishedSession(cookies: [String: String], deviceID: UUID) -> Bool {
+        guard let token = cookies["MUSIC_U"], !token.isEmpty else { return false }
+        let latest = cachedLoginRecords.lazy.filter { $0.id == deviceID }.max { $0.revision < $1.revision }
+        return latest?.payload?.cookies["MUSIC_U"] == token
+    }
+
     func read(repository: SyncRepository, connectionID: UUID, clock: SyncRevisionClock) async throws {
         try Task.checkCancellation()
         let records = try await repository.read(.login, as: SyncedLogin.self, connectionID: connectionID)

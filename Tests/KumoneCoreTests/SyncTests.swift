@@ -235,9 +235,12 @@ struct SyncTests {
         let loginSync = LoginSync()
         let clock = SyncRevisionClock(defaults: defaults, deviceID: device, deviceName: "Local")
         try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
+        #expect(loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
         let loginFile = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/login.json")
         try Data("broken".utf8).write(to: loginFile, options: .atomic)
         try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
+        // Withdrawal responsibility is not proof that the current session is shared.
+        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
         _ = try await loginSync.publish(enabled: false, repository: repository, connectionID: connection, clock: clock)
         let writtenBytes = try Data(contentsOf: loginFile)
         let withdrawnRecord = try JSONDecoder().decode(SyncRecord<SyncedLogin>.self, from: writtenBytes)
@@ -247,6 +250,54 @@ struct SyncTests {
         _ = try await loginSync.publish(enabled: false, repository: repository, connectionID: connection, clock: clock)
         #expect(try Data(contentsOf: loginFile) == writtenBytes)
         await repository.disconnect(connectionID: connection)
+    }
+
+    @Test @MainActor func publishedLoginSessionRequiresThisDevicesLatestMatchingToken() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-login-revocation-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-login-revocation-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let device = UUID()
+        let remote = UUID()
+        let connection = UUID()
+        let repository = SyncRepository()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let loginSync = LoginSync()
+        let clock = SyncRevisionClock(defaults: defaults, deviceID: device, deviceName: "Local")
+        let login = SyncedLogin(accountID: 42, nickname: "Fixture", cookies: ["MUSIC_U": "synthetic-shared"])
+        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
+        try await repository.write(SyncRecord(revision: .init(counter: 1, deviceID: remote), deviceName: "Remote", payload: login),
+                                   domain: .login, connectionID: connection)
+        try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
+        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
+        try await repository.write(SyncRecord(revision: .init(counter: 2, deviceID: device), deviceName: "Local", payload: login),
+                                   domain: .login, connectionID: connection)
+        try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
+        #expect(loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
+        #expect(!loginSync.hasPublishedSession(cookies: [:], deviceID: device))
+        #expect(!loginSync.hasPublishedSession(cookies: ["MUSIC_U": ""], deviceID: device))
+        #expect(!loginSync.hasPublishedSession(cookies: ["MUSIC_U": "synthetic-new-login"], deviceID: device))
+        loginSync.resetConnection()
+        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
+        try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
+        #expect(loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
+        let withdrawn = SyncRecord<SyncedLogin>(revision: .init(counter: 3, deviceID: device), deviceName: "Local", payload: nil)
+        try await repository.write(withdrawn, domain: .login, connectionID: connection)
+        try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
+        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
+        await repository.disconnect(connectionID: connection)
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    @MainActor func loginConsentWithoutPublicationStillRequiresServerRevocation(syncEnabled: Bool, loginEnabled: Bool) throws {
+        let suite = "kumone-login-revocation-consent-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(syncEnabled, forKey: "sync.enabled")
+        defaults.set(loginEnabled, forKey: "sync.publishLogin")
+        let service = SyncService(defaults: defaults)
+        #expect(service.shouldRevokeLoginSession(cookies: ["MUSIC_U": "synthetic-unpublished"]))
     }
 
     @Test @MainActor func reconnectWithdrawsAnOldOfferEvenWhenItsQueueIsMissing() async throws {

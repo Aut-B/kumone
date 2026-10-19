@@ -58,13 +58,21 @@ end note
 
 == 本机退出 ==
 User -> Account : logout()
+Account -> Service : shouldRevokeLoginSession（当前 Cookie）
+Service -> Login : hasPublishedSession（当前 Cookie、本机 ID）
+Login --> Service : 本机最新记录是否匹配当前会话
+Service --> Account : 默认撤销；同步与登录同步均开启且匹配时保留
 Account -> Client : clearAuthCookies（本机）
 Account -> Account : 增加启动代次、清除本机资料快照、应用未登录
 Account -> Service : profile 变化 → 合并登录 / 播放发布请求
+opt 需要撤销服务端会话
+  Account -> Candidate : 使用退出前 Cookie 请求 /logout
+  Candidate --> Account : 成功或抛出错误；不修改本机新登录
+end
 Service -> Login : publish → 撤回本机邀请
 note over Repo,Client
   Cookie 在受信任同步目录中为可读 JSON；无配对流程。
-  退出只撤回本设备记录，不撤销其他设备持有的网易云会话。
+  默认撤销服务端会话；仅保留已开启同步且本机实际发布的当前会话。
   总同步关闭时不执行云端撤回；重新连接后再检查。
 end note
 @enduml

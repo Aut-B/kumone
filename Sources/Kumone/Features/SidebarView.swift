@@ -331,10 +331,12 @@ private struct AccountChip: View {
             }
             Divider().opacity(0.4)
             Button {
-                do {
-                    try account.logout()
-                    showPopover = false
-                } catch { ToastCenter.shared.show(error.localizedDescription) }
+                Task {
+                    do {
+                        try await account.logout()
+                        showPopover = false
+                    } catch { ToastCenter.shared.show(error.localizedDescription) }
+                }
             } label: {
                 Text("退出登录")
                     .font(.system(size: 12.5, weight: .medium))

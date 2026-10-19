@@ -172,8 +172,10 @@ struct SettingsView: View {
                 if let profile = account.profile {
                     LabeledContent("当前账号", value: profile.nickname)
                     Button("退出登录", role: .destructive) {
-                        do { try AccountStore.shared.logout() }
-                        catch { ToastCenter.shared.show(error.localizedDescription) }
+                        Task {
+                            do { try await AccountStore.shared.logout() }
+                            catch { ToastCenter.shared.show(error.localizedDescription) }
+                        }
                     }
                 } else {
                     Text("未登录")
