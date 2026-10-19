@@ -12,12 +12,10 @@ struct StemModelsSettingsSection: View {
     @ObservedObject private var downloader = StemModelDownloader.shared
 
     var body: some View {
+        // No `.task` here: on a ForEach it would run once per row, hashing
+        // every model once per row. The caller loads the state once.
         ForEach(downloader.specs) { spec in
             row(for: spec)
-        }
-        .task {
-            downloader.refresh()
-            await downloader.verifyInstalled()
         }
     }
 

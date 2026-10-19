@@ -55,6 +55,11 @@ private struct StemTransitionSettings: View {
         Text("下载后可用，耗电较高。")
             .font(.caption)
             .foregroundStyle(.secondary)
+            // On a single view, so the models are hashed once per appearance.
+            .task {
+                downloader.refresh()
+                await downloader.verifyInstalled()
+            }
     }
 }
 #endif
