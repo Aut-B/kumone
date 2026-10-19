@@ -478,8 +478,10 @@ private final class TonearmHost<Content: View>: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let side = Self.stageSide(width: width, height: height, pivotY: pivotY)
-        stage.frame = CGRect(x: bounds.midX - side / 2, y: pivotY - side / 2,
-                             width: side, height: side)
+        // `bounds` + `center`, not `frame`: the stage is rotated (parked at
+        // −32° from the start), and UIKit leaves `frame` undefined then.
+        stage.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        stage.center = CGPoint(x: bounds.midX, y: pivotY)
         armController.view.frame = CGRect(x: side / 2 - width / 2, y: side / 2 - pivotY,
                                           width: width, height: height)
     }

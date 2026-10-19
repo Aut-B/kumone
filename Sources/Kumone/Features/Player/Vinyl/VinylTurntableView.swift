@@ -275,7 +275,9 @@ private final class VinylDiscHost: NSView {
 /// gestures wrapped around this representable.
 private final class VinylDiscHost: UIView {
     private let record: UIHostingController<VinylRecordView>
-    private(set) lazy var spin = DiscSpinController(layer: layer)
+    /// Spins the record's own view, not this host: SwiftUI lays the host out
+    /// by `frame`, which UIKit leaves undefined under a non-identity transform.
+    private(set) lazy var spin = DiscSpinController(layer: record.view.layer)
 
     init(artworkImage: PlatformImage?, size: CGFloat) {
         record = UIHostingController(rootView: VinylRecordView(artworkImage: artworkImage, size: size))
@@ -292,7 +294,9 @@ private final class VinylDiscHost: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        record.view.frame = bounds
+        // `bounds` + `center`, not `frame`: the record view is rotated.
+        record.view.bounds = CGRect(origin: .zero, size: bounds.size)
+        record.view.center = CGPoint(x: bounds.midX, y: bounds.midY)
     }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }

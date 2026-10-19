@@ -72,7 +72,7 @@ struct LyricText: View {
             // Keep the per-frame wipe inside this row's own geometry: without
             // it, every frame the overlay changes makes SwiftUI re-measure the
             // whole page above the line (#128 performance work).
-            .geometryGroup()
+            .geometryGroupIfAvailable()
             // The line is glyphs in a `Canvas`, which carries no text for
             // VoiceOver to read. Stand in the plain lyric.
             .accessibilityRepresentation { Text(line.text.isEmpty ? "♪" : line.text) }
@@ -80,6 +80,18 @@ struct LyricText: View {
             Text(line.text.isEmpty ? "♪" : line.text)
                 .font(.system(size: size, weight: weight, design: rounded ? .rounded : .default))
                 .foregroundStyle(color)
+        }
+    }
+}
+
+private extension View {
+    /// `geometryGroup()` is iOS 17+; the iOS 16 build keeps the plain view.
+    @ViewBuilder
+    func geometryGroupIfAvailable() -> some View {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            geometryGroup()
+        } else {
+            self
         }
     }
 }
