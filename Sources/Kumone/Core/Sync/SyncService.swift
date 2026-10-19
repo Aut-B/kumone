@@ -1,9 +1,10 @@
 import Combine
 import Foundation
+
 #if os(iOS)
-import UIKit
+    import UIKit
 #else
-import AppKit
+    import AppKit
 #endif
 
 @MainActor
@@ -21,73 +22,76 @@ final class SyncService: ObservableObject {
 
     private let repository = SyncRepository()
     private let defaults: UserDefaults
-    // Loaded before connecting; an inaccessible identity must not publish a new device.
-    private var deviceID = UUID()
+    // Exists only after the persistent device identity has been loaded.
+    private var revisionClock: SyncRevisionClock?
     private let deviceIdentity: @Sendable () async throws -> UUID
     private let playbackContext: @MainActor () -> (session: PlaybackSession?, accountID: Int?)
+    private let periodicRefreshSleep: @Sendable () async throws -> Void
     private let deviceName: String
-    private var counter: UInt64
-    private var preferences: SyncedPreferences
-    private var observedPreferences: [String: PreferenceValue]
-    private var lastPlayback: PlaybackSession?
+    private let preferencesSync: PreferencesSync
+    private let loginSync = LoginSync()
+    private var lastPublishedPlayback: PlaybackSession?
     private var hasPublishedPlayback = false
-    private var lastLogin: SyncedLogin?
-    private var hasPublishedLogin = false
     private var subscriptions: Set<AnyCancellable> = []
-    private var refreshTask: Task<Void, Never>?
-    private var changeTask: Task<Void, Never>?
-    private var directoryTask: Task<Void, Never>?
-    private var directoryDomains: Set<SyncRepository.Domain> = []
+    private var periodicRefreshTask: Task<Void, Never>?
+    private var coalescingTask: Task<Void, Never>?
+    private var syncTask: Task<Void, Never>?
     private var connectionID = UUID()
     private var resumeRequestID = UUID()
     private var started = false
-    private var syncing = false
-    private var syncPending = false
-    private var playbackPending = false
     private var foreground = true
-    private var preferencesNeedUpload = false
-    private var domainsNeedingRead = Set(SyncRepository.Domain.allCases)
-    private var remoteLogins: [SyncRecord<SyncedLogin>] = []
+    private struct SyncRequest {
+        var refreshDomains: Set<SyncRepository.Domain> = []
+        var publicationDomains: Set<SyncRepository.Domain> = []
+        var isEmpty: Bool { refreshDomains.isEmpty && publicationDomains.isEmpty }
+
+        mutating func formUnion(_ other: Self) {
+            refreshDomains.formUnion(other.refreshDomains)
+            publicationDomains.formUnion(other.publicationDomains)
+        }
+    }
+    private var pendingSyncRequest = SyncRequest()
 
     private enum Keys {
         static let enabled = "sync.enabled"
         static let login = "sync.publishLogin"
-        static let counter = "sync.counter"
         static let bookmark = "sync.directoryBookmark"
-        static let preferences = "sync.preferences"
         static let identity = "sync.iCloudIdentity"
     }
 
-    private struct LocalPreferences: Codable {
-        let edits: SyncedPreferences
-        let observed: [String: PreferenceValue]
-    }
-
-    init(defaults: UserDefaults, deviceIdentity: @escaping @Sendable () async throws -> UUID = {
-        try await SyncDeviceIdentity.load()
-    }, playbackContext: @escaping @MainActor () -> (session: PlaybackSession?, accountID: Int?) = {
-        (PlayerService.shared.playbackSession, AccountStore.shared.authenticatedAccountID)
-    }) {
+    init(
+        defaults: UserDefaults,
+        deviceIdentity: @escaping @Sendable () async throws -> UUID = {
+            try await SyncDeviceIdentity.load()
+        },
+        playbackContext: @escaping @MainActor () -> (session: PlaybackSession?, accountID: Int?) = {
+            (PlayerService.shared.playbackSession, AccountStore.shared.authenticatedAccountID)
+        },
+        periodicRefreshSleep: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(for: .seconds(20))
+        }
+    ) {
         self.defaults = defaults
         self.deviceIdentity = deviceIdentity
         self.playbackContext = playbackContext
+        self.periodicRefreshSleep = periodicRefreshSleep
         enabled = defaults.bool(forKey: Keys.enabled)
         loginEnabled = defaults.bool(forKey: Keys.login)
         #if os(iOS)
-        deviceName = UIDevice.current.name
+            deviceName = UIDevice.current.name
         #else
-        deviceName = Host.current().localizedName ?? "Mac"
+            deviceName = Host.current().localizedName ?? "Mac"
         #endif
-        counter = (defaults.object(forKey: Keys.counter) as? NSNumber)?.uint64Value ?? 0
-        preferences = SyncedPreferences()
-        observedPreferences = SettingsManager.shared.syncPreferences
+        preferencesSync = PreferencesSync(defaults: defaults, settings: .shared)
         do {
-            if let data = defaults.data(forKey: Keys.preferences) {
-                let saved = try JSONDecoder().decode(LocalPreferences.self, from: data)
-                preferences = saved.edits
-                observedPreferences = saved.observed
-            }
+            try preferencesSync.restore()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    deinit {
+        periodicRefreshTask?.cancel()
+        coalescingTask?.cancel()
+        syncTask?.cancel()
     }
 
     func start() async {
@@ -101,101 +105,87 @@ final class SyncService: ObservableObject {
         let player = PlayerService.shared
         var playbackChanges = [
             player.$currentTrack.map { _ in () }.eraseToAnyPublisher(),
-            player.$isPlaying.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             player.$queue.map { _ in () }.eraseToAnyPublisher(),
             player.$shuffledQueue.map { _ in () }.eraseToAnyPublisher(),
             player.$playNextList.map { _ in () }.eraseToAnyPublisher(),
             player.$currentIndex.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             player.$source.map { _ in () }.eraseToAnyPublisher(),
             player.$repeatMode.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            player.$isFMMode.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            player.$isFMMode.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
         ]
         #if os(macOS)
-        playbackChanges.append(player.$queueOrder.removeDuplicates().map { _ in () }.eraseToAnyPublisher())
-        playbackChanges.append(player.$autoMixQueue.map { _ in () }.eraseToAnyPublisher())
+            playbackChanges.append(player.$queueOrder.removeDuplicates().map { _ in () }.eraseToAnyPublisher())
+            playbackChanges.append(player.$autoMixQueue.map { _ in () }.eraseToAnyPublisher())
         #else
-        playbackChanges.append(player.$shuffleEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher())
+            playbackChanges.append(player.$shuffleEnabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher())
         #endif
-        let settings = SettingsManager.shared
         let account = AccountStore.shared
-        let changes = Publishers.MergeMany(playbackChanges + [
-            settings.$audioQuality.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            settings.$appearance.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            settings.$showLyricsTranslation.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            settings.$lyricsAnnotation.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            settings.$verbatimLyrics.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            settings.$enableUnblock.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            settings.$enabledAudioSourceIDs.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            settings.$showMainWindowAmbientBackground.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            settings.$mainWindowAmbientBackgroundIntensity.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+        Publishers.MergeMany(playbackChanges).sink { [weak self] in
+            self?.scheduleSync(SyncRequest(publicationDomains: [.playback]))
+        }.store(in: &subscriptions)
+        player.$isPlaying.removeDuplicates().sink { [weak self] isPlaying in
+            self?.updatePeriodicRefreshTask(isPlaying: isPlaying)
+            self?.scheduleSync(SyncRequest(publicationDomains: [.playback]))
+        }.store(in: &subscriptions)
+        SettingsManager.shared.syncPreferenceChanges.sink { [weak self] in
+            self?.scheduleSync(SyncRequest(publicationDomains: [.preferences]))
+        }.store(in: &subscriptions)
+        Publishers.MergeMany([
             account.$profile.map { _ in () }.eraseToAnyPublisher(),
-            account.$isBootstrapped.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
-        ])
-        changes.sink { [weak self] in
-            guard let self, self.enabled, self.connected else { return }
-            self.changeTask?.cancel()
-            self.changeTask = Task { [weak self] in
-                do { try await Task.sleep(for: .milliseconds(600)) }
-                catch { return }
-                guard let self, self.enabled, self.connected else { return }
-                await self.synchronize(refreshing: [])
-                self.scheduleRefresh()
-            }
+            account.$isBootstrapped.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+        ]).sink { [weak self] in
+            self?.scheduleSync(SyncRequest(publicationDomains: [.login, .playback]))
         }.store(in: &subscriptions)
         guard enabled else { return }
         if await disconnectChangedIdentity() { return }
-        do { _ = try await enable() }
-        catch is CancellationError { return }
-        catch { errorMessage = error.localizedDescription }
+        do { _ = try await enable() } catch is CancellationError { return } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     /// Returns false when directory authorization is needed. The caller presents
     /// the platform picker directly, without a second confirmation screen.
     func enable() async throws -> Bool {
-        let connection = UUID()
-        connectionID = connection
-        connected = false
-        sessions = []
-        logins = []
-        errorMessage = nil
+        let previousConnectionID = invalidateConnection()
+        let activeConnectionID = connectionID
         do {
+            await repository.disconnect(connectionID: previousConnectionID)
+            guard connectionID == activeConnectionID else { throw CancellationError() }
             let identity = try await deviceIdentity()
-            guard connectionID == connection else { throw CancellationError() }
-            deviceID = identity
+            guard connectionID == activeConnectionID else { throw CancellationError() }
+            revisionClock = SyncRevisionClock(defaults: defaults, deviceID: identity, deviceName: deviceName)
             if let bookmark = defaults.data(forKey: Keys.bookmark) {
-                let refreshed = try await repository.restore(bookmark: bookmark, connectionID: connection)
-                guard connectionID == connection else { throw CancellationError() }
+                let refreshed = try await repository.restore(bookmark: bookmark, connectionID: activeConnectionID)
+                guard connectionID == activeConnectionID else { throw CancellationError() }
                 defaults.set(refreshed, forKey: Keys.bookmark)
-            } else if try await !repository.connectContainer(connectionID: connection) {
-                guard connectionID == connection else { throw CancellationError() }
+            } else if try await !repository.connectContainer(connectionID: activeConnectionID) {
+                guard connectionID == activeConnectionID else { throw CancellationError() }
                 return false
             }
-            try await activateConnection(connection)
+            try await activateConnection(activeConnectionID)
             return true
         } catch {
-            guard connectionID == connection else { throw CancellationError() }
+            guard connectionID == activeConnectionID else { throw CancellationError() }
             connected = false
             throw error
         }
     }
 
     func connect(to directory: URL) async {
-        let connection = UUID()
-        connectionID = connection
-        connected = false
-        sessions = []
-        logins = []
-        errorMessage = nil
+        let previousConnectionID = invalidateConnection()
+        let activeConnectionID = connectionID
         do {
+            await repository.disconnect(connectionID: previousConnectionID)
+            guard connectionID == activeConnectionID else { return }
             let identity = try await deviceIdentity()
-            guard connectionID == connection else { return }
-            deviceID = identity
-            let bookmark = try await repository.connect(to: directory, connectionID: connection)
-            guard connectionID == connection else { return }
+            guard connectionID == activeConnectionID else { return }
+            revisionClock = SyncRevisionClock(defaults: defaults, deviceID: identity, deviceName: deviceName)
+            let bookmark = try await repository.connect(to: directory, connectionID: activeConnectionID)
+            guard connectionID == activeConnectionID else { return }
             defaults.set(bookmark, forKey: Keys.bookmark)
-            try await activateConnection(connection)
+            try await activateConnection(activeConnectionID)
         } catch {
-            guard connectionID == connection else { return }
+            guard connectionID == activeConnectionID else { return }
             connected = false
             errorMessage = error.localizedDescription
         }
@@ -203,71 +193,74 @@ final class SyncService: ObservableObject {
 
     @discardableResult
     func disable() async -> Bool {
-        let previous = connectionID
-        let disabled = UUID()
-        connectionID = disabled
+        let previousConnectionID = invalidateConnection()
+        let disabledConnectionID = connectionID
         enabled = false
-        connected = false
         defaults.set(false, forKey: Keys.enabled)
-        refreshTask?.cancel()
-        refreshTask = nil
-        changeTask?.cancel()
-        changeTask = nil
-        directoryTask?.cancel()
-        directoryTask = nil
-        await repository.disconnect(connectionID: previous)
-        guard connectionID == disabled else { return false }
+        await repository.disconnect(connectionID: previousConnectionID)
+        return connectionID == disabledConnectionID
+    }
+
+    /// Invalidates results before awaiting repository teardown. Old tasks cannot
+    /// clear a replacement connection's work when they eventually return.
+    private func invalidateConnection() -> UUID {
+        let previousConnectionID = connectionID
+        connectionID = UUID()
+        connected = false
+        periodicRefreshTask?.cancel()
+        periodicRefreshTask = nil
+        coalescingTask?.cancel()
+        coalescingTask = nil
+        syncTask?.cancel()
+        syncTask = nil
+        pendingSyncRequest = SyncRequest()
+        resumeRequestID = UUID()
+        resumingDeviceID = nil
         sessions = []
         logins = []
-        remoteLogins = []
-        lastLogin = nil
+        revisionClock = nil
+        preferencesSync.resetConnection()
+        loginSync.resetConnection()
+        lastPublishedPlayback = nil
+        hasPublishedPlayback = false
         errorMessage = nil
-        return true
+        return previousConnectionID
     }
 
     /// A connection owns its observers and publication checkpoints. Both restored
     /// authorization and a newly selected folder enter through this same boundary.
-    private func activateConnection(_ connection: UUID) async throws {
-        guard connectionID == connection else { throw CancellationError() }
+    private func activateConnection(_ connectionID: UUID) async throws {
+        guard self.connectionID == connectionID else { throw CancellationError() }
         try rememberIdentity()
         connected = true
         enabled = true
         defaults.set(true, forKey: Keys.enabled)
-        lastPlayback = nil
-        hasPublishedPlayback = false
-        lastLogin = nil
-        hasPublishedLogin = false
-        preferencesNeedUpload = true
-        directoryTask?.cancel()
-        directoryTask = nil
-        directoryDomains.removeAll()
-        domainsNeedingRead = Set(SyncRepository.Domain.allCases)
-        remoteLogins = []
+        updatePeriodicRefreshTask(isPlaying: PlayerService.shared.isPlaying)
         await observeDirectory()
-        await synchronize()
-        guard connectionID == connection, enabled else { throw CancellationError() }
-        scheduleRefresh()
+        guard self.connectionID == connectionID, enabled else { throw CancellationError() }
+        await synchronizeNow()
+        guard self.connectionID == connectionID, enabled else { throw CancellationError() }
     }
 
     func setForeground(_ active: Bool) async {
         foreground = active
+        updatePeriodicRefreshTask(isPlaying: PlayerService.shared.isPlaying)
         guard enabled, connected else { return }
-        await synchronize()
-        scheduleRefresh()
+        await synchronizeNow()
     }
 
     func setLoginEnabled(_ enabled: Bool) async {
         loginEnabled = enabled
         defaults.set(enabled, forKey: Keys.login)
-        lastLogin = nil
-        await synchronize()
+        await synchronizeNow(refreshing: [.login], publishing: [.login])
     }
 
     func resume(_ record: SyncRecord<PlaybackCheckpoint>) async throws {
         guard enabled, connected else { throw SyncError.unavailable }
         guard let checkpoint = record.payload else { throw SyncError.invalidRecord }
         guard let accountID = AccountStore.shared.authenticatedAccountID,
-              checkpoint.accountID == accountID else { throw SyncError.accountMismatch }
+            checkpoint.accountID == accountID
+        else { throw SyncError.accountMismatch }
         guard resumingDeviceID != record.id else { return }
         let connection = connectionID
         let request = UUID()
@@ -275,8 +268,7 @@ final class SyncService: ObservableObject {
         resumingDeviceID = record.id
         defer { if resumeRequestID == request { resumingDeviceID = nil } }
         let session: PlaybackSession
-        do { session = try await repository.loadPlayback(record, connectionID: connection) }
-        catch {
+        do { session = try await repository.loadPlayback(record, connectionID: connection) } catch {
             guard enabled, connected, connection == connectionID, resumeRequestID == request else {
                 throw CancellationError()
             }
@@ -284,8 +276,8 @@ final class SyncService: ObservableObject {
         }
         try Task.checkCancellation()
         guard enabled, connected, connection == connectionID, resumeRequestID == request,
-              AccountStore.shared.authenticatedAccountID == accountID,
-              sessions.contains(where: { $0.id == record.id && $0.payload?.accountID == accountID })
+            AccountStore.shared.authenticatedAccountID == accountID,
+            sessions.contains(where: { $0.id == record.id && $0.payload?.accountID == accountID })
         else { throw CancellationError() }
         try PlayerService.shared.resume(session)
     }
@@ -297,263 +289,225 @@ final class SyncService: ObservableObject {
         importingLogin = true
         defer { importingLogin = false }
         guard let login = record.payload else { throw SyncError.invalidRecord }
-        try await AccountStore.shared.importLogin(login, authorization: {
-            self.enabled && self.connected && self.connectionID == connection
-                && AccountStore.shared.isBootstrapped && AccountStore.shared.authenticatedAccountID == nil
-                && self.logins.contains { $0.revision == record.revision }
-        })
+        try await AccountStore.shared.importLogin(
+            login,
+            authorization: {
+                self.enabled && self.connected && self.connectionID == connection
+                    && AccountStore.shared.isBootstrapped && AccountStore.shared.authenticatedAccountID == nil
+                    && self.logins.contains { $0.revision == record.revision }
+            })
+        try Task.checkCancellation()
+        guard enabled, connected, connection == connectionID,
+            AccountStore.shared.authenticatedAccountID == login.accountID
+        else { throw CancellationError() }
         // Receiving a login also authorizes this device to share it back.
         // Commit consent only after verification and credential persistence.
         loginEnabled = true
         defaults.set(true, forKey: Keys.login)
-        lastLogin = nil
-        await synchronize()
-        Task { await AccountStore.shared.refreshLibrary() }
+        await synchronizeNow(refreshing: [.login], publishing: [.login, .playback])
+        await AccountStore.shared.refreshLibrary()
         return AccountStore.shared.authenticatedAccountID == login.accountID
     }
 
-    func synchronize(publishingPlayback: Bool = true,
-                     refreshing domains: Set<SyncRepository.Domain> = Set(SyncRepository.Domain.allCases)) async {
+    /// Refreshes may merge and publish domain state. Bypasses the coalescing window
+    /// and waits for the shared sync task to finish.
+    func synchronizeNow(
+        refreshing: Set<SyncRepository.Domain> = Set(SyncRepository.Domain.allCases),
+        publishing: Set<SyncRepository.Domain> = Set(SyncRepository.Domain.allCases)
+    ) async {
         guard enabled, connected else { return }
-        domainsNeedingRead.formUnion(domains)
-        syncPending = true
-        playbackPending = playbackPending || publishingPlayback
-        if syncing { return }
-        syncing = true
-        defer {
-            syncing = false
-            // A replaced connection can return early while its pending round waits.
-            if syncPending, enabled, connected {
-                Task { await synchronize(publishingPlayback: false, refreshing: []) }
+        pendingSyncRequest.formUnion(SyncRequest(refreshDomains: refreshing, publicationDomains: publishing))
+        coalescingTask?.cancel()
+        coalescingTask = nil
+        await ensureSyncTask()?.value
+    }
+
+    private func scheduleSync(_ request: SyncRequest) {
+        guard enabled, connected else { return }
+        pendingSyncRequest.formUnion(request)
+        guard syncTask == nil, coalescingTask == nil else { return }
+        let scheduledConnectionID = connectionID
+        // A bounded window coalesces bursts without starving continuous changes.
+        coalescingTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+            guard let self, self.connectionID == scheduledConnectionID else { return }
+            self.coalescingTask = nil
+            self.ensureSyncTask()
+        }
+    }
+
+    /// Reuses the active task, or starts one when the connection has pending work.
+    @discardableResult
+    private func ensureSyncTask() -> Task<Void, Never>? {
+        guard enabled, connected, let revisionClock else { return nil }
+        if let syncTask { return syncTask }
+        guard !pendingSyncRequest.isEmpty else { return nil }
+        let activeConnectionID = connectionID
+        syncTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.connectionID == activeConnectionID {
+                    self.syncTask = nil
+                }
+            }
+            while self.enabled, self.connected, self.connectionID == activeConnectionID, !Task.isCancelled {
+                let currentRequest = self.pendingSyncRequest
+                self.pendingSyncRequest = SyncRequest()
+                let retryRequest = await self.synchronizeDomains(
+                    currentRequest, connectionID: activeConnectionID, clock: revisionClock)
+                guard self.connectionID == activeConnectionID, !Task.isCancelled else { return }
+                let hasNewRequests = !self.pendingSyncRequest.isEmpty
+                self.pendingSyncRequest.formUnion(retryRequest)
+                // Failures wait for another event or the periodic refresh; do not
+                // spin on a missing cloud file. Changes received during I/O drain now.
+                if !hasNewRequests { return }
             }
         }
-        repeat {
-            syncPending = false
-            let publishPlayback = playbackPending
-            playbackPending = false
-            let connection = connectionID
-            let reads = domainsNeedingRead
-            domainsNeedingRead.removeAll()
-            var failures: [Error] = []
-            do {
-                try capturePreferenceChanges()
-                if reads.contains(.preferences) {
-                    let records = try await repository.read(.preferences, as: SyncedPreferences.self, connectionID: connection)
-                    guard enabled, connection == connectionID else { return }
-                    for record in records {
-                        counter = max(counter, record.revision.counter)
-                        if let incoming = record.payload {
-                            for edit in incoming.fields.values { counter = max(counter, edit.revision.counter) }
-                        }
-                    }
-                    // Observe remote revisions before stamping edits made during the read.
-                    try capturePreferenceChanges()
-                    let previousPreferences = preferences
-                    let previousObserved = observedPreferences
-                    var merged = preferences
-                    for record in records {
-                        if let incoming = record.payload { merged.merge(incoming) }
-                    }
-                    // Invalid remote values must not poison the last valid local projection.
-                    try SettingsManager.shared.applySyncPreferences(merged)
-                    preferences = merged
-                    observedPreferences = SettingsManager.shared.syncPreferences
-                    if preferences != previousPreferences || observedPreferences != previousObserved {
-                        try savePreferences()
-                    }
-                }
-                // Only fill absent fields after the first remote read. Starting a
-                // fresh installation must not overwrite existing cloud preferences.
-                for (key, value) in observedPreferences where preferences.fields[key] == nil {
-                    preferences.fields[key] = PreferenceEdit(value: value, revision: try nextRevision())
-                    preferencesNeedUpload = true
-                }
-                if preferencesNeedUpload {
-                    let uploadedPreferences = preferences
-                    let record = try makeRecord(uploadedPreferences)
-                    try await repository.write(record, domain: .preferences, connectionID: connection)
-                    guard enabled, connection == connectionID else { return }
-                    preferencesNeedUpload = preferences != uploadedPreferences
-                    try savePreferences()
-                }
-            } catch {
-                guard enabled, connection == connectionID else { return }
-                domainsNeedingRead.insert(.preferences)
-                failures.append(error)
-            }
-
-            do {
-                if reads.contains(.playback) {
-                    let received = try await repository.readPlayback(connectionID: connection)
-                    guard enabled, connection == connectionID else { return }
-                    let records = received.records
-                    counter = max(counter, received.counter)
-                    hasPublishedPlayback = records.contains { $0.id == deviceID && $0.payload != nil }
-                    let incoming = records.filter { $0.id != deviceID && $0.payload != nil }
-                        .sorted { $0.updatedAt > $1.updatedAt }
-                    if !sessions.elementsEqual(incoming, by: { $0.revision == $1.revision }) { sessions = incoming }
-                }
-                if publishPlayback {
-                    let context = playbackContext()
-                    if let session = context.session,
-                       let accountID = context.accountID, accountID > 0, session.accountID == accountID {
-                        if session.progress != lastPlayback?.progress || session != lastPlayback {
-                            let record = try makeRecord(session)
-                            try await repository.writePlayback(record, connectionID: connection)
-                            guard enabled, connection == connectionID else { return }
-                            lastPlayback = session
-                            hasPublishedPlayback = true
-                        }
-                    } else if hasPublishedPlayback {
-                        let tombstone: SyncRecord<PlaybackSession> = try makeRecord(nil)
-                        try await repository.writePlayback(tombstone, connectionID: connection)
-                        guard enabled, connection == connectionID else { return }
-                        lastPlayback = nil
-                        hasPublishedPlayback = false
-                    }
-                }
-            } catch {
-                guard enabled, connection == connectionID else { return }
-                domainsNeedingRead.insert(.playback)
-                failures.append(error)
-            }
-
-            do {
-                if reads.contains(.login) {
-                    let records = try await repository.read(.login, as: SyncedLogin.self, connectionID: connection)
-                    guard enabled, connection == connectionID else { return }
-                    remoteLogins = records
-                    for record in records { counter = max(counter, record.revision.counter) }
-                    let incoming = SyncedLogin.availableAccounts(in: records, excluding: deviceID)
-                    if !logins.elementsEqual(incoming, by: { $0.revision == $1.revision }) { logins = incoming }
-                }
-                let previousLogin = remoteLogins.filter { $0.id == deviceID }.max { $0.revision < $1.revision }
-                if loginEnabled, let profile = AccountStore.shared.profile,
-                   AccountStore.shared.authenticatedAccountID == profile.userId {
-                    let login = SyncedLogin(accountID: profile.userId, nickname: profile.nickname,
-                                            cookies: NeteaseClient.shared.authenticationCookies())
-                    try login.validate()
-                    if login != lastLogin || previousLogin?.payload != login {
-                        let record = try makeRecord(login)
-                        try await repository.write(record, domain: .login, connectionID: connection)
-                        guard enabled, connection == connectionID else { return }
-                        remoteLogins.removeAll { $0.id == deviceID }
-                        remoteLogins.append(record)
-                        lastLogin = login
-                        hasPublishedLogin = true
-                    }
-                } else if (!loginEnabled || !AccountStore.shared.hasAuthCookie),
-                          hasPublishedLogin || previousLogin?.payload != nil {
-                    let tombstone: SyncRecord<SyncedLogin> = try makeRecord(nil)
-                    try await repository.write(tombstone, domain: .login, connectionID: connection)
-                    guard enabled, connection == connectionID else { return }
-                    remoteLogins.removeAll { $0.id == deviceID }
-                    remoteLogins.append(tombstone)
-                    hasPublishedLogin = false
-                    lastLogin = nil
-                }
-            } catch {
-                guard enabled, connection == connectionID else { return }
-                domainsNeedingRead.insert(.login)
-                // Credentials are no longer offered when their repository cannot be read.
-                logins = []
-                failures.append(error)
-            }
-            if failures.contains(where: { error in
-                if case SyncError.unavailable = error { return true }
-                return false
-            }) {
-                connected = false
-                sessions = []
-                logins = []
-                remoteLogins = []
-                refreshTask?.cancel()
-                refreshTask = nil
-                await repository.disconnect(connectionID: connection)
-                guard enabled, connection == connectionID else { return }
-            }
-            errorMessage = failures.isEmpty ? nil : Set(failures.map(\.localizedDescription)).sorted().joined(separator: "\n")
-        } while syncPending && enabled && connected
+        return syncTask
     }
 
-    private func nextRevision() throws -> SyncRevision {
-        let (next, overflow) = counter.addingReportingOverflow(1)
-        guard !overflow else { throw SyncError.invalidRecord }
-        counter = next
-        defaults.set(NSNumber(value: counter), forKey: Keys.counter)
-        return SyncRevision(counter: counter, deviceID: deviceID)
-    }
-
-    private func makeRecord<T: Codable>(_ payload: T?) throws -> SyncRecord<T> {
-        SyncRecord(revision: try nextRevision(), deviceName: deviceName, payload: payload)
-    }
-
-    private func capturePreferenceChanges() throws {
-        let current = SettingsManager.shared.syncPreferences
-        guard current != observedPreferences else { return }
-        for (key, value) in current where observedPreferences[key] != value {
-            preferences.fields[key] = PreferenceEdit(value: value, revision: try nextRevision())
-            preferencesNeedUpload = true
+    private func synchronizeDomains(
+        _ request: SyncRequest, connectionID: UUID, clock: SyncRevisionClock
+    ) async -> SyncRequest {
+        var retryRequest = SyncRequest()
+        var failures: [Error] = []
+        for domain in SyncRepository.Domain.allCases
+        where request.refreshDomains.contains(domain) || request.publicationDomains.contains(domain) {
+            guard enabled, connected, self.connectionID == connectionID, !Task.isCancelled else { return SyncRequest() }
+            do {
+                switch domain {
+                case .preferences:
+                    try await preferencesSync.synchronize(
+                        reading: request.refreshDomains.contains(domain),
+                        repository: repository, connectionID: connectionID, clock: clock)
+                case .playback:
+                    try await synchronizePlayback(
+                        refreshing: request.refreshDomains.contains(domain),
+                        publishing: request.publicationDomains.contains(domain), connectionID: connectionID, clock: clock)
+                case .login:
+                    if request.refreshDomains.contains(domain) {
+                        try await loginSync.read(repository: repository, connectionID: connectionID, clock: clock)
+                        try Task.checkCancellation()
+                    }
+                    // Read consent after repository I/O, not before it suspends.
+                    let incomingLogins = try await loginSync.publish(
+                        enabled: loginEnabled,
+                        repository: repository, connectionID: connectionID, clock: clock)
+                    try Task.checkCancellation()
+                    if !logins.elementsEqual(incomingLogins, by: { $0.revision == $1.revision }) { logins = incomingLogins }
+                }
+            } catch {
+                guard enabled, connectionID == self.connectionID else { return SyncRequest() }
+                retryRequest.refreshDomains.insert(domain)
+                retryRequest.publicationDomains.insert(domain)
+                if domain == .login, !logins.isEmpty { logins = [] }
+                failures.append(error)
+            }
         }
-        observedPreferences = current
-        try savePreferences()
+        guard enabled, connected, self.connectionID == connectionID, !Task.isCancelled else { return SyncRequest() }
+        let message =
+            failures.isEmpty ? nil : Set(failures.map(\.localizedDescription)).sorted().joined(separator: "\n")
+        if failures.contains(where: {
+            if case SyncError.unavailable = $0 { return true }
+            return false
+        }) {
+            let previousConnectionID = invalidateConnection()
+            errorMessage = message
+            await repository.disconnect(connectionID: previousConnectionID)
+            return SyncRequest()
+        }
+        if errorMessage != message { errorMessage = message }
+        return retryRequest
     }
 
-    private func savePreferences() throws {
-        let saved = LocalPreferences(edits: preferences, observed: observedPreferences)
-        defaults.set(try JSONEncoder().encode(saved), forKey: Keys.preferences)
+    private func synchronizePlayback(
+        refreshing shouldRefreshPlayback: Bool, publishing shouldPublishPlayback: Bool,
+        connectionID: UUID, clock: SyncRevisionClock
+    ) async throws {
+        try Task.checkCancellation()
+        if shouldRefreshPlayback {
+            let receivedPlayback = try await repository.readPlayback(connectionID: connectionID)
+            try Task.checkCancellation()
+            let records = receivedPlayback.records
+            clock.observe(receivedPlayback.counter)
+            clock.persistCounter()
+            hasPublishedPlayback = records.contains { $0.id == clock.deviceID && $0.payload != nil }
+            let incomingSessions = records.filter { $0.id != clock.deviceID && $0.payload != nil }
+                .sorted { $0.updatedAt > $1.updatedAt }
+            if !sessions.elementsEqual(incomingSessions, by: { $0.revision == $1.revision }) { sessions = incomingSessions }
+        }
+        if shouldPublishPlayback {
+            let currentPlayback = playbackContext()
+            if let session = currentPlayback.session,
+                let accountID = currentPlayback.accountID, accountID > 0, session.accountID == accountID
+            {
+                if !hasPublishedPlayback || session.progress != lastPublishedPlayback?.progress || session != lastPublishedPlayback {
+                    let record = try clock.makeRecord(session)
+                    try await repository.writePlayback(record, connectionID: connectionID)
+                    try Task.checkCancellation()
+                    lastPublishedPlayback = session
+                    hasPublishedPlayback = true
+                }
+            } else if hasPublishedPlayback {
+                let tombstone: SyncRecord<PlaybackSession> = try clock.makeRecord(nil)
+                try await repository.writePlayback(tombstone, connectionID: connectionID)
+                try Task.checkCancellation()
+                lastPublishedPlayback = nil
+                hasPublishedPlayback = false
+            }
+        }
     }
 
-    private func scheduleRefresh() {
-        guard foreground || PlayerService.shared.isPlaying, enabled, connected else {
-            refreshTask?.cancel()
-            refreshTask = nil
+    // The event value is used directly: @Published emits before isPlaying changes.
+    func updatePeriodicRefreshTask(isPlaying: Bool) {
+        guard foreground || isPlaying, enabled, connected else {
+            periodicRefreshTask?.cancel()
+            periodicRefreshTask = nil
             return
         }
-        guard refreshTask == nil else { return }
-        refreshTask = Task { [weak self] in
+        guard periodicRefreshTask == nil else { return }
+        let activeConnectionID = connectionID
+        let sleep = periodicRefreshSleep
+        periodicRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(20)) }
-                catch { return }
-                guard let self else { return }
-                await self.synchronize()
+                do { try await sleep() } catch { return }
+                guard !Task.isCancelled, let self, self.enabled, self.connected,
+                    self.connectionID == activeConnectionID
+                else { return }
+                await self.synchronizeNow()
+                guard self.connectionID == activeConnectionID else { return }
             }
         }
     }
 
     private func observeDirectory() async {
-        let connection = connectionID
+        let activeConnectionID = connectionID
         await repository.observeChanges { [weak self] url in
             Task { @MainActor in
-                guard let self, self.enabled, self.connected, self.connectionID == connection,
-                      self.foreground || PlayerService.shared.isPlaying else { return }
+                guard let self, self.enabled, self.connected, self.connectionID == activeConnectionID,
+                    self.foreground || PlayerService.shared.isPlaying
+                else { return }
+                let affectedDomains: Set<SyncRepository.Domain>
                 if url.lastPathComponent == "Queues" || url.deletingLastPathComponent().lastPathComponent == "Queues" {
-                    self.directoryDomains.insert(.playback)
+                    affectedDomains = [.playback]
                 } else if let domain = SyncRepository.Domain(rawValue: url.deletingPathExtension().lastPathComponent) {
-                    self.directoryDomains.insert(domain)
+                    affectedDomains = [domain]
                 } else {
-                    self.directoryDomains.formUnion(SyncRepository.Domain.allCases)
+                    affectedDomains = Set(SyncRepository.Domain.allCases)
                 }
-                // Collect a burst in one bounded window, including our own writes.
-                guard self.directoryTask == nil else { return }
-                self.directoryTask = Task { [weak self] in
-                    do { try await Task.sleep(for: .milliseconds(600)) }
-                    catch { return }
-                    guard let self, self.enabled, self.connected, self.connectionID == connection else { return }
-                    let domains = self.directoryDomains
-                    self.directoryDomains.removeAll()
-                    self.directoryTask = nil
-                    await self.synchronize(publishingPlayback: false, refreshing: domains)
-                }
+                self.scheduleSync(SyncRequest(refreshDomains: affectedDomains))
             }
         }
     }
 
     private func rememberIdentity() throws {
         if let token = FileManager.default.ubiquityIdentityToken {
-            defaults.set(try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: false),
-                         forKey: Keys.identity)
-        } else { defaults.removeObject(forKey: Keys.identity) }
+            defaults.set(
+                try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: false),
+                forKey: Keys.identity)
+        } else {
+            defaults.removeObject(forKey: Keys.identity)
+        }
     }
 
     @discardableResult
@@ -565,7 +519,8 @@ final class SyncService: ObservableObject {
             let unarchiver = try NSKeyedUnarchiver(forReadingFrom: saved)
             unarchiver.requiresSecureCoding = false
             defer { unarchiver.finishDecoding() }
-            guard let previous = unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSObjectProtocol else {
+            guard let previous = unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSObjectProtocol
+            else {
                 throw SyncError.invalidRecord
             }
             if let current = FileManager.default.ubiquityIdentityToken, previous.isEqual(current) { return false }

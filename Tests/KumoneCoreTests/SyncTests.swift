@@ -1,10 +1,98 @@
+import Combine
 import Foundation
 import Security
+import Synchronization
 import Testing
 @testable import KumoneCore
 
-@Suite("Cross-device sync")
+private final class CountingSyncDefaults: UserDefaults, @unchecked Sendable {
+    let writeCountsByKey = Mutex<[String: Int]>([:])
+
+    override func set(_ value: Any?, forKey key: String) {
+        super.set(value, forKey: key)
+        writeCountsByKey.withLock { $0[key, default: 0] += 1 }
+    }
+}
+
+@MainActor
+private final class SyncPeriodicClock {
+    let waits = AsyncStream<CheckedContinuation<Void, Never>>.makeStream()
+    private(set) var sleepCount = 0
+
+    // Deliberately wake cancelled waits too, to exercise stale-loop protection.
+    func sleep() async {
+        sleepCount += 1
+        await withCheckedContinuation { waits.continuation.yield($0) }
+    }
+}
+
+// Preference tests temporarily edit the shared SettingsManager.
+@Suite("Cross-device sync", .serialized)
 struct SyncTests {
+    @Test @MainActor func preferencesRestoreWithoutEchoAndPersistEditsBeforeCloudFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-preference-commit-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-preference-commit-defaults-\(UUID())"
+        let defaults = try #require(CountingSyncDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = SettingsManager.shared
+        let originalTranslation = settings.showLyricsTranslation
+        let originalVerbatim = settings.verbatimLyrics
+        defer {
+            settings.showLyricsTranslation = originalTranslation
+            settings.verbatimLyrics = originalVerbatim
+        }
+        settings.showLyricsTranslation = false
+        settings.verbatimLyrics = false
+        let device = UUID()
+        let remote = UUID()
+        let connection = UUID()
+        let repository = SyncRepository()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let incoming = SyncedPreferences(fields: [
+            SettingsManager.Keys.showTranslation: .init(value: .boolean(true), revision: .init(counter: 100, deviceID: remote)),
+            SettingsManager.Keys.verbatimLyrics: .init(value: .boolean(true), revision: .init(counter: 101, deviceID: remote))
+        ])
+        try await repository.write(SyncRecord(revision: .init(counter: 102, deviceID: remote), deviceName: "Remote", payload: incoming),
+                                   domain: .preferences, connectionID: connection)
+        let initialPreferencesSync = PreferencesSync(defaults: defaults, settings: settings)
+        let clock = SyncRevisionClock(defaults: defaults, deviceID: device, deviceName: "Local")
+        try await initialPreferencesSync.synchronize(reading: true, repository: repository, connectionID: connection, clock: clock)
+        #expect(settings.showLyricsTranslation && settings.verbatimLyrics)
+        let localPreferencesFile = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/preferences.json")
+        let publishedData = try Data(contentsOf: localPreferencesFile)
+        defaults.writeCountsByKey.withLock { $0.removeAll() }
+        let restoredPreferencesSync = PreferencesSync(defaults: defaults, settings: settings)
+        try restoredPreferencesSync.restore()
+        let nextClock = SyncRevisionClock(defaults: defaults, deviceID: device, deviceName: "Local")
+        try await restoredPreferencesSync.synchronize(reading: true, repository: repository, connectionID: connection, clock: nextClock)
+        #expect(try Data(contentsOf: localPreferencesFile) == publishedData)
+        #expect(defaults.writeCountsByKey.withLock { $0.isEmpty })
+
+        settings.showLyricsTranslation = false
+        settings.verbatimLyrics = false
+        try await restoredPreferencesSync.synchronize(reading: false, repository: repository, connectionID: connection, clock: nextClock)
+        #expect(defaults.writeCountsByKey.withLock { $0["sync.preferences"] } == 1)
+        #expect(defaults.writeCountsByKey.withLock { $0["sync.counter"] } == 2)
+        let beforeFailure = try Data(contentsOf: localPreferencesFile)
+        await repository.disconnect(connectionID: connection)
+        settings.showLyricsTranslation = true
+        await #expect(throws: CancellationError.self) {
+            try await restoredPreferencesSync.synchronize(reading: false, repository: repository, connectionID: connection, clock: nextClock)
+        }
+        #expect(try Data(contentsOf: localPreferencesFile) == beforeFailure)
+        // A process restart must recover the edit that could not reach the cloud.
+        let restartedPreferencesSync = PreferencesSync(defaults: defaults, settings: settings)
+        try restartedPreferencesSync.restore()
+        let restartedClock = SyncRevisionClock(defaults: defaults, deviceID: device, deviceName: "Local")
+        _ = try await repository.connect(to: root, connectionID: connection)
+        try await restartedPreferencesSync.synchronize(reading: true, repository: repository, connectionID: connection, clock: restartedClock)
+        let records = try await repository.read(.preferences, as: SyncedPreferences.self, connectionID: connection)
+        let localRecord = try #require(records.first { $0.id == device })
+        #expect(localRecord.payload?.fields[SettingsManager.Keys.showTranslation]?.value == .boolean(true))
+        #expect(localRecord.payload?.fields[SettingsManager.Keys.verbatimLyrics]?.value == .boolean(false))
+        await repository.disconnect(connectionID: connection)
+    }
     @Test(arguments: ["invalid-bookmark", "deleted-folder", "invalid-manifest"])
     @MainActor func failedRestoreCanReconnectWithoutDiscardingTheOldAuthorization(failure: String) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-restore-error-\(UUID())")
@@ -67,14 +155,14 @@ struct SyncTests {
         let folder = root.appendingPathComponent("Kumone")
         try FileManager.default.removeItem(at: folder)
         if replacedWithFile { try Data("not a directory".utf8).write(to: folder) }
-        await service.synchronize()
+        await service.synchronizeNow()
         #expect(service.enabled && !service.connected)
         #expect(service.sessions.isEmpty && service.logins.isEmpty)
         #expect(service.errorMessage == SyncError.unavailable.localizedDescription)
         #expect(defaults.data(forKey: "sync.directoryBookmark") == bookmark)
         #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("Devices").path))
         // Further player events must not recreate or overwrite the removed folder.
-        await service.synchronize(refreshing: [])
+        await service.synchronizeNow(refreshing: [])
         if replacedWithFile { #expect(try Data(contentsOf: folder) == Data("not a directory".utf8)) }
         else { #expect(!FileManager.default.fileExists(atPath: folder.path)) }
         await service.connect(to: root.appendingPathComponent("Replacement"))
@@ -111,19 +199,54 @@ struct SyncTests {
         session = PlaybackSession(accountID: 42, queue: [track], orderedQueue: [track],
                                   currentIndex: 0, currentTrack: track, playNext: [], source: .none,
                                   repeatMode: "off", shuffled: false, automaticOrder: false, isFM: false, progress: 30)
-        await service.synchronize(refreshing: [])
+        await service.synchronizeNow(refreshing: [])
         let published = try JSONDecoder().decode(SyncRecord<PlaybackCheckpoint>.self, from: Data(contentsOf: file))
         #expect(published.payload?.progress == 30)
+        // A stationary player must repair an externally removed pointer too.
+        try FileManager.default.removeItem(at: file)
+        await service.synchronizeNow(refreshing: [.playback], publishing: [.playback])
+        let repaired = try JSONDecoder().decode(SyncRecord<PlaybackCheckpoint>.self, from: Data(contentsOf: file))
+        #expect(repaired.payload?.progress == 30 && repaired.revision > published.revision)
         // Keep the old queue's account provenance; losing authentication must
         // withdraw the offer without changing the player's local session.
         currentAccount = nil
-        await service.synchronize(refreshing: [])
+        await service.synchronizeNow(refreshing: [])
         let bytes = try Data(contentsOf: file)
         let withdrawn = try JSONDecoder().decode(SyncRecord<PlaybackCheckpoint>.self, from: bytes)
         #expect(withdrawn.payload == nil && withdrawn.revision > published.revision)
-        await service.synchronize()
+        await service.synchronizeNow()
         #expect(try Data(contentsOf: file) == bytes)
         await service.disable()
+    }
+
+    @Test @MainActor func loginWithdrawalSurvivesAnUnreadableOwnRecordAndDoesNotEchoAfterReset() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-login-withdrawal-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-login-withdrawal-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repository = SyncRepository()
+        let connection = UUID()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let device = UUID()
+        let login = SyncedLogin(accountID: 42, nickname: "Fixture", cookies: ["MUSIC_U": "synthetic-session"])
+        try await repository.write(SyncRecord(revision: .init(counter: 100, deviceID: device), deviceName: "Local", payload: login),
+                                   domain: .login, connectionID: connection)
+        let loginSync = LoginSync()
+        let clock = SyncRevisionClock(defaults: defaults, deviceID: device, deviceName: "Local")
+        try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
+        let loginFile = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/login.json")
+        try Data("broken".utf8).write(to: loginFile, options: .atomic)
+        try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
+        _ = try await loginSync.publish(enabled: false, repository: repository, connectionID: connection, clock: clock)
+        let writtenBytes = try Data(contentsOf: loginFile)
+        let withdrawnRecord = try JSONDecoder().decode(SyncRecord<SyncedLogin>.self, from: writtenBytes)
+        #expect(withdrawnRecord.payload == nil && withdrawnRecord.revision.counter > 100)
+        loginSync.resetConnection()
+        try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
+        _ = try await loginSync.publish(enabled: false, repository: repository, connectionID: connection, clock: clock)
+        #expect(try Data(contentsOf: loginFile) == writtenBytes)
+        await repository.disconnect(connectionID: connection)
     }
 
     @Test @MainActor func reconnectWithdrawsAnOldOfferEvenWhenItsQueueIsMissing() async throws {
@@ -157,7 +280,7 @@ struct SyncTests {
         #expect(withdrawn.payload == nil && withdrawn.revision.counter > 50)
         #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
         #expect(try Data(contentsOf: remoteFile) == remoteBytes)
-        await service.synchronize()
+        await service.synchronizeNow()
         #expect(service.errorMessage == nil)
         await service.disable()
         await repository.disconnect(connectionID: connection)
@@ -350,11 +473,168 @@ struct SyncTests {
             try await repository.writePlayback(playbackRecord, connectionID: connection)
         }
         // A local-only round still retries a domain whose preceding read failed.
-        await service.synchronize(publishingPlayback: false, refreshing: [])
+        await service.synchronizeNow(refreshing: [], publishing: [])
         #expect(service.errorMessage == nil)
         #expect(service.sessions.map(\.id) == [remote])
         await service.disable()
         await repository.disconnect(connectionID: connection)
+    }
+
+    @Test @MainActor func directedPreferenceSyncSkipsPlaybackAndUnrelatedFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-directed-sync-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-directed-sync-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let device = UUID()
+        var playbackReads = 0
+        let service = SyncService(defaults: defaults, deviceIdentity: { device }, playbackContext: {
+            playbackReads += 1
+            return (nil, nil)
+        })
+        await service.connect(to: root)
+        await service.setForeground(false)
+        playbackReads = 0
+        let folder = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)")
+        try Data("broken".utf8).write(to: folder.appendingPathComponent("playback.json"), options: .atomic)
+        let saved = defaults.data(forKey: "sync.preferences")
+        var notifications = 0
+        let observer = service.objectWillChange.sink { notifications += 1 }
+        await service.synchronizeNow(refreshing: [.preferences], publishing: [.preferences])
+        #expect(playbackReads == 0)
+        #expect(service.errorMessage == nil)
+        #expect(defaults.data(forKey: "sync.preferences") == saved)
+        #expect(notifications == 0)
+        observer.cancel()
+        await service.disable()
+    }
+
+    @Test @MainActor func overlappingConnectionsKeepOnlyTheLatestDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-connect-race-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-connect-race-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let identities = AsyncStream<CheckedContinuation<UUID, Error>>.makeStream()
+        let service = SyncService(defaults: defaults, deviceIdentity: {
+            try await withCheckedThrowingContinuation { identities.continuation.yield($0) }
+        }, playbackContext: { (nil, nil) })
+        var iterator = identities.stream.makeAsyncIterator()
+        let oldFolder = root.appendingPathComponent("Old")
+        let newFolder = root.appendingPathComponent("New")
+        let firstConnectTask = Task { await service.connect(to: oldFolder) }
+        let oldIdentity = try #require(await iterator.next())
+        let secondConnectTask = Task { await service.connect(to: newFolder) }
+        let newIdentity = try #require(await iterator.next())
+        let device = UUID()
+        newIdentity.resume(returning: device)
+        await secondConnectTask.value
+        oldIdentity.resume(returning: device)
+        await firstConnectTask.value
+        identities.continuation.finish()
+        #expect(service.connected && service.errorMessage == nil)
+        #expect(!FileManager.default.fileExists(atPath: oldFolder.path))
+        #expect(FileManager.default.fileExists(atPath: newFolder.appendingPathComponent("Kumone/Devices/\(device.uuidString)/preferences.json").path))
+        await service.disable()
+    }
+
+    @Test @MainActor func overlappingDomainRequestsDrainWithoutPublishingTwice() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-request-drain-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-request-drain-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let device = UUID()
+        let track = try JSONDecoder().decode(Track.self, from: Data("{\"id\":1}".utf8))
+        let session = PlaybackSession(accountID: 42, queue: [track], orderedQueue: [track], currentIndex: 0,
+                                      currentTrack: track, playNext: [], source: .none, repeatMode: "off",
+                                      shuffled: false, automaticOrder: false, isFM: false, progress: 20)
+        var playbackReads = 0
+        let service = SyncService(defaults: defaults, deviceIdentity: { device }, playbackContext: {
+            playbackReads += 1
+            return (session, 42)
+        })
+        await service.connect(to: root)
+        await service.setForeground(false)
+        playbackReads = 0
+        async let preferencesSyncTask: Void = service.synchronizeNow(refreshing: [.preferences], publishing: [.preferences])
+        async let playbackSyncTask: Void = service.synchronizeNow(refreshing: [], publishing: [.playback])
+        await preferencesSyncTask
+        await playbackSyncTask
+        #expect(playbackReads == 1)
+        #expect(service.errorMessage == nil)
+        await service.disable()
+    }
+
+    @Test @MainActor func periodicRefreshFollowsActivityAndRejectsOldConnectionWakeups() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-periodic-sync-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-periodic-sync-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = SyncPeriodicClock()
+        defer { clock.waits.continuation.finish() }
+        var waits = clock.waits.stream.makeAsyncIterator()
+        var playbackReads = 0
+        let service = SyncService(defaults: defaults, deviceIdentity: { UUID() }, playbackContext: {
+            playbackReads += 1
+            return (nil, nil)
+        }, periodicRefreshSleep: { await clock.sleep() })
+
+        await service.connect(to: root.appendingPathComponent("First"))
+        let firstWait = try #require(await waits.next())
+        for _ in 0..<3 { await service.synchronizeNow() }
+        #expect(clock.sleepCount == 1)
+
+        await service.setForeground(false)
+        firstWait.resume()
+        await service.synchronizeNow()
+        #expect(clock.sleepCount == 1)
+
+        service.updatePeriodicRefreshTask(isPlaying: true)
+        let playbackWait = try #require(await waits.next())
+        service.updatePeriodicRefreshTask(isPlaying: true)
+        #expect(clock.sleepCount == 2)
+        service.updatePeriodicRefreshTask(isPlaying: false)
+        playbackWait.resume()
+
+        await service.setForeground(true)
+        let oldConnectionWait = try #require(await waits.next())
+        await service.disable()
+        await service.connect(to: root.appendingPathComponent("Second"))
+        let currentWait = try #require(await waits.next())
+        oldConnectionWait.resume()
+        await service.synchronizeNow()
+        #expect(clock.sleepCount == 4)
+
+        playbackReads = 0
+        currentWait.resume()
+        let nextWait = try #require(await waits.next())
+        #expect(playbackReads == 1)
+        #expect(clock.sleepCount == 5)
+        #expect(service.connected && service.errorMessage == nil)
+        await service.disable()
+        nextWait.resume()
+    }
+
+    @Test @MainActor func sleepingPeriodicRefreshDoesNotRetainTheService() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-periodic-release-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-periodic-release-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = SyncPeriodicClock()
+        defer { clock.waits.continuation.finish() }
+        var waits = clock.waits.stream.makeAsyncIterator()
+        var service: SyncService? = SyncService(defaults: defaults, deviceIdentity: { UUID() },
+                                               playbackContext: { (nil, nil) },
+                                               periodicRefreshSleep: { await clock.sleep() })
+        await service?.connect(to: root)
+        let sleeping = try #require(await waits.next())
+        weak var releasedService = service
+        service = nil
+        #expect(releasedService == nil)
+        sleeping.resume()
     }
 
     @Test func concurrentPreferencesMergePerFieldAndConvergeInEitherOrder() throws {

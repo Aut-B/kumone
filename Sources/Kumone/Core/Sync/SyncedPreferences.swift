@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 enum PreferenceValue: Codable, Equatable {
@@ -20,6 +21,21 @@ struct SyncedPreferences: Codable, Equatable {
 }
 
 extension SettingsManager {
+    /// Keep the portable preference contract beside its projection and validation.
+    var syncPreferenceChanges: AnyPublisher<Void, Never> {
+        Publishers.MergeMany([
+            $audioQuality.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $appearance.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $showLyricsTranslation.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $lyricsAnnotation.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $verbatimLyrics.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $enableUnblock.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $enabledAudioSourceIDs.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $showMainWindowAmbientBackground.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            $mainWindowAmbientBackgroundIntensity.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+        ]).eraseToAnyPublisher()
+    }
+
     /// Explicit portable preferences; cache policy, output routing and platform
     /// layouts stay local. Unknown fields remain in SyncedPreferences for newer apps.
     var syncPreferences: [String: PreferenceValue] {
