@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 import Security
 import Synchronization
@@ -24,6 +25,29 @@ private final class SyncPeriodicClock {
         sleepCount += 1
         await withCheckedContinuation { waits.continuation.yield($0) }
     }
+}
+
+private let fixtureLoginKey = LoginKey(id: UUID(), secret: SymmetricKey(size: .bits256))
+
+extension SyncedLogin {
+    /// Sealed under the fixture key. Cookies without `MUSIC_U` cannot be
+    /// sealed and stand in for an invalid offer.
+    init(accountID: Int, nickname: String, cookies: [String: String]) {
+        if let sealed = try? fixtureLoginKey.seal(accountID: accountID, nickname: nickname, cookies: cookies) {
+            self = sealed
+        } else {
+            self.init(accountID: accountID, nickname: nickname, keyID: fixtureLoginKey.id, sealedCookies: Data())
+        }
+    }
+
+    var cookies: [String: String] { (try? fixtureLoginKey.open(self)) ?? [:] }
+}
+
+/// Offers are only listed under the folder's current key.
+private func writeFixtureLoginKey(to repository: SyncRepository, connectionID: UUID) async throws {
+    let file = LoginKeyFile(schemaVersion: 1, id: fixtureLoginKey.id, salt: Data(count: 16), rounds: 1,
+                            verifier: fixtureLoginKey.verifier)
+    try await repository.writeLoginKey(file, connectionID: connectionID)
 }
 
 // Preference tests temporarily edit the shared SettingsManager.
@@ -147,6 +171,7 @@ struct SyncTests {
         let login = SyncedLogin(accountID: 42, nickname: "Fixture", cookies: ["MUSIC_U": "synthetic-session"])
         try await repository.write(SyncRecord(revision: .init(counter: 2, deviceID: remote), deviceName: "Fixture", payload: login),
                                    domain: .login, connectionID: connection)
+        try await writeFixtureLoginKey(to: repository, connectionID: connection)
         await repository.disconnect(connectionID: connection)
         let service = SyncService(defaults: defaults, deviceIdentity: { UUID() }, playbackContext: { (session, 42) })
         await service.connect(to: root)
@@ -235,12 +260,9 @@ struct SyncTests {
         let loginSync = LoginSync()
         let clock = SyncRevisionClock(defaults: defaults, deviceID: device, deviceName: "Local")
         try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
-        #expect(loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
         let loginFile = root.appendingPathComponent("Kumone/Devices/\(device.uuidString)/login.json")
         try Data("broken".utf8).write(to: loginFile, options: .atomic)
         try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
-        // Withdrawal responsibility is not proof that the current session is shared.
-        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
         _ = try await loginSync.publish(enabled: false, repository: repository, connectionID: connection, clock: clock)
         let writtenBytes = try Data(contentsOf: loginFile)
         let withdrawnRecord = try JSONDecoder().decode(SyncRecord<SyncedLogin>.self, from: writtenBytes)
@@ -252,7 +274,7 @@ struct SyncTests {
         await repository.disconnect(connectionID: connection)
     }
 
-    @Test @MainActor func publishedLoginSessionRequiresThisDevicesLatestMatchingToken() async throws {
+    @Test @MainActor func onlyAnotherDevicesOfferKeepsASessionAlive() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-login-revocation-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let suite = "kumone-login-revocation-defaults-\(UUID())"
@@ -263,29 +285,109 @@ struct SyncTests {
         let connection = UUID()
         let repository = SyncRepository()
         _ = try await repository.connect(to: root, connectionID: connection)
-        let loginSync = LoginSync()
+        let loginSync = LoginSync(keyStore: .memory())
         let clock = SyncRevisionClock(defaults: defaults, deviceID: device, deviceName: "Local")
         let login = SyncedLogin(accountID: 42, nickname: "Fixture", cookies: ["MUSIC_U": "synthetic-shared"])
-        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
-        try await repository.write(SyncRecord(revision: .init(counter: 1, deviceID: remote), deviceName: "Remote", payload: login),
+        #expect(!loginSync.isAccountSharedElsewhere(accountID: 42, deviceID: device))
+        // This device's own offer is no reason to keep its session alive.
+        try await repository.write(SyncRecord(revision: .init(counter: 1, deviceID: device), deviceName: "Local", payload: login),
                                    domain: .login, connectionID: connection)
         try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
-        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
-        try await repository.write(SyncRecord(revision: .init(counter: 2, deviceID: device), deviceName: "Local", payload: login),
+        #expect(!loginSync.isAccountSharedElsewhere(accountID: 42, deviceID: device))
+        try await repository.write(SyncRecord(revision: .init(counter: 2, deviceID: remote), deviceName: "Remote", payload: login),
                                    domain: .login, connectionID: connection)
         try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
-        #expect(loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
-        #expect(!loginSync.hasPublishedSession(cookies: [:], deviceID: device))
-        #expect(!loginSync.hasPublishedSession(cookies: ["MUSIC_U": ""], deviceID: device))
-        #expect(!loginSync.hasPublishedSession(cookies: ["MUSIC_U": "synthetic-new-login"], deviceID: device))
+        #expect(loginSync.isAccountSharedElsewhere(accountID: 42, deviceID: device))
+        #expect(!loginSync.isAccountSharedElsewhere(accountID: 7, deviceID: device))
         loginSync.resetConnection()
-        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
+        #expect(!loginSync.isAccountSharedElsewhere(accountID: 42, deviceID: device))
         try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
-        #expect(loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
-        let withdrawn = SyncRecord<SyncedLogin>(revision: .init(counter: 3, deviceID: device), deviceName: "Local", payload: nil)
+        #expect(loginSync.isAccountSharedElsewhere(accountID: 42, deviceID: device))
+        // Once the other device signs out, the last one out revokes.
+        let withdrawn = SyncRecord<SyncedLogin>(revision: .init(counter: 3, deviceID: remote), deviceName: "Remote", payload: nil)
         try await repository.write(withdrawn, domain: .login, connectionID: connection)
         try await loginSync.read(repository: repository, connectionID: connection, clock: clock)
-        #expect(!loginSync.hasPublishedSession(cookies: login.cookies, deviceID: device))
+        #expect(!loginSync.isAccountSharedElsewhere(accountID: 42, deviceID: device))
+        await repository.disconnect(connectionID: connection)
+    }
+
+    @Test func sealedLoginsKeepTheSessionOutOfTheFolder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-login-sealed-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = SyncRepository()
+        let connection = UUID()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let cookies = ["MUSIC_U": "synthetic-secret-session", "__csrf": "synthetic-csrf"]
+        let login = try fixtureLoginKey.seal(accountID: 42, nickname: "Fixture", cookies: cookies)
+        let record = SyncRecord(revision: .init(counter: 1, deviceID: UUID()), deviceName: "Mac", payload: login)
+        try await repository.write(record, domain: .login, connectionID: connection)
+        let bytes = try Data(contentsOf: root.appendingPathComponent("Kumone/Devices/\(record.id.uuidString)/login.json"))
+        let text = try #require(String(data: bytes, encoding: .utf8))
+        #expect(!text.contains("synthetic-secret-session") && !text.contains("synthetic-csrf"))
+        #expect(try fixtureLoginKey.open(login) == cookies)
+
+        // The account is authenticated with the cookies; it cannot be swapped.
+        let relabeled = SyncedLogin(accountID: 7, nickname: "Fixture", keyID: login.keyID, sealedCookies: login.sealedCookies)
+        #expect(throws: SyncError.self) { try fixtureLoginKey.open(relabeled) }
+        let otherKey = LoginKey(id: fixtureLoginKey.id, secret: SymmetricKey(size: .bits256))
+        #expect(throws: SyncError.self) { try otherKey.open(login) }
+        let replacedKey = LoginKey(id: UUID(), secret: fixtureLoginKey.secret)
+        #expect(throws: SyncError.loginLocked) { try replacedKey.open(login) }
+        await repository.disconnect(connectionID: connection)
+    }
+
+    @Test func loginKeyUnlocksOnlyWithItsPassphrase() throws {
+        #expect(throws: SyncError.weakPassphrase) { try LoginKeyFile.make(passphrase: "short", rounds: 1_000) }
+        let (file, key) = try LoginKeyFile.make(passphrase: "correct horse battery", rounds: 1_000)
+        let unlocked = try file.unlock(passphrase: "correct horse battery")
+        #expect(unlocked.id == key.id && unlocked.verifier == key.verifier)
+        #expect(throws: SyncError.wrongPassphrase) { try file.unlock(passphrase: "correct horse battery!") }
+        let decoded = try JSONDecoder().decode(LoginKeyFile.self, from: JSONEncoder().encode(file))
+        #expect(decoded == file)
+        // A shared folder must not be able to stall a device with its round count.
+        let hostile = LoginKeyFile(schemaVersion: 1, id: file.id, salt: file.salt, rounds: Int.max, verifier: file.verifier)
+        #expect(throws: SyncError.invalidRecord) { try hostile.unlock(passphrase: "correct horse battery") }
+    }
+
+    @Test @MainActor func lockedDevicesOfferNothingUntilTheyEnterThePassphrase() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kumone-login-key-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "kumone-login-key-defaults-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repository = SyncRepository()
+        let connection = UUID()
+        _ = try await repository.connect(to: root, connectionID: connection)
+        let mac = LoginSync(keyStore: .memory())
+        let phoneStore = LoginKeyStore.memory()
+        let phone = LoginSync(keyStore: phoneStore)
+        let phoneClock = SyncRevisionClock(defaults: defaults, deviceID: UUID(), deviceName: "iPhone")
+        try await phone.read(repository: repository, connectionID: connection, clock: phoneClock)
+        #expect(phone.keyState == .unset)
+
+        try await mac.createKey(passphrase: "correct horse battery", repository: repository, connectionID: connection)
+        #expect(mac.keyState == .unlocked)
+        // An offer sealed under any other key is never listed.
+        let stale = SyncedLogin(accountID: 42, nickname: "Fixture", cookies: ["MUSIC_U": "synthetic-session"])
+        try await repository.write(SyncRecord(revision: .init(counter: 1, deviceID: UUID()), deviceName: "Mac", payload: stale),
+                                   domain: .login, connectionID: connection)
+        try await phone.read(repository: repository, connectionID: connection, clock: phoneClock)
+        #expect(phone.keyState == .locked)
+        #expect(try await phone.publish(enabled: true, repository: repository, connectionID: connection, clock: phoneClock).isEmpty)
+        #expect(throws: SyncError.loginLocked) { try phone.open(stale) }
+        await #expect(throws: SyncError.wrongPassphrase) { try await phone.unlock(passphrase: "wrong horse battery") }
+        #expect(phone.keyState == .locked)
+        try await phone.unlock(passphrase: "correct horse battery")
+        #expect(phone.keyState == .unlocked)
+
+        // A reconnect reloads the key from this device's own store.
+        phone.resetConnection()
+        try await phone.read(repository: repository, connectionID: connection, clock: phoneClock)
+        #expect(phone.keyState == .unlocked)
+        // Replacing the passphrase elsewhere locks this device again.
+        try await mac.createKey(passphrase: "another horse battery", repository: repository, connectionID: connection)
+        try await phone.read(repository: repository, connectionID: connection, clock: phoneClock)
+        #expect(phone.keyState == .locked)
         await repository.disconnect(connectionID: connection)
     }
 
@@ -297,7 +399,7 @@ struct SyncTests {
         defaults.set(syncEnabled, forKey: "sync.enabled")
         defaults.set(loginEnabled, forKey: "sync.publishLogin")
         let service = SyncService(defaults: defaults)
-        #expect(service.shouldRevokeLoginSession(cookies: ["MUSIC_U": "synthetic-unpublished"]))
+        #expect(service.shouldRevokeLoginSession(accountID: 42))
     }
 
     @Test @MainActor func reconnectWithdrawsAnOldOfferEvenWhenItsQueueIsMissing() async throws {
@@ -504,6 +606,7 @@ struct SyncTests {
             try await repository.write(SyncRecord(revision: .init(counter: 31, deviceID: device),
                                                    deviceName: "Fixture", payload: login), domain: .login, connectionID: connection)
         }
+        try await writeFixtureLoginKey(to: repository, connectionID: connection)
         let brokenFile = root.appendingPathComponent("Kumone/Devices/\(remote.uuidString)/\(domain.rawValue).json")
         try Data("invalid JSON".utf8).write(to: brokenFile, options: .atomic)
         let service = SyncService(defaults: defaults, deviceIdentity: { local })
@@ -771,6 +874,7 @@ struct SyncTests {
         _ = try await repository.connect(to: root, connectionID: connection)
         let record = SyncRecord(revision: .init(counter: 1, deviceID: UUID()), deviceName: "Mac", payload: SyncedLogin(accountID: 42, nickname: "Fixture", cookies: ["MUSIC_U": "synthetic-session"]))
         try await repository.write(record, domain: .login, connectionID: connection)
+        try await writeFixtureLoginKey(to: repository, connectionID: connection)
         let identity = UUID()
         let service = SyncService(defaults: defaults, deviceIdentity: { identity })
         await service.connect(to: root)

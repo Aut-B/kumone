@@ -56,11 +56,12 @@ struct SyncRecord<Payload: Codable>: Codable, Identifiable {
 ```text
 Kumone/
 ├── repository.json                                     # 仓库元信息
+├── login-key.json                                      # 登录密钥描述 (密钥 ID、盐、迭代次数、校验值；不含密钥)
 └── Devices/
     ├── <Device-UUID-A>/                                # 设备 A 命名空间
     │   ├── playback.json                               # 轻量检查点 (当前歌曲、进度、游标、queueRevision)
     │   ├── preferences.json                            # 偏好配置 (包含各字段修订计数)
-    │   ├── login.json                                  # 登录凭据 (账号 ID、昵称、Cookie；nil 为撤回)
+    │   ├── login.json                                  # 登录邀请 (账号 ID、昵称、密钥 ID、加密 Cookie；nil 为撤回)
     │   └── Queues/                                     # 不可变队列快照目录
     │       ├── <Queue-Revision-UUID-1>.json            # 完整队列快照 (去重歌曲列表、乱序表等)
     │       └── <Queue-Revision-UUID-2>.json
@@ -192,9 +193,10 @@ Kumone/
 
 *([login.puml](login.puml))*
 
-- **信任边界**：Cookie 明文保存在同步目录下，目录本身即为信任边界。登录同步默认关闭，需用户显式开启。
+- **加密边界**：Cookie 以 AES-GCM 加密后才写入同步目录，账号 ID 与密钥 ID 作为附加认证数据绑定。密钥由用户设置的同步密码经 PBKDF2-SHA256（600,000 次）派生，目录中的 `login-key.json` 只保存盐与校验值；派生密钥仅存于各设备本机钥匙串（不经 iCloud 钥匙串同步）。仅能读取同步目录无法得到可用会话，但弱密码仍可被离线猜测，因此要求至少 8 个字符。
+- **解锁与重设**：首台设备开启登录同步时设置同步密码；其他设备在开启登录同步或首次使用邀请登录时输入一次。忘记密码只能重设：新密钥替换 `login-key.json`，旧密钥下的邀请不再列出，其他设备需输入新密码，未解锁的设备撤回自己的邀请。登录同步默认关闭，需用户显式开启。
 - **端内独立验密**：用户确认使用其他设备的账号后，通过独立的临时 `NeteaseClient` 实例发起线上验证，验证通过后才落盘应用并刷新用户资料库。
-- **登出边界**：默认撤销网易云服务端会话。仅当同步与登录同步均开启，且本设备已发布的登录记录与当前会话匹配时，才保留服务端会话，避免影响共享该会话的其他设备。本机登录记录通过 Tombstone 撤回；同步不可用时待重新连接后撤回。
+- **登出边界**：默认撤销网易云服务端会话。仅当同步与登录同步均开启，且**其他设备**仍在提供同一账号的邀请时，才保留服务端会话，避免影响仍在使用该会话的设备；最后一台退出的设备会撤销会话。本机登录记录通过 Tombstone 撤回；同步不可用时待重新连接后撤回。
 - **坏文件容错**：单台设备的 `login.json` 损坏时记录日志并跳过，不阻断其他设备凭据的发现。
 
 ---
@@ -223,7 +225,7 @@ Kumone/
   UI 发布的属性）。
 - **`PreferencesSync`**：`mergedPreferences`（合并后设置）、`lastObservedValues`（回声抑制基线）、`lastPublishedPreferences`
   （当前连接发布基线）、`needsInitialRead`（新连接首读标记）。
-- **`LoginSync`**：`cachedLoginRecords`（设备账号缓存）、`hasPublishedLogin`（撤回责任标记）。
+- **`LoginSync`**：`cachedLoginRecords`（设备账号缓存）、`hasPublishedLogin`（撤回责任标记）、`keyFile` / `key`（目录密钥描述与本机已解锁密钥）。
 - **`SyncRevisionClock`**：`counter`（内存计数值）、`lastPersistedCounter`（落盘计数值）。
 - **`PlaybackSyncStore`**：`publishedQueues`（已知队列缓存）、`selectedQueue`（按需队列路径）、`lastQueueCleanup`（上次 GC 时间戳）。
 - **`SyncRepository`**：`scopedURL`（授权持有）、`decodedFiles`（Stamp 解码缓存）、`conflicts`（待清理冲突版本）。

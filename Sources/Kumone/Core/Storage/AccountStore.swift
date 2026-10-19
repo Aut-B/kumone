@@ -157,11 +157,11 @@ final class AccountStore: ObservableObject {
         NowPlayingManager.shared.refreshLikeState()
     }
 
-    /// Revoke by default. Only an enabled, published login is kept alive for
-    /// other devices; sync still withdraws this device's record after sign-out.
+    /// Revoke by default. A login another device still offers is kept alive
+    /// for it; sync still withdraws this device's record after sign-out.
     func logout() async throws {
         let cookies = NeteaseClient.shared.authenticationCookies()
-        let revokeSession = SyncService.shared.shouldRevokeLoginSession(cookies: cookies)
+        let revokeSession = SyncService.shared.shouldRevokeLoginSession(accountID: authenticatedAccountID)
         try NeteaseClient.shared.clearAuthCookies()
         bootstrapGeneration += 1
         AccountSnapshotStorage.shared.clear()
@@ -171,15 +171,15 @@ final class AccountStore: ObservableObject {
 
     /// Verify a received session in isolation. A failed or superseded import must
     /// leave the current device's cookies, profile and library intact.
-    func importLogin(_ login: SyncedLogin, authorization: () -> Bool) async throws {
-        try login.validate()
+    func importLogin(accountID: Int, cookies: [String: String], authorization: () -> Bool) async throws {
+        guard accountID > 0, cookies["MUSIC_U"]?.isEmpty == false else { throw SyncError.invalidRecord }
         guard authorization() else { throw CancellationError() }
         let generation = bootstrapGeneration
         let binding = NeteaseClient.shared.authenticationFingerprint
         let candidate = NeteaseClient(configuration: .ephemeral, persistsCookies: false)
-        candidate.setCookies(login.cookies)
+        candidate.setCookies(cookies)
         guard let verified = try await NeteaseAPI.userAccount(using: candidate),
-              verified.userId == login.accountID else { throw NeteaseAPIError.needLogin }
+              verified.userId == accountID else { throw NeteaseAPIError.needLogin }
         guard authorization(), generation == bootstrapGeneration,
               binding == NeteaseClient.shared.authenticationFingerprint else { throw CancellationError() }
         try NeteaseClient.shared.replaceAuthentication(with: candidate.authenticationCookies())

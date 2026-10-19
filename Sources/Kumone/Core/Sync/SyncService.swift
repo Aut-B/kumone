@@ -15,6 +15,7 @@ final class SyncService: ObservableObject {
     @Published private(set) var loginEnabled: Bool
     @Published private(set) var sessions: [SyncRecord<PlaybackCheckpoint>] = []
     @Published private(set) var logins: [SyncRecord<SyncedLogin>] = []
+    @Published private(set) var loginKeyState: LoginSync.KeyState = .unset
     @Published private(set) var errorMessage: String?
     @Published private(set) var connected = false
     @Published private(set) var importingLogin = false
@@ -29,7 +30,7 @@ final class SyncService: ObservableObject {
     private let periodicRefreshSleep: @Sendable () async throws -> Void
     private let deviceName: String
     private let preferencesSync: PreferencesSync
-    private let loginSync = LoginSync()
+    private let loginSync: LoginSync
     private var lastPublishedPlayback: PlaybackSession?
     private var hasPublishedPlayback = false
     private var subscriptions: Set<AnyCancellable> = []
@@ -69,9 +70,11 @@ final class SyncService: ObservableObject {
         },
         periodicRefreshSleep: @escaping @Sendable () async throws -> Void = {
             try await Task.sleep(for: .seconds(20))
-        }
+        },
+        loginKeyStore: LoginKeyStore = .keychain
     ) {
         self.defaults = defaults
+        loginSync = LoginSync(keyStore: loginKeyStore)
         self.deviceIdentity = deviceIdentity
         self.playbackContext = playbackContext
         self.periodicRefreshSleep = periodicRefreshSleep
@@ -221,6 +224,7 @@ final class SyncService: ObservableObject {
         revisionClock = nil
         preferencesSync.resetConnection()
         loginSync.resetConnection()
+        loginKeyState = .unset
         lastPublishedPlayback = nil
         hasPublishedPlayback = false
         errorMessage = nil
@@ -255,9 +259,32 @@ final class SyncService: ObservableObject {
         await synchronizeNow(refreshing: [.login], publishing: [.login])
     }
 
-    func shouldRevokeLoginSession(cookies: [String: String]) -> Bool {
-        guard enabled, loginEnabled, let revisionClock else { return true }
-        return !loginSync.hasPublishedSession(cookies: cookies, deviceID: revisionClock.deviceID)
+    /// Revoke unless login sharing is on and another device still offers this
+    /// account: its session may be in use there. The last device out revokes.
+    func shouldRevokeLoginSession(accountID: Int?) -> Bool {
+        guard enabled, loginEnabled, let accountID, let revisionClock else { return true }
+        return !loginSync.isAccountSharedElsewhere(accountID: accountID, deviceID: revisionClock.deviceID)
+    }
+
+    func unlockLogin(passphrase: String) async throws {
+        guard enabled, connected else { throw SyncError.unavailable }
+        let connection = connectionID
+        try await loginSync.unlock(passphrase: passphrase)
+        guard connection == connectionID else { throw CancellationError() }
+        loginKeyState = loginSync.keyState
+        await synchronizeNow(refreshing: [.login], publishing: [.login])
+    }
+
+    /// Sets a new sync passphrase for the folder. Every other device must enter
+    /// it before it can share or receive a login again.
+    func createLoginKey(passphrase: String, confirmation: String) async throws {
+        guard passphrase == confirmation else { throw SyncError.passphraseMismatch }
+        guard enabled, connected else { throw SyncError.unavailable }
+        let connection = connectionID
+        try await loginSync.createKey(passphrase: passphrase, repository: repository, connectionID: connection)
+        guard connection == connectionID else { throw CancellationError() }
+        loginKeyState = loginSync.keyState
+        await synchronizeNow(refreshing: [.login], publishing: [.login])
     }
 
     func resume(_ record: SyncRecord<PlaybackCheckpoint>) async throws {
@@ -294,8 +321,12 @@ final class SyncService: ObservableObject {
         importingLogin = true
         defer { importingLogin = false }
         guard let login = record.payload else { throw SyncError.invalidRecord }
+        // A withdrawn or disconnected offer is stale, not locked.
+        guard enabled, connected, connectionID == connection,
+              logins.contains(where: { $0.revision == record.revision }) else { throw CancellationError() }
+        let cookies = try loginSync.open(login)
         try await AccountStore.shared.importLogin(
-            login,
+            accountID: login.accountID, cookies: cookies,
             authorization: {
                 self.enabled && self.connected && self.connectionID == connection
                     && AccountStore.shared.isBootstrapped && AccountStore.shared.authenticatedAccountID == nil
@@ -399,6 +430,7 @@ final class SyncService: ObservableObject {
                         enabled: loginEnabled,
                         repository: repository, connectionID: connectionID, clock: clock)
                     try Task.checkCancellation()
+                    if loginKeyState != loginSync.keyState { loginKeyState = loginSync.keyState }
                     if !logins.elementsEqual(incomingLogins, by: { $0.revision == $1.revision }) { logins = incomingLogins }
                 }
             } catch {

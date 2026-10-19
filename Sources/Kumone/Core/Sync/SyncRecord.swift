@@ -47,6 +47,7 @@ struct SyncRecord<Payload: Codable>: Codable, Identifiable {
 
 enum SyncError: LocalizedError {
     case unavailable, downloading, identityChanged, invalidRecord, newerVersion, accountMismatch
+    case loginLocked, wrongPassphrase, weakPassphrase, passphraseMismatch
 
     var errorDescription: String? {
         switch self {
@@ -56,6 +57,10 @@ enum SyncError: LocalizedError {
         case .invalidRecord: return String(localized: "同步数据损坏")
         case .newerVersion: return String(localized: "同步数据需要更新版本的 Kumone")
         case .accountMismatch: return String(localized: "接续需要登录同一网易云账号")
+        case .loginLocked: return String(localized: "需要输入同步密码")
+        case .wrongPassphrase: return String(localized: "同步密码不正确")
+        case .weakPassphrase: return String(localized: "同步密码至少需要 8 个字符")
+        case .passphraseMismatch: return String(localized: "两次输入的同步密码不一致")
         }
     }
 }

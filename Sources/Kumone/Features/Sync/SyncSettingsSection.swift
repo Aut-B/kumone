@@ -5,6 +5,7 @@ struct SyncSettingsSection: View {
     @ObservedObject private var sync = SyncService.shared
     @State private var showDirectoryPicker = false
     @State private var connectionError: String?
+    @State private var passphraseMode: LoginPassphraseMode?
 
     private var errorMessage: String? { connectionError ?? sync.errorMessage }
 
@@ -31,12 +32,20 @@ struct SyncSettingsSection: View {
             if sync.enabled {
                 Toggle("登录同步", isOn: Binding(
                     get: { sync.loginEnabled },
-                    set: { enabled in Task { await sync.setLoginEnabled(enabled) } }
+                    set: { enabled in
+                        // Nothing is shared until this device holds the folder's key.
+                        if enabled, sync.loginKeyState != .unlocked {
+                            passphraseMode = sync.loginKeyState == .unset ? .create : .unlock
+                        } else {
+                            Task { await sync.setLoginEnabled(enabled) }
+                        }
+                    }
                 ))
 
-                Text("允许已连接的设备登录此账号，仅连接你信任的同步位置")
+                Text("允许已连接的设备登录此账号，登录信息以同步密码加密")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if sync.loginEnabled, sync.connected { passphraseButtons }
             }
             if !sync.connected, sync.enabled || errorMessage != nil {
                 Button("重新连接") {
@@ -50,6 +59,19 @@ struct SyncSettingsSection: View {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
         }
+        .loginPassphraseAlert(mode: $passphraseMode) { mode, passphrase, confirmation in
+            Task {
+                connectionError = nil
+                do {
+                    switch mode {
+                    case .create: try await sync.createLoginKey(passphrase: passphrase, confirmation: confirmation)
+                    case .unlock: try await sync.unlockLogin(passphrase: passphrase)
+                    }
+                    if !sync.loginEnabled { await sync.setLoginEnabled(true) }
+                } catch is CancellationError {
+                } catch { connectionError = error.localizedDescription }
+            }
+        }
         .fileImporter(isPresented: $showDirectoryPicker, allowedContentTypes: [.folder]) { result in
             switch result {
             case .success(let directory):
@@ -61,5 +83,24 @@ struct SyncSettingsSection: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var passphraseButtons: some View {
+        HStack {
+            switch sync.loginKeyState {
+            case .unset:
+                Button("设置同步密码") { passphraseMode = .create }
+            case .locked:
+                Button("输入同步密码") { passphraseMode = .unlock }
+                // A forgotten passphrase is replaced, not recovered.
+                Button("重设同步密码") { passphraseMode = .create }
+            case .unlocked:
+                Button("更改同步密码") { passphraseMode = .create }
+            }
+        }
+        #if os(macOS)
+        .controlSize(.small)
+        #endif
     }
 }

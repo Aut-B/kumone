@@ -263,6 +263,33 @@ actor SyncRepository {
         }
     }
 
+    /// The folder's one shared login key description; nil until a device sets
+    /// a sync passphrase.
+    func readLoginKey(connectionID: UUID) throws -> LoginKeyFile? {
+        let file = try connectedDirectory(connectionID: connectionID).appendingPathComponent("login-key.json")
+        return try coordinate(file, writing: false) { url in
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            let values = try url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+            if values.ubiquitousItemDownloadingStatus == .notDownloaded {
+                try FileManager.default.startDownloadingUbiquitousItem(at: url)
+                throw SyncError.downloading
+            }
+            let keyFile: LoginKeyFile
+            do { keyFile = try JSONDecoder().decode(LoginKeyFile.self, from: Data(contentsOf: url)) }
+            catch is DecodingError { throw SyncError.invalidRecord }
+            try keyFile.validate()
+            return keyFile
+        }
+    }
+
+    func writeLoginKey(_ keyFile: LoginKeyFile, connectionID: UUID) throws {
+        let file = try connectedDirectory(connectionID: connectionID).appendingPathComponent("login-key.json")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let data = try encoder.encode(keyFile)
+        try coordinate(file, writing: true) { url in try data.write(to: url, options: .atomic) }
+    }
+
     func readPlayback(connectionID: UUID) throws -> PlaybackSyncStore.ReadResult {
         _ = try connectedDirectory(connectionID: connectionID)
         return try playbackStore.read(from: self, connectionID: connectionID)
