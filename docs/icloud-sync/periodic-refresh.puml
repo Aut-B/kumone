@@ -1,0 +1,43 @@
+@startuml periodic-refresh
+!pragma layout smetana
+skinparam defaultFontName PingFang SC
+skinparam shadowing false
+title 周期刷新任务：由活动边界维护
+
+state "无周期任务\nperiodicRefreshTask = nil" as Stopped
+state "当前连接的唯一周期任务" as Active {
+  state "等待 20s\n弱引用服务" as Sleeping
+  state "校验存活、取消、连接归属" as Check
+  state "await synchronizeNow()\n复用共享执行任务" as Syncing
+  [*] --> Sleeping
+  Sleeping --> Check : 等待完成
+  Check --> Syncing : enabled && connected\n同 connectionID 且未取消
+  Syncing --> Sleeping : 同连接且下一轮未取消
+}
+
+[*] --> Stopped
+Stopped --> Active : updatePeriodicRefreshTask(isPlaying:)\n[enabled && connected && (foreground || isPlaying)]
+Active --> Stopped : 条件不成立 → cancel + nil
+Active --> Stopped : 关闭 / 替换连接 / 目录失效 / deinit
+Check --> Stopped : 已取消 / 服务已释放 / 连接过期
+Syncing --> Stopped : 等待期间连接已替换或任务取消
+
+note right of Stopped
+  维护入口：
+  · activateConnection：激活后、首次同步前
+  · setForeground：先维护，再立即同步
+  · $isPlaying.removeDuplicates：使用事件值
+
+  前台暂停：仍需要周期刷新。
+  后台播放：仍需要周期刷新。
+  后台暂停：停止周期刷新。
+  条件仍成立且已有任务：保留，不重新创建。
+end note
+note right of Active
+  每轮 20s 等待 + 本轮同步耗时。
+  不是每 20s 并发发起一次事务。
+  停止周期任务不直接取消已启动的共享同步事务。
+  旧连接任务即使晚唤醒，也不能作用于新连接。
+  iOS 被系统挂起时不保证执行周期。
+end note
+@enduml

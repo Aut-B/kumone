@@ -51,7 +51,7 @@ Built with SwiftUI · Talks directly to NetEase's real API · Sparkle auto-updat
 - ✏️ **Playlist management** — create / delete / subscribe playlists, add / remove tracks, heart songs
 - 🔍 **Search** — aggregate / songs / artists / albums / playlists, trending keyword placeholder
 - ⌨️ **System integration** — media keys / Control Center (Now Playing), scrobbling, playback queue restored across launches
-- ☁️ **iCloud Sync** — hand off playback progress and queues between Mac and iPhone, sync preferences, and share sign-in sessions; works via iCloud Drive shared folders and natively supports sideloaded builds without central servers (see [documentation](docs/icloud-sync.md))
+- ☁️ **iCloud Sync** — hand off playback progress and queues between Mac and iPhone, sync preferences, and share sign-in sessions; works via iCloud Drive shared folders and natively supports sideloaded builds without central servers (see [documentation](docs/icloud-sync/icloud-sync.md))
 - 🌐 **Localization** — English and Simplified Chinese, following the system language; bilingual release notes in Sparkle updates
 
 ## Installation

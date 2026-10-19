@@ -1,0 +1,70 @@
+@startuml login
+skinparam defaultFontName PingFang SC
+skinparam shadowing false
+title 登录：设备邀请发布、导入与独立退出（当前串行完成链路）
+
+actor "用户" as User
+participant "SyncService" as Service
+participant "LoginSync" as Login
+participant "SyncRepository" as Repo
+participant "AccountStore" as Account
+participant "独立临时 NeteaseClient" as Candidate
+participant "本机 NeteaseClient" as Client
+
+== 刷新与发布邀请 ==
+opt 请求刷新登录领域
+  Service -> Login : read
+  Login -> Repo : read(.login)
+  Repo --> Login : 有效设备记录 / 冲突版本\n单设备读取错误记录日志并隔离
+  Login -> Login : 缓存记录、观察 counter\n读到本机记录时更新撤回责任
+end
+Service -> Login : publish(enabled: 此刻 loginEnabled)
+Login -> Account : 检查 profile / authenticatedAccountID / hasAuthCookie
+alt 已授权共享且账号认证有效
+  Login -> Client : 读取认证 Cookie；校验 SyncedLogin
+  Login -> Login : outgoingLogin = 当前账号与 Cookie
+else 共享关闭或本机无 Cookie
+  Login -> Login : outgoingLogin = nil
+else 有 Cookie 但账号尚未验证完成
+  Login --> Service : 保留原邀请，返回其他设备可用账号
+end
+opt 已确定 outgoingLogin 且内容变化或仍有撤回责任
+  Login -> Repo : 写本机 login.json（payload 或删除标记）
+  Repo --> Login : 成功
+  Login -> Login : 更新本机缓存与 hasPublishedLogin
+end
+Login --> Service : 聚合其他设备最新有效邀请 → logins
+
+== 用户确认导入 ==
+User -> Service : importLogin(record)
+Service -> Service : 禁止并行导入；捕获连接代次
+Service -> Account : importLogin(login, authorization)
+Account -> Account : 校验载荷与当前授权\n记录 bootstrapGeneration / authenticationFingerprint
+Account -> Candidate : 设置候选 Cookie；在线查询账号
+Candidate --> Account : verified profile
+Account -> Account : 复核账号 ID、授权、启动代次及原认证指纹
+Account -> Client : replaceAuthentication（持久化后应用）
+Account -> Account : 增加认证代次；挂起旧播放\n应用资料与本机账号快照
+Account --> Service : 本机凭据导入完成
+Service -> Service : 复核取消 / 连接 / 当前账号\n设置 loginEnabled = true 并保存
+Service -> Service : await synchronizeNow\nrefreshing: login / publishing: login + playback
+Service -> Account : await refreshLibrary()
+Account --> Service : 资料刷新结束
+Service --> User : 返回当前账号是否仍匹配\ndefer 清除 importingLogin
+note over Service,Account
+  当前交互仍等待后续同步与资料刷新，不是凭据提交后立即返回。
+  提交后的取消 / 连接变化不会自动撤销已导入的本机凭据。
+end note
+
+== 本机退出 ==
+User -> Account : logout()
+Account -> Client : clearAuthCookies（本机）
+Account -> Account : 增加启动代次、清除本机资料快照、应用未登录
+Account -> Service : profile 变化 → 合并登录 / 播放发布请求
+Service -> Login : publish → 撤回本机邀请
+note over Repo,Client
+  Cookie 在受信任同步目录中为可读 JSON；无配对流程。
+  退出只撤回本设备记录，不撤销其他设备持有的网易云会话。
+  总同步关闭时不执行云端撤回；重新连接后再检查。
+end note
+@enduml

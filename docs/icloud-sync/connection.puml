@@ -1,0 +1,55 @@
+@startuml connection
+!pragma layout smetana
+skinparam defaultFontName PingFang SC
+skinparam shadowing false
+title 连接授权与恢复
+
+state "未连接\nconnected = false" as Disconnected
+state "建立连接\n捕获新的 connectionID" as Connecting
+state "等待用户授权目录\nenable() 返回 false" as Picker
+state "连接有效\nenabled = true / connected = true" as Connected
+state "故障待恢复\nconnected = false / 展示错误\nenabled 保留当前意愿" as Failed
+state "明确关闭\nenabled = false / connected = false" as Disabled
+
+[*] --> Disconnected
+Disconnected --> Connecting : enable / connect（手选）
+Disabled --> Connecting : 再次启用
+Connecting --> Picker : 无已存书签且无可用原生容器
+Picker --> Connecting : 用户选定目录 → connect(to:)
+Picker --> Disconnected : 未完成授权
+Connecting --> Connected : 设备身份、目录、仓库有效\n激活 → 周期维护 → 目录观察 → 立即同步
+Connecting --> Failed : 恢复 / 授权 / 校验失败
+Connected --> Connected : 普通领域错误\n记录错误与重试待办
+Connected --> Failed : 同步遇到 SyncError.unavailable\ninvalidateConnection → repository.disconnect
+Failed --> Connecting : 重新连接 / 重新授权
+Connected --> Connecting : 替换目录 / 再次建立连接
+Connected --> Disabled : disable()
+Failed --> Disabled : disable()
+Connecting --> Disabled : 当前操作被关闭同步替代
+Connected --> Disabled : iCloud 身份变化\n另清除登录共享许可、书签与身份标记
+
+note right of Connecting
+  新连接前先 invalidateConnection：
+  1. 换 connectionID，清空远端列表和待办
+  2. 取消合并 / 执行 / 周期任务
+  3. 失效接续请求与发布基线
+  4. 断开上一仓储连接
+
+  enable：有书签 → restore；否则尝试容器。
+  connect：手选根或其下 Kumone 目录。
+  restore 不重建已被删除的授权目录。
+end note
+note right of Connected
+  手选 / restore 入口各开启一次安全作用域，
+  成功后由 repository.scopedURL 持有。
+  原生容器不需要手选目录的安全作用域。
+  disconnect / 入口失败时释放。
+
+  每次 await 后检查操作所属连接，
+  过期操作不能激活或清空替换后的连接。
+end note
+note bottom of Disabled
+  普通 disable 不撤回全部云端文件，不远程注销账号。
+  本机账号、播放恢复和已保存偏好继续存在。
+end note
+@enduml
