@@ -406,7 +406,6 @@ struct MainWindowConfigurator: NSViewRepresentable {
         /// The item views the immersive page swaps out, kept so the home page
         /// gets them back; see `suppressImmersiveToolbarItems`.
         private var hiddenToolbarItemViews: [String: NSView] = [:]
-        private var toolbarItemStandIn: NSView?
         /// Separator items the page hides (they have no view to swap).
         private var hiddenToolbarSeparatorIdentifiers: Set<String> = []
 
@@ -470,9 +469,11 @@ struct MainWindowConfigurator: NSViewRepresentable {
             if windowToolbarHidden {
                 for item in toolbar.items {
                     if let view = item.view {
-                        guard view !== standInToolbarItemView() else { continue }
+                        guard !(view is HiddenToolbarItemView) else { continue }
                         hiddenToolbarItemViews[item.itemIdentifier.rawValue] = view
-                        item.view = standInToolbarItemView()
+                        // One stand-in per item: a view has a single
+                        // superview, so a shared one would hop between items.
+                        item.view = HiddenToolbarItemView()
                     } else if item.itemIdentifier.rawValue.lowercased().contains("separator"),
                               !item.isHidden {
                         hiddenToolbarSeparatorIdentifiers.insert(item.itemIdentifier.rawValue)
@@ -485,7 +486,7 @@ struct MainWindowConfigurator: NSViewRepresentable {
                     guard let item = toolbar.items.first(where: {
                         $0.itemIdentifier.rawValue == identifier
                     }),
-                    item.view === standInToolbarItemView() else { continue }
+                    item.view is HiddenToolbarItemView else { continue }
                     item.view = original
                 }
                 for identifier in hiddenToolbarSeparatorIdentifiers {
@@ -495,13 +496,6 @@ struct MainWindowConfigurator: NSViewRepresentable {
                     }?.isHidden = false
                 }
             }
-        }
-
-        private func standInToolbarItemView() -> NSView {
-            if let toolbarItemStandIn { return toolbarItemStandIn }
-            let standIn = HiddenToolbarItemView()
-            toolbarItemStandIn = standIn
-            return standIn
         }
 
         func attach(to window: NSWindow?) {
