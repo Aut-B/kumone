@@ -1,63 +1,64 @@
 @startuml scheduling
-skinparam defaultFontName PingFang SC
+skinparam defaultFontName Helvetica
 skinparam shadowing false
-title 请求合并、单执行任务与失败重试
+title Request Coalescing, Single Execution Task and Retries
 
-participant "定向订阅 / 目录事件" as Event
-participant "立即调用方\n连接 / 场景 / 周期 / 开关" as Caller
+participant "Targeted subscriptions / folder events" as Event
+participant "Immediate callers\nconnection / scene / periodic / toggles" as Caller
 participant "SyncService" as Service
 collections "pendingSyncRequest\nrefreshDomains + publicationDomains" as Pending
 participant "coalescingTask" as Window
-participant "syncTask\n所属 connectionID" as Worker
-participant "领域实现 / Repository" as Domains
+participant "syncTask\nowning connectionID" as Worker
+participant "Domains / Repository" as Domains
 
 Event -> Service : scheduleSync(request)
-Service -> Pending : 两个领域集合分别 formUnion
-alt 已有 syncTask 或 coalescingTask
-  note over Service,Pending : 仅合并，不重启等待、不创建第二执行任务
-else 当前空闲
-  Service -> Window : 创建一次等待 600ms 的任务
-  ... 等待期间后续事件只合并 ...
-  Window -> Service : 同一 connectionID → 清空合并句柄
+Service -> Pending : formUnion each domain set
+alt a syncTask or coalescingTask already exists
+  note over Service,Pending : merge only; the wait is not restarted and no second task is created
+else idle
+  Service -> Window : create one task that waits 600 ms
+  ... later events during the wait only merge ...
+  Window -> Service : same connectionID → clear the coalescing handle
   Service -> Service : ensureSyncTask()
 end
 
 opt synchronizeNow(refreshing:publishing:)
-  Caller -> Service : 立即同步
+  Caller -> Service : sync now
   Service -> Pending : formUnion(request)
-  Service -> Window : cancel；清空句柄
+  Service -> Window : cancel; clear the handle
   Service -> Service : ensureSyncTask()
-  note over Caller,Worker : 调用方等待同一个 syncTask.value
+  note over Caller,Worker : the caller awaits the same syncTask.value
 end
 
-Service -> Worker : 复用已有任务，或创建唯一任务
-loop 连接仍有效、同代次且未取消；有新事件才继续下一轮
-  Worker -> Pending : 取走本轮请求；清空待办
+Service -> Worker : reuse the existing task, or create the only one
+loop connection valid, same generation, not cancelled; another round only for new events
+  Worker -> Pending : take this round's request; clear pending work
   Worker -> Domains : synchronizeDomains(currentRequest)
   note right of Domains
-    依 Domain.allCases 串行处理。
-    每领域执行前复核连接 / 取消。
-    偏好与登录 refresh 允许派生写入。
+    Processed serially in Domain.allCases order.
+    Connection / cancellation re-checked before each domain.
+    Preferences and login refreshes may write back.
   end note
-  Event -> Service : I/O 等待期间可能有新事件
-  Service -> Pending : 合并新请求
-  Domains --> Worker : retryRequest + 错误汇总
-  alt 出现 SyncError.unavailable
-    Worker -> Service : 连接失效；清空列表 / 待办 / 任务
-    Service -> Domains : 断开仓储连接
-    note over Worker : 结束旧任务
-  else 连接仍有效
-    Worker -> Pending : 先记住是否有新事件，再合入 retryRequest
-    alt 没有新事件（即使存在失败待办）
-      note over Worker,Pending : 结束本轮；失败保留到后续事件或周期唤醒
-    else 有新事件
-      note over Worker,Pending : 同一任务继续取下一轮，不创建并行事务
+  Event -> Service : new events may arrive while waiting on I/O
+  Service -> Pending : merge new requests
+  Domains --> Worker : retryRequest + error summary
+  alt SyncError.unavailable occurred
+    Worker -> Service : connection invalidated; clear lists / pending work / tasks
+    Service -> Domains : disconnect the repository
+    note over Worker : the old task ends
+  else connection still valid
+    Worker -> Pending : note whether new events arrived, then merge retryRequest
+    alt no new events (even with failed work pending)
+      note over Worker,Pending : this round ends; failures wait for a later event or periodic wake-up
+    else new events
+      note over Worker,Pending : the same task takes the next round; no parallel transaction
     end
   end
 end
-Worker -> Service : defer：仅当前连接能清空自己的 syncTask
+Worker -> Service : defer: only the current connection may clear its own syncTask
 note over Service,Worker
-  执行任务收尾不负责维护周期任务。
-  换连接后旧任务返回，不得覆盖新任务的句柄或结果。
+  Finishing the execution task does not maintain the periodic task.
+  After a connection change, a returning old task must not overwrite
+  the new task's handle or results.
 end note
 @enduml

@@ -1,75 +1,76 @@
 @startuml playback
-skinparam defaultFontName PingFang SC
+skinparam defaultFontName Helvetica
 skinparam shadowing false
-title 播放：轻量发现、按需接续与队列发布
+title Playback: Lightweight Discovery, On-Demand Continue and Queue Publication
 
-actor "用户" as User
+actor "User" as User
 participant "SyncService" as Service
 participant "SyncRepository actor" as Repo
-participant "PlaybackSyncStore\n同仓储隔离" as Store
+participant "PlaybackSyncStore\nsame repository isolation" as Store
 database "Devices/<deviceID>/\nplayback.json + Queues/" as Files
 participant "PlayerService" as Player
 
-== 刷新接续列表 ==
+== Refresh the continue list ==
 Service -> Repo : readPlayback(connectionID)
 Repo -> Store : read
 Store -> Repo : read(.playback, PlaybackCheckpoint)
-Repo -> Files : 读各设备当前指针及冲突版本（可命中缓存）
-Files --> Store : 轻量记录
-Store -> Store : 每设备取最高修订（含删除标记）\n校验检查点；观察所有修订计数
+Repo -> Files : read each device's current pointer and conflict versions (cache may hit)
+Files --> Store : lightweight records
+Store -> Store : highest revision per device (including tombstones)\nvalidate checkpoints; observe all revision counters
 Store --> Service : checkpoints + maxCounter
-Service -> Service : 排除本机 / 删除记录，更新 sessions
-note over Service,Store : 此阶段不读取任何完整队列；UI 按当前账号筛选展示
+Service -> Service : exclude this device / tombstones; update sessions
+note over Service,Store : no full queue is read at this stage; the UI filters by the current account
 
-== 点击接续 ==
+== Tap on Continue ==
 User -> Service : resume(selectedCheckpoint)
-Service -> Service : 校验连接与同账号\n记录 connectionID / resumeRequestID / resumingDeviceID
+Service -> Service : check connection and same account\nrecord connectionID / resumeRequestID / resumingDeviceID
 Service -> Repo : loadPlayback(selectedRecord)
 Repo -> Store : load
-Store -> Files : 只读取所选 queueRevision.json
-alt 队列缺失 / 仍在下载 / 非法
-  Store --> Service : downloading / invalidRecord / I/O 错误
-  Service --> User : 当前操作的错误；保留本机播放
-else 队列可用
-  Store -> Store : 校验设备、版本关系、账号、游标\n组装 PlaybackSession；释放上个选中队列缓存
+Store -> Files : read only the selected queueRevision.json
+alt queue missing / still downloading / invalid
+  Store --> Service : downloading / invalidRecord / I/O error
+  Service --> User : error for this operation; local playback kept
+else queue available
+  Store -> Store : check device, revision relation, account, cursor\nassemble PlaybackSession; release the previously selected queue cache
   Store --> Service : session
-  Service -> Service : 复核取消、连接、请求、当前账号及记录仍存在
+  Service -> Service : re-check cancellation, connection, request,\ncurrent account and that the record still exists
   Service -> Player : resume(session)
-  note over Service,Player : 成功后才替换本机播放；不要求来源设备暂停
+  note over Service,Player : local playback is replaced only on success; the source device is not paused
 end
 
-== 本机发布检查 ==
-Service -> Player : 取得当前 session + authenticatedAccountID
-alt 无有效同账号会话
-  opt 本机曾发布播放记录
+== Local publication check ==
+Service -> Player : current session + authenticatedAccountID
+alt no valid session for the same account
+  opt this device has published playback before
     Service -> Repo : writePlayback(payload: nil)
-    Repo -> Files : 写本机检查点删除标记
+    Repo -> Files : write this device's checkpoint tombstone
   end
-else 会话内容 / 进度变化或尚未发布
+else session content / progress changed, or not yet published
   Service -> Repo : writePlayback(record)
   Repo -> Store : write
-  opt 当前连接尚无本机队列发布缓存
-    Store -> Files : 按需读本机旧指针与旧队列以恢复复用基线
+  opt this connection has no cache of this device's published queue
+    Store -> Files : read this device's old pointer and queue on demand\nto restore the reuse baseline
     note right of Store
-      旧队列实际缺失：允许新会话发布。
-      已存在但未下载或损坏：明确失败，不掩盖。
+      Old queue actually missing: the new session may publish.
+      Present but not downloaded or damaged: fail explicitly, never mask it.
     end note
   end
-  alt 快照内容相同且队列文件存在
-    Store -> Store : 复用 queueRevision
-  else 快照内容变化或文件不存在
-    Store -> Files : 先写不可变 Queues/<newUUID>.json
+  alt snapshot content unchanged and queue file exists
+    Store -> Store : reuse queueRevision
+  else snapshot content changed or file missing
+    Store -> Files : first write immutable Queues/<newUUID>.json
   end
-  Store -> Files : 再原子替换 playback.json
-  note over Store,Files : 进度、当前歌曲、游标和循环模式在检查点中，不单独复制队列表
-  opt 本连接首次维护，或距上次成功维护已满 24h
-    Store -> Files : 协调读取当前 / 冲突指针，清理 7 天前孤儿队列
+  Store -> Files : then atomically replace playback.json
+  note over Store,Files : progress, current track, cursor and repeat mode live in the checkpoint;\nthe queue is not copied again
+  opt first maintenance on this connection, or 24 h since the last successful one
+    Store -> Files : coordinated read of current / conflict pointers;\nremove orphaned queues older than 7 days
     note right of Store
-      保留：当前 / 冲突 / 上一快照引用、7 天内、未知文件名。
-      无修改日期：保留至正常维护周期。
-      元数据 / 删除失败：日志记录；不使发布失败或断连。
+      Kept: referenced by current / conflict / previous snapshot,
+      modified within 7 days, unknown file names.
+      No modification date: kept until a normal maintenance cycle.
+      Metadata / delete failures: logged; never fail publication or disconnect.
     end note
   end
-  Repo --> Service : 成功后更新 lastPublishedPlayback / hasPublishedPlayback
+  Repo --> Service : on success update lastPublishedPlayback / hasPublishedPlayback
 end
 @enduml

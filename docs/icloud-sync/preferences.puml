@@ -1,56 +1,57 @@
 @startuml preferences
-skinparam defaultFontName PingFang SC
+skinparam defaultFontName Helvetica
 skinparam shadowing false
-title 偏好：本机编辑捕获、逐字段合并与回声抑制
+title Preferences: Local Edit Capture, Per-Field Merge and Echo Suppression
 
 participant "SyncService" as Service
 participant "PreferencesSync" as Pref
 participant "SettingsManager" as Settings
 participant "SyncRevisionClock" as Clock
-database "本机 UserDefaults\nsync.preferences / sync.counter" as Local
+database "Local UserDefaults\nsync.preferences / sync.counter" as Local
 participant "SyncRepository" as Repo
 
 Service -> Pref : synchronize(reading: refreshRequested)
-Pref -> Clock : observe 本地字段修订
-Pref -> Settings : 取得当前 syncPreferences
-Pref -> Pref : 与 lastObservedValues 比较\n只为本机改变字段生成新 revision
-Pref -> Clock : nextRevision（有编辑时）
-Pref -> Local : 本地内容变化才保存；提交 counter
-note over Pref,Local : 云端 I/O 等待前先保存本机意图
+Pref -> Clock : observe local field revisions
+Pref -> Settings : current syncPreferences
+Pref -> Pref : compare with lastObservedValues\nnew revisions only for fields changed locally
+Pref -> Clock : nextRevision (when there are edits)
+Pref -> Local : save only if local content changed; commit counter
+note over Pref,Local : local intent is saved before waiting on cloud I/O
 
-opt 显式刷新或 needsInitialRead
+opt explicit refresh or needsInitialRead
   Pref -> Repo : read(.preferences)
-  Repo --> Pref : 设备记录 + 冲突版本
-  Pref -> Pref : 检查取消
-  Pref -> Clock : observe 记录与字段最大 counter
-  Pref -> Settings : 再次取得当前设置
-  Pref -> Pref : 再捕获 I/O 期间的本机编辑\n在已观察的远端 counter 后分配修订
-  Pref -> Pref : mergedPreferences.merge(incoming)\n每字段比较 SyncRevision
-  Pref -> Settings : 整体验证已知字段，再应用变化
-  Pref -> Pref : 更新 mergedPreferences\nlastObservedValues = 应用后的实际设置\n恢复本机已发布基线；needsInitialRead = false
+  Repo --> Pref : device records + conflict versions
+  Pref -> Pref : check cancellation
+  Pref -> Clock : observe the highest record and field counters
+  Pref -> Settings : current settings again
+  Pref -> Pref : capture local edits made during I/O again\nallocate revisions after the observed remote counters
+  Pref -> Pref : mergedPreferences.merge(incoming)\ncompare SyncRevision per field
+  Pref -> Settings : validate known fields as a whole, then apply changes
+  Pref -> Pref : update mergedPreferences\nlastObservedValues = settings actually applied\nrestore this device's published baseline; needsInitialRead = false
   note over Pref,Settings
-    远端应用可能触发设置订阅，
-    但观察基线更新后，下一轮不再将它识别为本机新编辑。
+    Applying remote values may fire the settings subscription,
+    but with the baseline updated, the next round does not treat it as a local edit.
   end note
 end
 
-Pref -> Pref : 只为合并结果缺失字段补入本机值\n不以新设备默认值覆盖已有远端字段
-Pref -> Local : 有变化才保存本地合并副本；提交 counter
+Pref -> Pref : fill in local values only for fields missing from the merge\nnew-device defaults never overwrite existing remote fields
+Pref -> Local : save the local merged copy only on change; commit counter
 alt mergedPreferences != lastPublishedPreferences
-  Pref -> Clock : makeRecord（递增并持久化 counter）
+  Pref -> Clock : makeRecord (increment and persist counter)
   Pref -> Repo : write(.preferences)
-  Repo --> Pref : 成功
-  Pref -> Pref : 检查取消后更新 lastPublishedPreferences
-else 没有新结果
-  note over Pref,Repo : 跳过发布
+  Repo --> Pref : success
+  Pref -> Pref : after checking cancellation, update lastPublishedPreferences
+else nothing new
+  note over Pref,Repo : publication skipped
 end
 
 note over Pref,Local
-  mergedPreferences：领域事实（值 + 修订）
-  lastObservedValues：本机编辑识别基线
-  persistedPreferences：本地落盘基线
-  lastPublishedPreferences：当前连接发布基线
+  mergedPreferences: the domain's truth (values + revisions)
+  lastObservedValues: baseline for recognizing local edits
+  persistedPreferences: local persistence baseline
+  lastPublishedPreferences: this connection's publication baseline
 
-  断开只重置发布基线与首次读取标记，保留本地编辑恢复副本。
+  Disconnecting resets only the publication baseline and first-read flag;
+  the local copy for restoring edits is kept.
 end note
 @enduml

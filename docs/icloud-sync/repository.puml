@@ -1,66 +1,68 @@
 @startuml repository
-skinparam defaultFontName PingFang SC
+skinparam defaultFontName Helvetica
 skinparam shadowing false
-title 仓储：读取、缓存、写入与错误边界
+title Repository: Reads, Caching, Writes and Error Boundaries
 
-participant "领域调用者" as Domain
+participant "Domain caller" as Domain
 participant "SyncRepository actor" as Repo
 participant "NSFileCoordinator" as Coordinator
-database "文件 / 冲突版本" as File
-collections "decodedFiles\nkey = 解析符号链接后的路径" as Cache
+database "Files / conflict versions" as File
+collections "decodedFiles\nkey = symlink-resolved path" as Cache
 
-== 读取领域设备记录 ==
+== Read a domain's device records ==
 Domain -> Repo : read(domain, type, connectionID)
-Repo -> Repo : 校验连接代次及根目录可用
-Repo -> Coordinator : 协调枚举 Devices 中 UUID 目录
-loop 对应领域文件及未解决冲突版本
-  Repo -> Coordinator : 协调读取 readVersions
-  Repo -> File : resourceValues（下载状态 / identity / generation）
-  alt 文件尚未下载
+Repo -> Repo : check connection generation and root availability
+Repo -> Coordinator : coordinated listing of UUID directories in Devices
+loop domain file and its unresolved conflict versions
+  Repo -> Coordinator : coordinated readVersions
+  Repo -> File : resourceValues (download status / identity / generation)
+  alt file not downloaded yet
     Repo -> File : startDownloadingUbiquitousItem
     Repo --> Domain : SyncError.downloading
-  else 资源身份与内容代次均命中，类型匹配
-    Cache --> Repo : 复用已验证 SyncRecord
-  else 无可用 Stamp 或 Stamp 改变
-    Repo -> File : 读取 Data
-    alt Data 与缓存相同且类型匹配
-      Repo -> Cache : 更新 Stamp，复用解码记录
-    else 内容变化或类型不同
-      Repo -> Repo : JSONDecoder + schema 校验
-      Repo -> Cache : 只缓存成功解码内容
+  else resource identity and generation both match, type matches
+    Cache --> Repo : reuse the validated SyncRecord
+  else no usable stamp, or stamp changed
+    Repo -> File : read Data
+    alt Data equals the cache and type matches
+      Repo -> Cache : update stamp, reuse the decoded record
+    else content changed or type differs
+      Repo -> Repo : JSONDecoder + schema check
+      Repo -> Cache : cache only successfully decoded content
     end
   end
-  Repo -> Repo : 校验记录设备归属；记录已读冲突版本
+  Repo -> Repo : check the record belongs to the device; remember conflict versions read
 end
-Repo --> Domain : 记录集合（领域决定合并 / 选最新）
+Repo --> Domain : records (the domain decides how to merge / pick the latest)
 note over Repo,Domain
-  登录：单设备失败日志记录后继续其他设备。
-  播放 / 偏好：读取失败仍向领域抛出。
-  读取异常移除对应缓存，不缓存失败。
+  Login: a single device's failure is logged and other devices continue.
+  Playback / preferences: read failures are still thrown to the domain.
+  A failed read removes the cache entry; failures are never cached.
 end note
 
-== 写本机记录 ==
+== Write this device's record ==
 Domain -> Repo : write(record, domain / file)
-Repo -> Repo : 校验连接（领域入口）\nJSONEncoder 编码
-Repo -> Coordinator : 协调创建父目录
-Repo -> Coordinator : 协调目标文件写入
-Repo -> Cache : 使旧缓存失效
+Repo -> Repo : check connection (domain entry point)\nencode with JSONEncoder
+Repo -> Coordinator : coordinated creation of the parent directory
+Repo -> Coordinator : coordinated write of the target file
+Repo -> Cache : invalidate the old entry
 Repo -> File : Data.write(.atomic)
-Repo -> File : 查询 identity / generation
-Repo -> Cache : 填入当前 Data、Stamp 和已知 record
-loop 仅清理由本次领域读取所观察到的冲突版本
-  Repo -> File : 标记 resolved 并删除
-  Repo -> Cache : 删除对应冲突缓存
+Repo -> File : query identity / generation
+Repo -> Cache : store current Data, stamp and known record
+loop only conflict versions observed by this domain's read
+  Repo -> File : mark resolved and remove
+  Repo -> Cache : drop the conflict's cache entry
 end
-Repo --> Domain : 所有步骤成功才返回
+Repo --> Domain : returns only when every step succeeded
 note over Repo,File
-  当前实现：原子写入后的资源查询 / 冲突清理仍会抛错。
-  不将此图解读为已实现“提交后维护失败独立处理”。
-  成功回填缓存避免自身目录通知造成重复 JSON 解码；
-  通知本身仍会进入请求合并，并未按本机设备 ID 全部过滤。
+  Current implementation: the resource query / conflict cleanup after the
+  atomic write can still throw. This diagram does not claim that
+  post-commit maintenance failures are handled separately.
+  Filling the cache on success avoids re-decoding JSON for our own folder
+  notifications; the notifications themselves still join request coalescing
+  and are not filtered out by this device's ID.
 end note
 
-== 断开 ==
-Domain -> Repo : disconnect(旧 connectionID)
-Repo -> Repo : 仅匹配当前仓储连接才执行\n释放 scopedURL / 注销 presenter\n清空目录、缓存、冲突与播放存储状态
+== Disconnect ==
+Domain -> Repo : disconnect(old connectionID)
+Repo -> Repo : only if it matches the current repository connection:\nrelease scopedURL / remove presenter\nclear folder, cache, conflicts and playback store state
 @enduml

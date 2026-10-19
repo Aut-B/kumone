@@ -1,80 +1,81 @@
 @startuml architecture
 !pragma layout smetana
-skinparam defaultFontName PingFang SC
+skinparam defaultFontName Helvetica
 skinparam shadowing false
 skinparam componentStyle rectangle
-title 同步架构与状态归属
+title Sync Architecture and State Ownership
 
-package "UI / 场景生命周期" {
-  component "同步设置 / 登录按钮\n接续 Banner / 队列入口" as UI
-  component "PlaybackLifecycle\n场景变化 / 启动" as Life
+package "UI / scene lifecycle" {
+  component "Sync settings / sign-in buttons\ncontinue banner / queue entry" as UI
+  component "PlaybackLifecycle\nscene changes / launch" as Life
 }
 
 package "MainActor" {
-  component "SyncService\n连接与请求编排\n公开列表 / 错误 / 操作状态" as Service
-  component "PreferencesSync\n编辑捕获 / 合并 / 恢复基线" as Pref
-  component "LoginSync\n设备邀请 / 发布 / 撤回责任" as Login
-  component "SyncRevisionClock\n共享 counter / 修订分配" as Clock
-  component "SettingsManager\n支持同步的设置投影" as Settings
-  component "AccountStore\n账号验证 / 凭据导入" as Account
-  component "PlayerService（Mac / iOS）\n本机队列 / 播放 / 进度" as Player
+  component "SyncService\nconnection and request orchestration\npublished lists / errors / operation state" as Service
+  component "PreferencesSync\nedit capture / merge / restore baseline" as Pref
+  component "LoginSync\ndevice offers / publish / withdrawal duty\nlogin key" as Login
+  component "SyncRevisionClock\nshared counter / revision allocation" as Clock
+  component "SettingsManager\nprojection of syncable settings" as Settings
+  component "AccountStore\naccount verification / credential import" as Account
+  component "PlayerService (Mac / iOS)\nlocal queue / playback / progress" as Player
 }
 
-package "SyncRepository actor 的隔离域" {
-  component "SyncRepository\n授权 / 文件协调 / 版本 / 解码缓存" as Repo
-  component "PlaybackSyncStore（struct）\n指针与快照 / 按需读取 / 队列维护" as Playback
+package "SyncRepository actor isolation" {
+  component "SyncRepository\nauthorization / file coordination / versions / decode cache" as Repo
+  component "PlaybackSyncStore (struct)\npointer and snapshot / on-demand reads / queue maintenance" as Playback
 }
 
-database "Keychain\n持久 deviceID" as Keychain
-database "本机认证文件\n由 NeteaseClient 原子写入" as AuthFile
-database "UserDefaults\n开关 / 书签 / 身份标记\n逻辑时钟 / 本地偏好恢复" as Defaults
-folder "授权目录或原生 iCloud 容器\nKumone/Devices/<deviceID>/" as Files
-component "文件系统 / File Provider\nNSFilePresenter 通知" as Provider
-component "PlaybackStateStorage\n独立 utility 串行队列\n150ms 合批 / flush" as Local
-database "本机 player-state.json" as LocalFile
+database "Keychain\npersistent deviceID\nlogin key (not synced)" as Keychain
+database "Local auth file\nwritten atomically by NeteaseClient" as AuthFile
+database "UserDefaults\ntoggles / bookmark / identity token\nlogical clock / local preference restore" as Defaults
+folder "Authorized folder or iCloud container\nKumone/Devices/<deviceID>/\nKumone/login-key.json" as Files
+component "File system / File Provider\nNSFilePresenter notifications" as Provider
+component "PlaybackStateStorage\nown utility serial queue\n150 ms batching / flush" as Local
+database "Local player-state.json" as LocalFile
 
-UI --> Service : 开关 / 导入 / 接续
+UI --> Service : toggles / import / continue
 Life --> Service : start / setForeground
 Life --> Player : checkpointPlayback
 Service --> Pref
 Service --> Login
 Service --> Clock
-Service --> Repo : await（连接代次约束）
-Service --> Player : 按需接续成功后 resume
-Player --> Service : 定向离散状态订阅
+Service --> Repo : await (bound to connection generation)
+Service --> Player : resume after on-demand load succeeds
+Player --> Service : targeted discrete state subscriptions
 Account --> Service : profile / isBootstrapped
 Settings --> Service : syncPreferenceChanges
-Pref --> Settings : 读取投影 / 应用合并结果
+Pref --> Settings : read projection / apply merge result
 Pref --> Clock
 Login --> Clock
-Pref --> Repo : 读写 preferences
-Login --> Repo : 读写 login
-Login --> Account : 检查当前认证
-Service --> Account : 导入登录 / 刷新资料
-Repo *-- Playback : 同一 actor 隔离下运行
-Repo --> Files : NSFileCoordinator / 原子替换
-Provider --> Repo : 目录观察
-Repo ..> Service : 路径通知 → 领域刷新请求
-Files .. Provider : 系统异步传播
-Service --> Keychain : 加载设备身份
-Account --> AuthFile : 经 NeteaseClient 提交认证
+Pref --> Repo : read / write preferences
+Login --> Repo : read / write login and login key
+Login --> Account : check current authentication
+Login --> Keychain : load / save login key
+Service --> Account : import login / refresh library
+Repo *-- Playback : runs under the same actor isolation
+Repo --> Files : NSFileCoordinator / atomic replace
+Provider --> Repo : folder observation
+Repo ..> Service : path notification → domain refresh request
+Files .. Provider : asynchronous system propagation
+Service --> Keychain : load device identity
+Account --> AuthFile : commit authentication via NeteaseClient
 Service --> Defaults
 Pref --> Defaults
 Clock --> Defaults
-Player --> Local : 本机快照
+Player --> Local : local snapshot
 Local --> LocalFile
 
 note bottom of Local
-  本机恢复独立于云端连接。
-  关闭同步或目录不可用不会禁止本机保存。
+  Local restore is independent of the cloud connection.
+  Turning sync off or losing the folder never stops local saves.
 end note
 note bottom of Service
-  一份 pendingSyncRequest
-  至多一个 coalescingTask、syncTask、periodicRefreshTask
-  connectionID 隔离旧任务；不等于持久 deviceID。
+  One pendingSyncRequest
+  At most one coalescingTask, syncTask, periodicRefreshTask
+  connectionID fences off old tasks; it is not the persistent deviceID.
 end note
 note bottom of Files
-  每设备只写自己的目录；无跨设备事务。
-  弱一致、最终收敛，不保证实时传播。
+  Each device writes only its own directory; no cross-device transactions.
+  Weakly consistent and eventually convergent; no real-time propagation.
 end note
 @enduml

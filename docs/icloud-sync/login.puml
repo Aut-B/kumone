@@ -1,97 +1,100 @@
 @startuml login
-skinparam defaultFontName PingFang SC
+skinparam defaultFontName Helvetica
 skinparam shadowing false
-title 登录：设备邀请发布、导入与独立退出（当前串行完成链路）
+title Login: Offer Publication, Import and Independent Sign-Out (current serial flow)
 
-actor "用户" as User
+actor "User" as User
 participant "SyncService" as Service
 participant "LoginSync" as Login
 participant "SyncRepository" as Repo
 participant "AccountStore" as Account
-participant "独立临时 NeteaseClient" as Candidate
-participant "本机 NeteaseClient" as Client
+participant "Temporary NeteaseClient" as Candidate
+participant "Local NeteaseClient" as Client
 
-== 刷新与发布邀请 ==
-opt 请求刷新登录领域
+== Refresh and publish offers ==
+opt login domain refresh requested
   Service -> Login : read
   Login -> Repo : readLoginKey
-  Repo --> Login : login-key.json（或无）
-  Login -> Login : 密钥描述变化时从本机钥匙串载入密钥\n校验值不符则视为未解锁
+  Repo --> Login : login-key.json (or none)
+  Login -> Login : when the key description changes, load the key from the local Keychain\ntreat a verifier mismatch as locked
   Login -> Repo : read(.login)
-  Repo --> Login : 有效设备记录 / 冲突版本\n单设备读取错误记录日志并隔离
-  Login -> Login : 缓存记录、观察 counter\n读到本机记录时更新撤回责任
+  Repo --> Login : valid device records / conflict versions\nsingle-device read errors logged and isolated
+  Login -> Login : cache records, observe counters\nupdate withdrawal duty when this device's record is read
 end
-Service -> Login : publish(enabled: 此刻 loginEnabled)
-Login -> Account : 检查 profile / authenticatedAccountID / hasAuthCookie
-alt 已授权共享、已解锁且账号认证有效
-  Login -> Client : 读取认证 Cookie
-  Login -> Login : 内容未变则沿用原邀请\n否则 AES-GCM 加密 Cookie → outgoingLogin
-else 共享关闭、未解锁或本机无 Cookie
+Service -> Login : publish(enabled: loginEnabled at this moment)
+Login -> Account : check profile / authenticatedAccountID / hasAuthCookie
+alt sharing allowed, unlocked and account authenticated
+  Login -> Client : read authentication cookies
+  Login -> Login : unchanged content keeps the previous offer\notherwise seal cookies with AES-GCM → outgoingLogin
+else sharing off, locked, or no local cookie
   Login -> Login : outgoingLogin = nil
-else 有 Cookie 但账号尚未验证完成
-  Login --> Service : 保留原邀请，返回其他设备可用账号
+else cookie present but account not yet verified
+  Login --> Service : keep the existing offer; return other devices' accounts
 end
-opt 已确定 outgoingLogin 且内容变化或仍有撤回责任
-  Login -> Repo : 写本机 login.json（payload 或删除标记）
-  Repo --> Login : 成功
-  Login -> Login : 更新本机缓存与 hasPublishedLogin
+opt outgoingLogin decided and content changed, or withdrawal still owed
+  Login -> Repo : write this device's login.json (payload or tombstone)
+  Repo --> Login : success
+  Login -> Login : update local cache and hasPublishedLogin
 end
-Login --> Service : 聚合其他设备最新有效邀请（仅当前密钥）→ logins
+Login --> Service : latest valid offers from other devices (current key only) → logins
 
-== 设置或输入同步密码 ==
-alt 目录尚无密钥或用户重设
-  User -> Service : createLoginKey(密码, 确认)
+== Set or enter the sync passphrase ==
+alt folder has no key, or the user resets it
+  User -> Service : createLoginKey(passphrase, confirmation)
   Service -> Login : createKey
-  Login -> Login : 后台 PBKDF2 派生；生成新盐与密钥 ID
+  Login -> Login : PBKDF2 in the background; new salt and key ID
   Login -> Repo : writeLoginKey
-else 目录已有密钥
-  User -> Service : unlockLogin(密码)
+else folder already has a key
+  User -> Service : unlockLogin(passphrase)
   Service -> Login : unlock
-  Login -> Login : 后台 PBKDF2 派生；比对校验值
+  Login -> Login : PBKDF2 in the background; compare verifier
 end
-Login -> Login : 保存密钥到本机钥匙串
-Service -> Service : await synchronizeNow（登录）
+Login -> Login : save the key to the local Keychain
+Service -> Service : await synchronizeNow (login)
 
-== 用户确认导入 ==
+== User confirms import ==
 User -> Service : importLogin(record)
-Service -> Service : 禁止并行导入；捕获连接代次\n复核邀请仍在当前连接列出
+Service -> Service : no concurrent imports; capture connection generation\nre-check the offer is still listed on this connection
 Service -> Login : open(login)
-Login --> Service : 解密 Cookie（未解锁则要求输入同步密码）
+Login --> Service : decrypted cookies (asks for the passphrase when locked)
 Service -> Account : importLogin(accountID, cookies, authorization)
-Account -> Account : 校验载荷与当前授权\n记录 bootstrapGeneration / authenticationFingerprint
-Account -> Candidate : 设置候选 Cookie；在线查询账号
+Account -> Account : check payload and current authorization\nrecord bootstrapGeneration / authenticationFingerprint
+Account -> Candidate : set candidate cookies; query the account online
 Candidate --> Account : verified profile
-Account -> Account : 复核账号 ID、授权、启动代次及原认证指纹
-Account -> Client : replaceAuthentication（持久化后应用）
-Account -> Account : 增加认证代次；挂起旧播放\n应用资料与本机账号快照
-Account --> Service : 本机凭据导入完成
-Service -> Service : 复核取消 / 连接 / 当前账号\n设置 loginEnabled = true 并保存
+Account -> Account : re-check account ID, authorization,\nbootstrap generation and original fingerprint
+Account -> Client : replaceAuthentication (applied after persisting)
+Account -> Account : bump authentication generation; suspend old playback\napply profile and local account snapshot
+Account --> Service : local credential import complete
+Service -> Service : re-check cancellation / connection / current account\nset loginEnabled = true and save
 Service -> Service : await synchronizeNow\nrefreshing: login / publishing: login + playback
 Service -> Account : await refreshLibrary()
-Account --> Service : 资料刷新结束
-Service --> User : 返回当前账号是否仍匹配\ndefer 清除 importingLogin
+Account --> Service : library refresh finished
+Service --> User : whether the current account still matches\ndefer clears importingLogin
 note over Service,Account
-  当前交互仍等待后续同步与资料刷新，不是凭据提交后立即返回。
-  提交后的取消 / 连接变化不会自动撤销已导入的本机凭据。
+  The interaction still waits for the follow-up sync and library refresh;
+  it does not return as soon as the credentials are committed.
+  Cancellation or connection changes after the commit do not undo the imported credentials.
 end note
 
-== 本机退出 ==
+== Local sign-out ==
 User -> Account : logout()
-Account -> Service : shouldRevokeLoginSession（当前账号 ID）
-Service -> Login : isAccountSharedElsewhere（账号 ID、本机 ID）
-Login --> Service : 其他设备最新记录是否仍提供该账号
-Service --> Account : 默认撤销；同步与登录同步均开启且他处仍在提供时保留
-Account -> Client : clearAuthCookies（本机）
-Account -> Account : 增加启动代次、清除本机资料快照、应用未登录
-Account -> Service : profile 变化 → 合并登录 / 播放发布请求
-opt 需要撤销服务端会话
-  Account -> Candidate : 使用退出前 Cookie 请求 /logout
-  Candidate --> Account : 成功或抛出错误；不修改本机新登录
+Account -> Service : shouldRevokeLoginSession(current account ID)
+Service -> Login : isAccountSharedElsewhere(account ID, this device's ID)
+Login --> Service : whether another device's latest record still offers the account
+Service --> Account : revoke by default; keep only when sync and login sync are on\nand the account is offered elsewhere
+Account -> Client : clearAuthCookies (local)
+Account -> Account : bump bootstrap generation, clear local snapshot, apply signed-out state
+Account -> Service : profile change → merged login / playback publication request
+opt server session must be revoked
+  Account -> Candidate : request /logout with the cookies from before sign-out
+  Candidate --> Account : success or thrown error; never touches a newer local login
 end
-Service -> Login : publish → 撤回本机邀请
+Service -> Login : publish → withdraw this device's offer
 note over Repo,Client
-  Cookie 在同步目录中以同步密码派生的密钥加密；密钥只存本机钥匙串。
-  默认撤销服务端会话；仅在其他设备仍提供该账号时保留，最后退出者撤销。
-  总同步关闭时不执行云端撤回；重新连接后再检查。
+  Cookies in the sync folder are sealed with a key derived from the sync passphrase;
+  the key lives only in each device's Keychain.
+  The server session is revoked by default and kept only while another device
+  still offers the account; the last device out revokes it.
+  With sync off, nothing is withdrawn from the cloud until it reconnects.
 end note
 @enduml
