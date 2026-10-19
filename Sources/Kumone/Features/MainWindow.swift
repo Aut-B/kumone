@@ -11,6 +11,10 @@ struct MainWindow: View {
     @EnvironmentObject private var settings: SettingsManager
     @EnvironmentObject private var toasts: ToastCenter
 
+    /// Whether the main window is on screen at all — the page is put away
+    /// while it is not (miniaturised or hidden), see the overlay below.
+    @ObservedObject private var windowVisibility = MainWindowVisibility.shared
+
     #if os(macOS)
     @StateObject private var artworkStore = NowPlayingArtworkStore()
     #else
@@ -196,7 +200,12 @@ struct MainWindow: View {
             LoginSheet()
         }
         .overlay {
-            if player.showNowPlaying {
+            // The page is put away while the window is off screen
+            // (miniaturised or ordered out): the vinyl, lyrics and cover it
+            // holds together add up to tens of megabytes, and rebuilding the
+            // page takes a single frame when the window comes back. The
+            // player state — and the page on restore — is untouched.
+            if player.showNowPlaying, windowVisibility.isOnScreen {
                 #if os(macOS)
                 NowPlayingView(onOpenDestination: openDestination)
                     .environmentObject(artworkStore)
@@ -500,6 +509,8 @@ struct MainWindowConfigurator: NSViewRepresentable {
             }
             AppDelegate.shared?.mainWindow = window
             observeFullScreenChanges(of: window)
+            observeWindowVisibility(of: window)
+            refreshWindowVisibility()
         }
 
         /// Full screen hands the titlebar and toolbar to a system-managed
@@ -531,9 +542,45 @@ struct MainWindowConfigurator: NSViewRepresentable {
             }
         }
 
+        /// SwiftUI keeps the page's `TimelineView`s ticking while the window
+        /// is off screen, so track the states that take it there — and bring
+        /// it back — and tell `MainWindowVisibility`.
+        private func observeWindowVisibility(of window: NSWindow) {
+            let center = NotificationCenter.default
+            for name in [
+                NSWindow.didMiniaturizeNotification,
+                NSWindow.didDeminiaturizeNotification,
+                NSWindow.didChangeOcclusionStateNotification
+            ] {
+                center.addObserver(
+                    forName: name,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor in
+                        self?.refreshWindowVisibility()
+                    }
+                }
+            }
+        }
+
+        /// Miniaturised, ordered out and fully occluded all mean nothing can
+        /// see the page: its animations stand their clocks down, and a window
+        /// in the Dock (or hidden) also has the page itself put away
+        /// (#128 performance work).
+        private func refreshWindowVisibility() {
+            guard let window else { return }
+            let onScreen = window.isVisible && !window.isMiniaturized
+            MainWindowVisibility.shared.update(
+                isVisible: onScreen && window.occlusionState.contains(.visible),
+                isOnScreen: onScreen
+            )
+        }
+
         private func reassertChromeState() {
             window?.titleVisibility = titlebarFadedOut ? .hidden : .visible
             applyWindowToolbarVisibility()
+            refreshWindowVisibility()
         }
 
         func requestAmbientBackgroundConfiguration(
@@ -564,6 +611,7 @@ struct MainWindowConfigurator: NSViewRepresentable {
             if let window {
                 ambientAppearance.updateLayout(in: window)
             }
+            refreshWindowVisibility()
         }
 
         func windowDidResize(_ notification: Notification) {
@@ -571,11 +619,13 @@ struct MainWindowConfigurator: NSViewRepresentable {
             if let window {
                 ambientAppearance.updateLayout(in: window)
             }
+            refreshWindowVisibility()
         }
 
         // Hide instead of close; keep the scene alive.
         func windowShouldClose(_ sender: NSWindow) -> Bool {
             sender.orderOut(nil)
+            refreshWindowVisibility()
             return false
         }
 
