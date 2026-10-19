@@ -23,7 +23,6 @@ struct NowPlayingView: View {
     #endif
     @State private var activeIndex: Int?
     @State private var isUserScrolling = false
-    @State private var resumeTask: Task<Void, Never>?
     @State private var showLyricsOnMobile = false
     @State private var showQueueOnMobile = false
 
@@ -970,17 +969,7 @@ struct NowPlayingView: View {
                 .onChange(of: player.currentTrack?.id) { _ in
                     activeIndex = nil
                 }
-                .simultaneousGesture(
-                    DragGesture().onChanged { _ in
-                        isUserScrolling = true
-                        resumeTask?.cancel()
-                        resumeTask = Task {
-                            try? await Task.sleep(for: .seconds(3))
-                            guard !Task.isCancelled else { return }
-                            isUserScrolling = false
-                        }
-                    }
-                )
+                .lyricsScrollTracking(isUserScrolling: $isUserScrolling)
             }
         } else if player.lyrics?.isInstrumental == true {
             VStack(spacing: 10) {
@@ -1024,11 +1013,12 @@ struct NowPlayingView: View {
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .blur(radius: isActive ? 0 : 0.6)
+            .blur(radius: isActive || isUserScrolling ? 0 : 0.6)
             .scaleEffect(isActive ? 1.02 : 1, anchor: .leading)
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isActive)
+        .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
 }
 
@@ -1114,7 +1104,6 @@ private struct IOSImmersiveLyricsColumn: View {
 
     @State private var activeIndex: Int?
     @State private var isUserScrolling = false
-    @State private var resumeTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -1150,23 +1139,12 @@ private struct IOSImmersiveLyricsColumn: View {
                     .onChange(of: player.currentTrack?.id) { _ in
                         activeIndex = nil
                     }
-                    .simultaneousGesture(
-                        DragGesture()
-                            .onChanged { _ in
-                                isUserScrolling = true
-                                resumeTask?.cancel()
-                                resumeTask = Task { @MainActor in
-                                    try? await Task.sleep(for: .seconds(3))
-                                    guard !Task.isCancelled else { return }
-                                    isUserScrolling = false
-                                    if let activeIndex {
-                                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-                                            proxy.scrollTo(activeIndex, anchor: .center)
-                                        }
-                                    }
-                                }
-                            }
-                    )
+                    .lyricsScrollTracking(isUserScrolling: $isUserScrolling) {
+                        guard let activeIndex else { return }
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                            proxy.scrollTo(activeIndex, anchor: .center)
+                        }
+                    }
                 }
             } else if player.lyrics?.isInstrumental == true {
                 VStack(spacing: 10) {
@@ -1184,9 +1162,6 @@ private struct IOSImmersiveLyricsColumn: View {
                     .tint(.white)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }
-        .onDisappear {
-            resumeTask?.cancel()
         }
     }
 
@@ -1247,11 +1222,12 @@ private struct IOSImmersiveLyricsColumn: View {
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .blur(radius: isActive ? 0 : 0.4)
+            .blur(radius: isActive || isUserScrolling ? 0 : 0.4)
             .scaleEffect(isActive ? 1.02 : 1.0, anchor: .leading)
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isActive)
+        .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
 }
 
