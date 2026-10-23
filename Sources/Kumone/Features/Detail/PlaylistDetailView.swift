@@ -730,13 +730,11 @@ struct PlaylistDetailView: View {
     }
 
     private var playable: [Track] {
+        // 同 TrackList.playableTracks：备份里的原始 fee/privilege 与账号无关，
+        // 按版权过滤会砍短播放队列，改为全量入队。
         let tracks = model.orderedTracks
         if SettingsManager.shared.canResolveUnblockedTracks { return tracks }
-        return tracks.filter {
-            $0.playability(privilege: model.privileges[$0.id],
-                           isLoggedIn: account.isLoggedIn,
-                           vipType: account.vipType) == .playable
-        }
+        return tracks
     }
 
     private func startHeartbeat() {
