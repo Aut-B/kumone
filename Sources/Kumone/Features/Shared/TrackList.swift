@@ -639,7 +639,11 @@ struct TrackListView: View {
     }
 
     private var playableTracks: [Track] {
-        tracks.filter { playability(of: $0) == .playable }
+        // 导入/恢复出来的歌单带着备份里的原始 fee/privilege，与账号会员状态无关，
+        // 用网易云版权判定过滤会把队列砍短（播完即停），甚至点的歌被剔除后
+        // 退回第一首。这里只保留 unblock 开关语义，不再按版权过滤。
+        if SettingsManager.shared.canResolveUnblockedTracks { return tracks }
+        return tracks
     }
 
     private func playability(of track: Track) -> TrackPlayability {
