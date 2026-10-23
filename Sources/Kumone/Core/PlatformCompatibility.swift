@@ -183,6 +183,57 @@ extension View {
         }
         return AnyView(self)
     }
+
+    /// `autocorrectionDisabled` is iOS 16+ / macOS 13+; older systems keep the
+    /// default autocorrection behaviour for URL and account fields.
+    func compatAutocorrectionDisabled() -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.autocorrectionDisabled())
+        }
+        return AnyView(self)
+    }
+
+    /// `navigationDestination(for:)` is iOS 16+ / macOS 13+. On iOS 15 the
+    /// value-based link is replaced by one that carries its own destination, so
+    /// this modifier is simply dropped.
+    func compatNavigationDestination<Data: Hashable, Destination: View>(
+        for type: Data.Type,
+        @ViewBuilder destination: @escaping (Data) -> Destination
+    ) -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.navigationDestination(for: type, destination: destination))
+        }
+        return AnyView(self)
+    }
+}
+
+#if os(iOS)
+extension View {
+    /// `scrollDismissesKeyboard` is iOS 16+; on iOS 15 the search field keeps
+    /// the default dismissal behaviour (tapping outside / scroll still works).
+    func compatScrollDismissesKeyboardInteractively() -> AnyView {
+        if #available(iOS 16.0, *) {
+            return AnyView(self.scrollDismissesKeyboard(.interactively))
+        }
+        return AnyView(self)
+    }
+}
+#endif
+
+/// `ViewThatFits` is iOS 16+ / macOS 13+. On iOS 15 the wider arrangement is
+/// used unconditionally — the same choice `ViewThatFits` makes on a phone in
+/// portrait for every layout this app uses.
+struct CompatViewThatFits<Wide: View, Narrow: View>: View {
+    @ViewBuilder var wide: () -> Wide
+    @ViewBuilder var narrow: () -> Narrow
+
+    var body: some View {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            ViewThatFits(in: .horizontal) { wide(); narrow() }
+        } else {
+            wide()
+        }
+    }
 }
 
 /// mm:ss for a millisecond value —  formatting is iOS 16+.
