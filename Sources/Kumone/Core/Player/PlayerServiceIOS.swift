@@ -644,7 +644,7 @@ final class PlayerService: ObservableObject {
         }
         if let nextIdx = pendingQueue.firstIndex(where: { $0.id == track.id }) {
             pendingQueue.removeSubrange(0...nextIdx)
-            startPlaying(track, indexUnchanged: true)
+            startPlaying(track)
             return
         }
         if let idx = activeQueue.firstIndex(where: { $0.id == track.id }) {
@@ -797,7 +797,7 @@ final class PlayerService: ObservableObject {
             // Nothing is playing from a list, so a queued tail can take over.
             if !pendingQueue.isEmpty {
                 let track = pendingQueue.removeFirst()
-                startPlaying(track, indexUnchanged: true)
+                startPlaying(track)
             }
             return
         }
@@ -807,7 +807,7 @@ final class PlayerService: ObservableObject {
             // takes us back to the top of the same list.
             if !pendingQueue.isEmpty {
                 let track = pendingQueue.removeFirst()
-                startPlaying(track, indexUnchanged: true)
+                startPlaying(track)
                 return
             }
             guard repeatMode == .all else {

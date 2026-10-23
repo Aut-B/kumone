@@ -231,10 +231,6 @@ struct SettingsView: View {
         #if os(macOS)
         .frame(width: 440, height: 600)
         #endif
-        .task {
-            await refreshCacheUsage()
-            await enforceAudioCacheLimit()
-        }
         .navigationDestination(for: SettingsPage.self) { page in
             Group {
                 switch page {
