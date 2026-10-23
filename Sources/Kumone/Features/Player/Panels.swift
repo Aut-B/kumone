@@ -152,6 +152,24 @@ struct LyricsPanel: View {
 
 // MARK: - Queue panel
 
+/// Where each waiting track is parked — the distinction the listener made
+/// when queueing it, and the only thing that tells them apart in the list:
+/// cut in front of the current song, the remainder of the list being played,
+/// or behind everything that is already queued.
+struct QueueSections {
+    var inserted: [Track] = []
+    var upcoming: [Track] = []
+    var pending: [Track] = []
+}
+
+extension PlayerService {
+    var queueSections: QueueSections {
+        QueueSections(inserted: playNextList,
+                      upcoming: remainingQueueTracks,
+                      pending: pendingQueue)
+    }
+}
+
 struct QueuePanel: View {
     @EnvironmentObject private var player: PlayerService
 
@@ -167,12 +185,38 @@ struct QueuePanel: View {
                         sectionLabel("正在播放")
                         QueueRow(track: current, isCurrent: true)
 
-                        if !player.upcomingTracks.isEmpty {
+                        if !player.queueSections.inserted.isEmpty {
+                            sectionLabel("插播")
+                                .padding(.top, 10)
+                            ForEach(Array(player.queueSections.inserted.prefix(100).enumerated()),
+                                    id: \.offset) { _, track in
+                                QueueRow(track: track, isCurrent: false)
+                            }
+                        }
+
+                        if !player.queueSections.upcoming.isEmpty {
                             sectionLabel("即将播放")
                                 .padding(.top, 10)
-                            ForEach(Array(player.upcomingTracks.prefix(100).enumerated()),
+                            // Global index into `upcomingTracks` so the row keeps
+                            // upstream's jump/remove actions; the sections are a
+                            // display grouping over that same flat list.
+                            let insertedCount = player.queueSections.inserted.count
+                            ForEach(Array(player.queueSections.upcoming.prefix(100).enumerated()),
                                     id: \.offset) { index, track in
-                                QueueRow(track: track, isCurrent: false, upcomingIndex: index)
+                                QueueRow(track: track, isCurrent: false,
+                                         upcomingIndex: insertedCount + index)
+                            }
+                        }
+
+                        if !player.queueSections.pending.isEmpty {
+                            sectionLabel("稍后播放")
+                                .padding(.top, 10)
+                            let offset = player.queueSections.inserted.count
+                                + player.queueSections.upcoming.count
+                            ForEach(Array(player.queueSections.pending.prefix(100).enumerated()),
+                                    id: \.offset) { index, track in
+                                QueueRow(track: track, isCurrent: false,
+                                         upcomingIndex: offset + index)
                             }
                         }
                     }

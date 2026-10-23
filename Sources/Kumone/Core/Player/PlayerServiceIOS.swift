@@ -22,6 +22,13 @@ enum PlaySource: Codable, Equatable {
     case artist(Int)
     case daily
     case cloud
+    /// Queue from a MusicFree-style JS plugin.
+    ///
+    /// Local playlists report this too: their mixed NetEase + plugin tracks are
+    /// handed over as a finished queue, and the source carries no id because a
+    /// local playlist id would collide with real NetEase playlist ids in the
+    /// scrobble payload.
+    case plugins
     case none
 
     var sourceID: Int {
@@ -44,6 +51,8 @@ struct PlayContext: Codable, Hashable {
         case playlist, album, artist
         /// Fixed per-account entry points, each reloaded from its own API.
         case daily, cloud, recents, heartbeat, fm
+        /// JS plugin queues; restored from persisted track payloads.
+        case plugins
     }
 
     let kind: Kind
@@ -62,6 +71,8 @@ struct PlayContext: Codable, Hashable {
     static func artist(id: Int, name: String) -> PlayContext {
         .init(kind: .artist, id: id, name: name)
     }
+
+    static func plugins(name: String) -> PlayContext { .init(kind: .plugins, id: 0, name: name) }
 
     static var daily: PlayContext { .init(kind: .daily, id: 0, name: String(localized: "每日推荐")) }
     static var cloud: PlayContext { .init(kind: .cloud, id: 0, name: String(localized: "音乐云盘")) }
@@ -116,6 +127,11 @@ final class PlayerService: ObservableObject {
     @Published private(set) var queue: [Track] = []
     @Published private(set) var shuffledQueue: [Track] = []
     @Published private(set) var playNextList: [Track] = []
+    /// Tracks queued with "排到队列末尾". Unlike `playNextList` (a real
+    /// cut-in-front-of-the-current-song request) these wait until the list
+    /// being played has run out — queueing another playlist must not hijack
+    /// the song that comes after this one.
+    @Published private(set) var pendingQueue: [Track] = []
     @Published private(set) var currentIndex = -1
     @Published private(set) var currentTrack: Track?
     private var playbackAccountID: Int?
@@ -146,6 +162,86 @@ final class PlayerService: ObservableObject {
         }
     }
 
+    /// Playback speed multiplier (0.5 ... 2.0).
+    @Published var rate: Double = 1.0 {
+        didSet {
+            if #available(iOS 16.0, *) { engine.defaultRate = Float(rate) }
+            if isPlaying {
+                engine.playImmediately(atRate: Float(rate))
+            }
+            UserDefaults.standard.set(rate, forKey: "player.rate")
+        }
+    }
+
+    /// When the sleep timer fires (nil = off).
+    @Published private(set) var sleepTimerEndsAt: Date?
+    private var sleepTimerTask: Task<Void, Never>?
+
+    /// Plugin tracks carry no lyric source — UI hides the lyrics page
+    /// instead of spinning forever.
+    @Published private(set) var hasNoLyrics = false
+
+    private var syncedRealDurationTrackID: Int?
+
+    /// Adopts the AVPlayerItem's real duration (authoritative) once known.
+    private func syncRealDurationIfNeeded() {
+        guard let item = engine.currentItem else { return }
+        let real = item.duration.seconds
+        guard item.duration.isNumeric, real.isFinite, real > 0 else { return }
+        guard syncedRealDurationTrackID != currentTrack?.id else { return }
+        syncedRealDurationTrackID = currentTrack?.id
+        // Metadata duration is either wrong or unknown; the item wins.
+        duration = real
+        if let currentTrack {
+            NowPlayingManager.shared.updateMetadata(for: currentTrack, duration: real)
+        }
+    }
+
+    /// Keep playing while other apps play audio (mixWithOthers).
+    func applyAudioMixPreference() {
+        #if os(iOS)
+        do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .default,
+                policy: .longFormAudio,
+                options: SettingsManager.shared.mixWithOthers ? [.mixWithOthers] : []
+            )
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("Failed to apply audio mix preference: \(error)")
+        }
+        #endif
+    }
+
+    /// Schedules auto-pause after `minutes`.
+    func startSleepTimer(minutes: Int) {
+        sleepTimerTask?.cancel()
+        let endsAt = Date().addingTimeInterval(TimeInterval(minutes) * 60)
+        sleepTimerEndsAt = endsAt
+        sleepTimerTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(minutes * 60 * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.pause()
+            self.sleepTimerEndsAt = nil
+            self.sleepTimerTask = nil
+        }
+        ToastCenter.shared.show(String(localized: "将于 \(Self.sleepFormatter.string(from: endsAt)) 停止播放"))
+    }
+
+    func stopSleepTimer() {
+        sleepTimerTask?.cancel()
+        sleepTimerTask = nil
+        sleepTimerEndsAt = nil
+        ToastCenter.shared.show(String(localized: "已关闭定时停止"))
+    }
+
+    private static let sleepFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
     @Published private(set) var isFMMode = false
     @Published private(set) var fmUpcoming: [Track] = []
     /// Where playback was most recently started from, newest first —
@@ -158,10 +254,16 @@ final class PlayerService: ObservableObject {
     /// The list the player is walking through (shuffled or ordered).
     var activeQueue: [Track] { shuffleEnabled ? shuffledQueue : queue }
 
-    var upcomingTracks: [Track] {
-        guard !activeQueue.isEmpty, currentIndex >= 0 else { return playNextList }
+    /// What is left of the list being played, without anything inserted.
+    var remainingQueueTracks: [Track] {
+        guard !activeQueue.isEmpty, currentIndex >= 0 else { return [] }
         let rest = activeQueue.suffix(from: min(currentIndex + 1, activeQueue.count))
-        return playNextList + Array(rest.prefix(200))
+        return Array(rest.prefix(200))
+    }
+
+    var upcomingTracks: [Track] {
+        guard !activeQueue.isEmpty, currentIndex >= 0 else { return playNextList + pendingQueue }
+        return playNextList + remainingQueueTracks + pendingQueue
     }
 
     var hasCurrentTrack: Bool { currentTrack != nil }
@@ -235,6 +337,8 @@ final class PlayerService: ObservableObject {
         engine.volume = volume
         repeatMode = UserDefaults.standard.string(forKey: "player.repeat")
             .flatMap(RepeatMode.init) ?? .off
+        rate = UserDefaults.standard.object(forKey: "player.rate") as? Double ?? 1.0
+        if #available(iOS 16.0, *) { engine.defaultRate = Float(rate) }
 
         #if os(iOS)
         do {
@@ -275,6 +379,11 @@ final class PlayerService: ObservableObject {
                 guard let self, !self.isScrubbing else { return }
                 let seconds = time.seconds
                 guard seconds.isFinite else { return }
+
+                // Plugin metadata can misreport duration (then scrubbing past
+                // the real end skips to the next track). Once the item knows
+                // its real duration, adopt it — it is authoritative.
+                self.syncRealDurationIfNeeded()
 
                 // Lyrics need this cadence to stay in sync; the cursor itself
                 // only publishes when the line actually changes.
@@ -361,6 +470,9 @@ final class PlayerService: ObservableObject {
         queue = tracks
         self.source = source
         playNextList.removeAll()
+        // Starting a new list is a clean slate: neither the cut-in list nor
+        // the tail queue of the previous list carries over.
+        pendingQueue.removeAll()
         let startTrack = track ?? tracks[0]
         if shuffleEnabled {
             reshuffle(keeping: startTrack)
@@ -387,6 +499,31 @@ final class PlayerService: ObservableObject {
             advanceToNext(userInitiated: true)
         } else {
             ToastCenter.shared.show(String(localized: "已添加到下一首播放"))
+        }
+    }
+
+    /// Insert a batch of tracks right after the current one, keeping list
+    /// order. One toast for the whole batch instead of one per track.
+    /// Nothing playing yet? The first track starts immediately.
+    func addToPlayNext(_ tracks: [Track], playNow: Bool = false) {
+        guard !tracks.isEmpty else { return }
+        playNextList.append(contentsOf: tracks)
+        if playNow || currentTrack == nil {
+            advanceToNext(userInitiated: true)
+        } else {
+            ToastCenter.shared.show(String(localized: "已把 \(tracks.count) 首排到下一首播放"))
+        }
+    }
+
+    /// Queue tracks behind everything else: whatever is playing now finishes
+    /// its list first, then the tail queue plays out.
+    func addToQueueEnd(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        pendingQueue.append(contentsOf: tracks)
+        if currentTrack == nil {
+            advanceToNext(userInitiated: true)
+        } else {
+            ToastCenter.shared.show(String(localized: "已把 \(tracks.count) 首排到队列末尾"))
         }
     }
 
@@ -447,14 +584,17 @@ final class PlayerService: ObservableObject {
     }
 
     func seek(to seconds: TimeInterval, completion: (@MainActor () -> Void)? = nil) {
-        progress = seconds
-        updateLyricsCursor(at: seconds)
-        engine.seek(to: CMTime(seconds: seconds, preferredTimescale: 600),
+        // Clamp inside the known duration so a seek can never run past the
+        // real end of a stream (which would trigger end-of-item -> next song).
+        let clamped = duration > 1 ? min(max(seconds, 0), duration - 0.5) : max(seconds, 0)
+        progress = clamped
+        updateLyricsCursor(at: clamped)
+        engine.seek(to: CMTime(seconds: clamped, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero) { _ in
             guard let completion else { return }
             Task { @MainActor in completion() }
         }
-        NowPlayingManager.shared.updateElapsed(seconds, rate: isPlaying ? 1 : 0)
+        NowPlayingManager.shared.updateElapsed(clamped, rate: isPlaying ? 1 : 0)
         persistState()
     }
 
@@ -502,6 +642,11 @@ final class PlayerService: ObservableObject {
             startPlaying(track)
             return
         }
+        if let nextIdx = pendingQueue.firstIndex(where: { $0.id == track.id }) {
+            pendingQueue.removeSubrange(0...nextIdx)
+            startPlaying(track, indexUnchanged: true)
+            return
+        }
         if let idx = activeQueue.firstIndex(where: { $0.id == track.id }) {
             currentIndex = idx
             startPlaying(track)
@@ -511,6 +656,10 @@ final class PlayerService: ObservableObject {
     func removeFromUpcoming(_ track: Track) {
         if let idx = playNextList.firstIndex(where: { $0.id == track.id }) {
             playNextList.remove(at: idx)
+            return
+        }
+        if let idx = pendingQueue.firstIndex(where: { $0.id == track.id }) {
+            pendingQueue.remove(at: idx)
             return
         }
         if let idx = queue.firstIndex(where: { $0.id == track.id }), idx != currentIndex || shuffleEnabled {
@@ -578,6 +727,7 @@ final class PlayerService: ObservableObject {
         queue = []
         shuffledQueue = []
         playNextList = []
+        pendingQueue = []
         currentIndex = -1
         source = .none
         Task { await fmAdvance() }
@@ -611,7 +761,7 @@ final class PlayerService: ObservableObject {
                     ToastCenter.shared.show(String(localized: "获取私人漫游数据失败"))
                     return
                 }
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(nanoseconds: UInt64(1 * 1_000_000_000))
             }
         }
         guard !fmUpcoming.isEmpty else { return }
@@ -643,9 +793,23 @@ final class PlayerService: ObservableObject {
             startPlaying(track)
             return
         }
-        guard !activeQueue.isEmpty else { return }
+        guard !activeQueue.isEmpty else {
+            // Nothing is playing from a list, so a queued tail can take over.
+            if !pendingQueue.isEmpty {
+                let track = pendingQueue.removeFirst()
+                startPlaying(track, indexUnchanged: true)
+            }
+            return
+        }
         var idx = currentIndex + 1
         if idx >= activeQueue.count {
+            // End of the list: the tail queue plays before a repeat-all pass
+            // takes us back to the top of the same list.
+            if !pendingQueue.isEmpty {
+                let track = pendingQueue.removeFirst()
+                startPlaying(track, indexUnchanged: true)
+                return
+            }
             guard repeatMode == .all else {
                 if userInitiated {
                     ToastCenter.shared.show(String(localized: "已经是最后一首了"))
@@ -701,6 +865,11 @@ final class PlayerService: ObservableObject {
         scrobbleIfNeeded(completed: false)
         currentTrack = track
         playbackAccountID = AccountStore.shared.profile?.userId
+        // Kill the previous item IMMEDIATELY: otherwise the old audio keeps
+        // playing while the new URL resolves (or after it fails), and the
+        // scrubber keeps showing the old song's progress.
+        engine.pause()
+        engine.replaceCurrentItem(with: nil)
         progress = resumeAt
         duration = track.duration
         servedQuality = nil
@@ -710,6 +879,7 @@ final class PlayerService: ObservableObject {
         itemStatusObservation?.invalidate()
         itemStatusObservation = nil
         isTrial = false
+        hasNoLyrics = track.isPluginTrack
         lyrics = nil
         scrobbled = false
         startScrobbled = false
@@ -756,7 +926,9 @@ final class PlayerService: ObservableObject {
         }
         guard generation == resolveGeneration else { return }
 
-        if cacheEnabled {
+        // Plugin tracks are cached by neither NetEase id nor the cache loader
+        // (which replays the URL without the referer/UA some CDNs require).
+        if cacheEnabled, track.plugin == nil {
             do {
                 if let cached = try await AudioCache.shared.entry(
                     for: track.id,
@@ -823,12 +995,41 @@ final class PlayerService: ObservableObject {
         guard generation == resolveGeneration else { return }
 
         var resolvedURL: URL?
+        var pluginHeaders: [String: String]?
         if let urlString = data?.url {
             resolvedURL = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://"))
         }
 
+        // JS plugin tracks: resolve through the plugin's getMediaSource instead.
+        if let plugin = track.plugin,
+           let itemData = plugin.rawJSON.data(using: .utf8),
+           let itemDict = (try? JSONSerialization.jsonObject(with: itemData)) as? [String: Any],
+           let item = PluginMusicItem(normalizing: itemDict, platform: plugin.platform) {
+            let source = await PluginManager.shared.getMediaSource(
+                platform: plugin.platform,
+                item: item,
+                quality: SettingsManager.shared.audioQuality.pluginQuality
+            )
+            guard generation == resolveGeneration else { return }
+            resolvedURL = source.url
+            pluginHeaders = source.headers
+            // Bilibili CDN hosts sometimes check referer/UA on direct links;
+            // attach browser-style defaults when the plugin didn't provide any.
+            if let host = resolvedURL?.host,
+               host.contains("bilivideo.com") || host.contains("upos"),
+               pluginHeaders == nil || pluginHeaders!.isEmpty {
+                pluginHeaders = [
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36",
+                    "Referer": "https://www.bilibili.com/",
+                ]
+            }
+            data = nil
+        }
+
         // NetEase refused — try third-party sources (UnblockNeteaseMusic-style).
-        if resolvedURL == nil || data?.freeTrialInfo != nil, allowsUnblock {
+        // NEVER for plugin tracks: their name-based matching can resolve to a
+        // different song entirely (wrong music), which is worse than failing.
+        if track.plugin == nil, resolvedURL == nil || data?.freeTrialInfo != nil, allowsUnblock {
             if await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt) { return }
         }
         guard generation == resolveGeneration else { return }
@@ -851,7 +1052,17 @@ final class PlayerService: ObservableObject {
             isTrial = true
             ToastCenter.shared.show(String(localized: "VIP 歌曲，当前为试听片段"))
         }
-        _ = await loadResolvedURL(track, url: url, durationMS: data?.time, generation: generation, resumeAt: resumeAt)
+        _ = await loadResolvedURL(
+            track,
+            url: url,
+            durationMS: data?.time,
+            generation: generation,
+            resumeAt: resumeAt,
+            headers: pluginHeaders,
+            // The cache loader replays the URL without custom headers, so a
+            // plugin track that needs a referer/UA must not go through it.
+            allowsCaching: track.plugin == nil
+        )
     }
 
     private func resolveAndLoadUnblocked(
@@ -920,14 +1131,16 @@ final class PlayerService: ObservableObject {
         url: URL,
         durationMS: Int?,
         generation: Int,
-        resumeAt: TimeInterval = 0
+        resumeAt: TimeInterval = 0,
+        headers: [String: String]? = nil,
+        allowsCaching: Bool = true
     ) async -> ResolvedURLLoadResult {
         // Skip a CDN host that just failed to connect (see NeteaseCDNHost).
         let remote = NeteaseCDNHost.preferred(for: url)
 
-        var asset = AVURLAsset(url: remote)
+        var asset = AVURLAsset(url: remote, options: Self.assetOptions(headers: headers))
         var resourceLoader: CachingAudioResourceLoader?
-        if SettingsManager.shared.enableAudioCache, !isTrial {
+        if allowsCaching, SettingsManager.shared.enableAudioCache, !isTrial {
             let cacheLimitMB = await SettingsManager.shared.effectiveAudioCacheSizeMB()
             guard generation == resolveGeneration else { return .superseded }
             let source: AudioCacheSource = unblockSource.map(AudioCacheSource.unblock) ?? .netease
@@ -963,6 +1176,15 @@ final class PlayerService: ObservableObject {
             resourceLoader: resourceLoader,
             resumeAt: resumeAt
         )
+    }
+
+    /// Custom request headers (B站 CDN rejects direct links without a browser
+    /// UA and a referer) have to travel in the asset's options.
+    /// `AVURLAssetHTTPHeaderFieldsKey` isn't exported to Swift in this SDK build;
+    /// the raw key string is identical.
+    private static func assetOptions(headers: [String: String]?) -> [String: Any] {
+        guard let headers, !headers.isEmpty else { return [:] }
+        return ["AVURLAssetHTTPHeaderFieldsKey": headers]
     }
 
     private func loadFallbackCache(
@@ -1261,6 +1483,8 @@ final class PlayerService: ObservableObject {
     }
 
     private func loadLyrics(for track: Track, generation: Int) async {
+        // Plugin tracks carry no NetEase lyric id; lyrics support comes later.
+        guard track.plugin == nil else { return }
         let scope = offlineAccountScope
         if let scope, let saved = await OfflineMetadataStore.shared.lyrics(trackID: track.id, scope: scope) {
             guard generation == resolveGeneration else { return }
@@ -1507,6 +1731,8 @@ final class PlayerService: ObservableObject {
 
     private func scrobbleIfNeeded(completed: Bool) {
         guard let track = currentTrack, !scrobbled, progress > 1 else { return }
+        // Plugin tracks don't map to a NetEase id — nothing to scrobble.
+        guard track.plugin == nil else { return }
         scrobbled = true
         let seconds = completed ? Int(duration) : Int(progress)
         let sourceID = source.sourceID
@@ -1556,7 +1782,9 @@ final class PlayerService: ObservableObject {
 
     private func resolveOnline(_ context: PlayContext) async throws -> (tracks: [Track], source: PlaySource)? {
         switch context.kind {
-        case .fm:
+        case .fm, .plugins:
+            // FM has no static list; plugin queues restore from the persisted
+            // track payloads in restoreState() instead of a live API.
             return nil
         case .album:
             return (try await NeteaseAPI.album(id: context.id).songs, .album(context.id))

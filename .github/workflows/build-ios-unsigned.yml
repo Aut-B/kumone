@@ -1,0 +1,55 @@
+name: Build unsigned iOS IPA
+
+on:
+  push:
+    branches: ["dev-musicfree", "dev-musicfree-0.3.17", "dev-musicfree-0.3.19", "dev-musicfree-0.3.20", "dev-musicfree-0.3.20-ios15", "dev-musicfree-0.3.21", "dev-musicfree-0.3.21-ios15"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build iOS app (unsigned)
+        env:
+          # The iOS 15 lane exists for older phones; every other lane targets 16.
+          DEPLOY_TARGET: ${{ endsWith(github.ref_name, '-ios15') && '15.0' || '16.0' }}
+          BUILD_NUM: ${{ endsWith(github.ref_name, '-ios15') && '164' || '163' }}
+          MARKETING: ${{ startsWith(github.ref_name, 'dev-musicfree-0.3.21') && '0.3.21' || '0.3.20' }}
+        run: |
+          xcodebuild -workspace ios/KumoneIOS.xcworkspace -scheme KumoneIOS \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/ios-dd" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            MARKETING_VERSION="$MARKETING" CURRENT_PROJECT_VERSION="$BUILD_NUM" \
+            IPHONEOS_DEPLOYMENT_TARGET="$DEPLOY_TARGET" \
+            build
+
+      - name: Package IPA
+        run: |
+          APP="$RUNNER_TEMP/ios-dd/Build/Products/Release-iphoneos/KumoneIOS.app"
+          mkdir -p "$RUNNER_TEMP/payload/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/payload/Payload/"
+          (cd "$RUNNER_TEMP/payload" && zip -qry "$GITHUB_WORKSPACE/Kumone-iOS-plugins.ipa" Payload)
+          ls -la Kumone-iOS-plugins.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kumone-iOS-plugins-unsigned
+          path: Kumone-iOS-plugins.ipa
+          retention-days: 14
+
+      - name: Publish dev release (IPA visible on Releases page)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-build-${{ github.run_number }}
+          name: Dev 构建 #${{ github.run_number }}
+          body: 自动化开发构建（插件音源版）。下载 Kumone-iOS-plugins.ipa 导入 LiveContainer。
+          files: Kumone-iOS-plugins.ipa
+          prerelease: true
+          fail_on_unmatched_files: true

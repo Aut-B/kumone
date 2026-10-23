@@ -11,14 +11,17 @@ enum ReleaseChecker {
         let ipaURL: URL?
     }
 
-    static let releasesPage = URL(string: "https://github.com/missuo/kumone/releases/latest")!
+    static let releasesPage = URL(string: "https://github.com/Aut-B/kumone/releases/latest")!
 
     static var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     }
 
     static func latest() async throws -> Release {
-        var request = URLRequest(url: URL(string: "https://api.github.com/repos/missuo/kumone/releases/latest")!)
+        // Fork builds check the fork's own releases: dev builds are published
+        // as prereleases there, so `releases/latest` finds nothing newer and
+        // the launch-time check stays quiet instead of nagging about upstream.
+        var request = URLRequest(url: URL(string: "https://api.github.com/repos/Aut-B/kumone/releases/latest")!)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 15
         let (data, _) = try await URLSession.shared.data(for: request)
