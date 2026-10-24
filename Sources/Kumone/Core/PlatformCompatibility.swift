@@ -258,6 +258,13 @@ struct CompatInstant: Sendable, Hashable, Equatable, Comparable {
     init() { self.date = Date() }
     static var now: CompatInstant { CompatInstant() }
     static func < (lhs: CompatInstant, rhs: CompatInstant) -> Bool { lhs.date < rhs.date }
+
+    /// iOS 15 stand-in for `ContinuousClock.Instant.duration(to:)` (iOS 16+).
+    /// Returns elapsed seconds as a `TimeInterval`, so call sites keep
+    /// comparing against a plain second count (e.g. `>= 20`).
+    func duration(to other: CompatInstant) -> TimeInterval {
+        other.date.timeIntervalSince(self.date)
+    }
 }
 
 struct CompatElapsed: Sendable {

@@ -67,7 +67,7 @@ struct DownloadButtonIcon: View {
             guard isComplete else { completionVisible = false; return }
             guard !completionVisible else { return }
             if !reduceMotion {
-                do { try await Task.sleep(for: .milliseconds(180)) }
+                do { try await Task.sleep(nanoseconds: 180_000_000) }
                 catch { return }
             }
             guard !Task.isCancelled else { return }

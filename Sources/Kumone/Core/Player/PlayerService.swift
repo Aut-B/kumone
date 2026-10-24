@@ -405,7 +405,7 @@ final class PlayerService: ObservableObject {
                     self.progress = seconds
                     NowPlayingManager.shared.updateElapsed(seconds, rate: 1)
                 }
-                if self.lastPlaybackCheckpoint.duration(to: .now) >= .seconds(20) {
+                if self.lastPlaybackCheckpoint.duration(to: .now) >= 20 {
                     self.persistState()
                 }
                 self.updateStemPrerender()

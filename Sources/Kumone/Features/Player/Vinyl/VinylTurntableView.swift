@@ -226,7 +226,7 @@ private struct SpinningVinylDisc: PlatformViewRepresentable {
         host.spin.setSpinning(spinning)
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: VinylDiscHost, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: CGSize, uiView: VinylDiscHost, context: Context) -> CGSize? {
         CGSize(width: discSize + 6, height: discSize + 6)
     }
 }
