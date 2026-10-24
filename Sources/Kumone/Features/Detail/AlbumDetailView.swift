@@ -42,8 +42,8 @@ struct AlbumDetailView: View {
             if downloads.network.connected || savedCollectionID == nil { await load() }
         }
         .toolbar {
-            if errorMessage != nil, downloads.network.connected, album != nil || savedCollectionID != nil {
-                ToolbarItem(placement: .primaryAction) {
+            ToolbarItem(placement: .primaryAction) {
+                if errorMessage != nil, downloads.network.connected, album != nil || savedCollectionID != nil {
                     Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("重试")
                         .help("重试")

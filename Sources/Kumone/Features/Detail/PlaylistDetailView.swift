@@ -74,8 +74,8 @@ struct PlaylistDetailView: View {
                     await loadPlaylist()
                 }
                 .toolbar {
-                    if model.errorMessage != nil, downloads.network.connected, model.detail != nil {
-                        ToolbarItem(placement: .primaryAction) {
+                    ToolbarItem(placement: .primaryAction) {
+                        if model.errorMessage != nil, downloads.network.connected, model.detail != nil {
                             Button { Task { await loadPlaylist() } } label: { Image(systemName: "arrow.clockwise") }
                                 .accessibilityLabel("重试")
                                 .help("重试")
