@@ -244,3 +244,91 @@ enum CompatDuration {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
+
+// MARK: - Clock & lock fallbacks for iOS 15
+//
+// `ContinuousClock` and `OSAllocatedUnfairLock` are iOS 16+ / macOS 13+. The
+// deployment target is iOS 15, so both are reimplemented with APIs present on
+// every Apple platform: `Date` for the clock and `os_unfair_lock` (iOS 10 /
+// macOS 10.12) for the lock. Call sites keep the same shape (`withLock`,
+// `.milliseconds`, `Instant`), so behaviour is unchanged.
+
+struct CompatInstant: Sendable, Hashable, Equatable, Comparable {
+    let date: Date
+    init() { self.date = Date() }
+    static var now: CompatInstant { CompatInstant() }
+    static func < (lhs: CompatInstant, rhs: CompatInstant) -> Bool { lhs.date < rhs.date }
+}
+
+struct CompatElapsed: Sendable {
+    let milliseconds: Int
+}
+
+extension CompatInstant {
+    static func - (lhs: CompatInstant, rhs: CompatInstant) -> CompatElapsed {
+        CompatElapsed(milliseconds: Int((lhs.date.timeIntervalSince(rhs.date) * 1000).rounded()))
+    }
+}
+
+enum CompatClock {
+    static var now: CompatInstant { .now }
+    typealias Instant = CompatInstant
+}
+
+/// Drop-in for `OSAllocatedUnfairLock`, backed by `os_unfair_lock`.
+final class CompatUnfairLock<Value>: @unchecked Sendable {
+    private var value: Value
+    private var unfairLock = os_unfair_lock()
+
+    init(initialState: Value) {
+        self.value = initialState
+    }
+
+    func withLock<T>(_ body: (inout Value) throws -> T) rethrows -> T {
+        os_unfair_lock_lock(&unfairLock)
+        defer { os_unfair_lock_unlock(&unfairLock) }
+        return try body(&value)
+    }
+}
+
+/// `Animation.spring(duration:)` is iOS 17+; iOS 15/16 fall back to a plain
+/// ease-in-out of the same duration, which reads nearly identically for these
+/// short transitions.
+func compatSpringAnimation(duration: Double) -> Animation {
+    if #available(iOS 17.0, macOS 14.0, *) {
+        return .spring(duration: duration)
+    }
+    return .easeInOut(duration: duration)
+}
+
+/// `Animation.spring(response:dampingFraction:)` is iOS 16+. On iOS 15 the
+/// `dampingFraction` spring does not exist, so it is approximated with the
+/// older `spring(response:blendDuration:)` (iOS 13+). The visual difference for
+/// these short UI transitions is negligible.
+extension Animation {
+    static func compatSpring(response: Double, dampingFraction: Double) -> Animation {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return .spring(response: response, dampingFraction: dampingFraction)
+        }
+        return .spring(response: response, blendDuration: max(response * (1 - dampingFraction), 0.01))
+    }
+}
+
+extension View {
+    /// `.presentationBackground(.clear)` is iOS 16.4+; older systems show the
+    /// default sheet background.
+    func compatPresentationBackgroundClear() -> AnyView {
+        if #available(iOS 16.4, macOS 13.0, *) {
+            return AnyView(self.presentationBackground(.clear))
+        }
+        return AnyView(self)
+    }
+
+    /// `.presentationBackgroundInteraction(.enabled)` is iOS 16.4+.
+    func compatPresentationBackgroundInteractionEnabled() -> AnyView {
+        if #available(iOS 16.4, macOS 13.0, *) {
+            return AnyView(self.presentationBackgroundInteraction(.enabled))
+        }
+        return AnyView(self)
+    }
+}

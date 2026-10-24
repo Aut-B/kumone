@@ -54,7 +54,7 @@ struct ShortcutSettingsView: View {
                     .foregroundColor(.red)
                 }
             }
-            .formStyle(.grouped)
+            .compatFormGrouped()
         }
         .navigationTitle("快捷键")
         .onDisappear { recordingAction = nil }

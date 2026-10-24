@@ -91,9 +91,9 @@ enum AppAnimation {
     static let quick = Animation.easeOut(duration: 0.15)
     static let standard = Animation.easeInOut(duration: 0.25)
     static let smooth = Animation.easeInOut(duration: 0.35)
-    static let spring = Animation.spring(response: 0.35, dampingFraction: 0.7)
-    static let bouncy = Animation.spring(response: 0.4, dampingFraction: 0.6)
-    static let snappy = Animation.spring(response: 0.25, dampingFraction: 0.8)
+    static let spring = Animation.compatSpring(response: 0.35, dampingFraction: 0.7)
+    static let bouncy = Animation.compatSpring(response: 0.4, dampingFraction: 0.6)
+    static let snappy = Animation.compatSpring(response: 0.25, dampingFraction: 0.8)
 
     static let staggerDelay = 0.04
     static let maxStaggerDelay = 0.4

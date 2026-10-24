@@ -71,7 +71,7 @@ struct DownloadButtonIcon: View {
                 catch { return }
             }
             guard !Task.isCancelled else { return }
-            withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1)) {
+            withAnimation(reduceMotion ? nil : .compatSpring(response: 0.3, dampingFraction: 1)) {
                 completionVisible = true
             }
         }

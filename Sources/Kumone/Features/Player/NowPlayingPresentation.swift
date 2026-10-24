@@ -234,7 +234,7 @@ struct IOSNowPlayingPresentation<Content: View>: View {
         ) {
             dismiss()
         } else {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+            withAnimation(.compatSpring(response: 0.32, dampingFraction: 0.82)) {
                 dragOffset = 0
             }
         }

@@ -417,7 +417,7 @@ struct ScrubberLane: View {
         .onHover { hovering in
             withAnimation(AppAnimation.quick) { isHovering = hovering }
         }
-        .animation(.spring(response: 0.24, dampingFraction: 0.72), value: isDragging)
+        .animation(.compatSpring(response: 0.24, dampingFraction: 0.72), value: isDragging)
     }
 
     private var thumbDiameter: CGFloat {

@@ -90,8 +90,8 @@ public struct IOSMainWindow: View {
                 }
                 .padding(.top, 8)
             }
-            .animation(.spring(duration: 0.3), value: toasts.current)
-            .animation(.spring(duration: 0.35), value: player.hasCurrentTrack)
+            .animation(compatSpringAnimation(duration: 0.3), value: toasts.current)
+            .animation(compatSpringAnimation(duration: 0.35), value: player.hasCurrentTrack)
     }
 
     @ViewBuilder
@@ -670,7 +670,7 @@ struct IOSLibraryView: View {
             }
 
             Section {
-                NavigationLink(value: Destination.downloaded) {
+                DestinationLink(value: Destination.downloaded) {
                     Label("已下载", systemImage: "arrow.down.circle.fill")
                 }
             }

@@ -72,7 +72,7 @@ struct LyricsPanel: View {
                     guard index != activeIndex else { return }
                     activeIndex = index
                     guard !isUserScrolling, let index else { return }
-                    withAnimation(.spring(response: 0.7, dampingFraction: 0.85)) {
+                    withAnimation(.compatSpring(response: 0.7, dampingFraction: 0.85)) {
                         proxy.scrollTo(index, anchor: .center)
                     }
                 }
@@ -145,7 +145,7 @@ struct LyricsPanel: View {
             .blur(radius: isActive || isUserScrolling ? 0 : 0.3)
         }
         .buttonStyle(.plain)
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isActive)
+        .animation(.compatSpring(response: 0.4, dampingFraction: 0.8), value: isActive)
         .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
 }

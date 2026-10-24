@@ -15,11 +15,11 @@ struct PlaybackSyncStore {
         let previousRevision: UUID?
     }
     private var publishedQueues: [UUID: PublishedQueue] = [:]
-    private var lastQueueCleanup: [UUID: ContinuousClock.Instant] = [:]
-    private let now: @Sendable () -> ContinuousClock.Instant
+    private var lastQueueCleanup: [UUID: CompatClock.Instant] = [:]
+    private let now: @Sendable () -> CompatClock.Instant
     private var selectedQueue: URL?
 
-    init(now: @escaping @Sendable () -> ContinuousClock.Instant) {
+    init(now: @escaping @Sendable () -> CompatClock.Instant) {
         self.now = now
     }
 
