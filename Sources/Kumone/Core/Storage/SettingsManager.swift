@@ -200,8 +200,9 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(lyricsAnnotation.rawValue, forKey: Keys.annotation) }
     }
 
-    /// Karaoke-style word-by-word highlighting when the song has verbatim
-    /// (yrc) lyrics; falls back to line highlighting when it doesn't.
+    /// Karaoke-style word-by-word highlighting: NetEase's own timing when the
+    /// song has verbatim (yrc) lyrics, else the line's time spread across its
+    /// characters.
     @Published var verbatimLyrics: Bool {
         didSet { UserDefaults.standard.set(verbatimLyrics, forKey: Keys.verbatimLyrics) }
     }
