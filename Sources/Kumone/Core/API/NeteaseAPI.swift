@@ -118,12 +118,12 @@ enum NeteaseAPI {
         try await weapi(LikelistResponse.self, "/song/like/get", ["uid": uid]).ids
     }
 
+    /// Through the eapi as the desktop client, as mygo-cloudmusic likes a
+    /// song: the web API answers "当前环境异常，已取消喜欢" to a client its
+    /// risk control does not recognize, and the heart goes back.
     static func likeTrack(id: Int, like: Bool) async throws {
-        let resp = try await weapi(CodeOnly.self, "/radio/like?alg=itembased&trackId=\(id)&time=3",
-                                   ["trackId": id, "like": like])
-        guard resp.code == 200 else {
-            throw NeteaseAPIError.business(code: resp.code, message: String(localized: "操作失败，专辑下架或版权锁定"))
-        }
+        _ = try await eapi(CodeOnly.self, "/radio/like",
+                           ["alg": "itembased", "trackId": String(id), "like": like ? "true" : "false", "time": "3"])
     }
 
     struct SublistResponse<Item: Decodable>: Decodable {
@@ -315,10 +315,13 @@ enum NeteaseAPI {
         let privileges: [TrackPrivilege]?
     }
 
+    /// Through the eapi, as mygo-cloudmusic reads song details: the web
+    /// API's privileges call some VIP songs taken down (`st` -100) for
+    /// subscribers, whom the eapi streams them to.
     static func songDetails(ids: [Int]) async throws -> SongDetailResponse {
         guard !ids.isEmpty else { return SongDetailResponse(songs: [], privileges: []) }
         let c = "[" + ids.map { "{\"id\":\($0)}" }.joined(separator: ",") + "]"
-        return try await weapi(SongDetailResponse.self, "/v3/song/detail", ["c": c])
+        return try await eapi(SongDetailResponse.self, "/v3/song/detail", ["c": c])
     }
 
     struct TopPlaylistResponse: Decodable {
@@ -488,9 +491,11 @@ enum NeteaseAPI {
         try await weapi(FMResponse.self, "/v1/radio/get").data ?? []
     }
 
+    /// Through the eapi, as the like above: the same radio endpoints, the
+    /// same risk control.
     static func fmTrash(id: Int) async throws {
-        _ = try await weapi(CodeOnly.self, "/radio/trash/add?alg=RT&songId=\(id)&time=25",
-                            ["songId": id])
+        _ = try await eapi(CodeOnly.self, "/radio/trash/add",
+                           ["alg": "RT", "songId": String(id), "time": "25"])
     }
 
     struct SimiSongResponse: Decodable {

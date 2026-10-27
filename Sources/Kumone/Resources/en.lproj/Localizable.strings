@@ -267,7 +267,6 @@
 "接口错误 (%lld)" = "API error (%lld)";
 "需要登录" = "Sign-in required";
 "数据加载失败，请稍后重试" = "Failed to load data — try again later";
-"操作失败，专辑下架或版权锁定" = "Action failed — the album is delisted or rights-locked";
 "登录后即可收藏歌曲" = "Sign in to like songs";
 "已添加到下一首播放" = "Added to play next";
 "获取私人漫游数据失败" = "Failed to load Personal FM";
