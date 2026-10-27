@@ -7,6 +7,26 @@
 `---` 分隔，随后是完整的**中文**部分（`### 新增` / `### 修复` / `### 改进`）。英文块与中文块
 的条目一一对应、顺序一致。（0.3.19 起采用此双语分块格式；更早的版本沿用旧的中英交替格式。）
 
+## 0.3.23 - 2026-10-27
+
+### Fixed
+
+- **iOS + macOS**: liking a song no longer fails with "当前环境异常，已取消喜欢" — the like, removing a song from Personal FM and song details now go through NetEase's desktop-client API as a device that stays the same across launches, the way mygo-cloudmusic does it (#81).
+
+### Improved
+
+- **iOS + macOS**: every desktop-client request — playback URLs, downloads, search, charts — now identifies this install with a device ID made once and kept, instead of a constant every install shared, which NetEase's risk control had started to refuse.
+
+---
+
+### 修复
+
+- **iOS + macOS**：点击喜欢不再提示「当前环境异常，已取消喜欢」——喜欢、私人漫游中移除歌曲和歌曲详情改走网易云桌面客户端接口，并以每次启动都相同的设备 ID 发送请求，参照 mygo-cloudmusic 的做法（#81）。
+
+### 改进
+
+- **iOS + macOS**：所有桌面客户端接口（播放地址、下载、搜索、排行榜）改用安装时生成并持久保存的设备 ID，不再所有用户共用同一个标识——网易云风控已开始拒绝这种请求。
+
 ## 0.3.22 - 2026-10-27
 
 ### Added
