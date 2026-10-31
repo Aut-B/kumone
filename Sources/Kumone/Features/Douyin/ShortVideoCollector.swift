@@ -8,6 +8,11 @@ import WebKit
 /// `403 Blocked by ArgusSecurityPlugin`），自己做签名不现实。让真实页面跑起来、
 /// 由站点自己的 JS 去签，我们只在旁边把返回的 JSON 抄一份——里面本来就带着
 /// 可以直接播的地址。
+///
+/// 关键点：**登录、搜索这些交互阶段完全不注入任何脚本**。之前为了抓接口在
+/// documentStart 就换掉 `fetch` / `XMLHttpRequest`，站点一旦察觉被改过，
+/// 「登录」按钮和搜索就会静默失效。现在脚本只在点「开始抓取」时才注入，
+/// 页面加载和登录全程是原样的。
 @MainActor
 final class ShortVideoCollector: NSObject, ObservableObject {
     enum Phase: Equatable {
@@ -26,6 +31,10 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     @Published private(set) var loggedIn = false
     @Published private(set) var lastError: String?
     @Published private(set) var lastScriptError: String?
+    @Published private(set) var logLines: [String] = []
+    @Published private(set) var useMobileUserAgent: Bool
+    @Published private(set) var canGoBack = false
+    @Published private(set) var canGoForward = false
 
     private(set) var webView: WKWebView!
 
@@ -35,14 +44,24 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     private var startedAt = Date()
     private var hasLoadedPage = false
     private var pendingCollect = false
+    private var hookInstalled = false
 
     static let handlerName = "shortvideo"
 
     var isCollecting: Bool { phase == .collecting }
 
-    /// 直链是签名过的，两小时左右就开始失效；过期前重抓一次。
+    /// 桌面 UA 是主力；某些账号在桌面版登录面板上点不动时，切成手机 UA 用
+    /// 短信验证码登录，cookie 落在同一个域上，切回桌面版照样有效。
+    var userAgent: String {
+        useMobileUserAgent ? platform.mobileUserAgent : platform.userAgent
+    }
+
     private static func lastRefreshKey(_ platform: ShortVideoPlatform) -> String {
         "shortVideoLastRefresh.\(platform.rawValue)"
+    }
+
+    private static func mobileUAKey(_ platform: ShortVideoPlatform) -> String {
+        "shortVideoMobileUA.\(platform.rawValue)"
     }
 
     var lastRefreshAt: Date? {
@@ -50,18 +69,26 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         return stamp > 0 ? Date(timeIntervalSince1970: stamp) : nil
     }
 
+    /// 直链是签名过的，两小时左右就开始失效；过期前重抓一次。
     var isStale: Bool {
         guard !videos.isEmpty else { return false }
         guard let last = lastRefreshAt else { return true }
         return Date().timeIntervalSince(last) > 2 * 3600
     }
 
+    /// 老数据没有 `videoID`，只能用会过期的签名直链——提示重抓一次。
+    var missingStableID: Bool {
+        guard !videos.isEmpty else { return false }
+        return videos.contains { ($0.videoID ?? "").isEmpty }
+    }
+
     init(platform: ShortVideoPlatform) {
         self.platform = platform
+        self.useMobileUserAgent = UserDefaults.standard.bool(forKey: Self.mobileUAKey(platform))
         super.init()
         videos = ShortVideoStore.load(platform)
         status = videos.isEmpty
-            ? "在下面的网页里登录 \(platform.albumName)，然后点「开始抓取」"
+            ? "在下面的网页里登录 \(platform.albumName)，然后点「开始抓取」。"
             : "已加载上次抓取的 \(videos.count) 条，可重新抓取"
 
         let configuration = WKWebViewConfiguration()
@@ -69,22 +96,27 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.defaultWebpagePreferences.preferredContentMode = .desktop
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        configuration.userContentController.addUserScript(
-            WKUserScript(source: Self.hookScript(for: platform),
-                         injectionTime: .atDocumentStart,
-                         forMainFrameOnly: false)
-        )
         configuration.userContentController.add(self, name: Self.handlerName)
 
         let view = WKWebView(frame: .zero, configuration: configuration)
-        view.customUserAgent = platform.userAgent
+        view.customUserAgent = userAgent
         view.navigationDelegate = self
+        view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
         webView = view
+        note("已就绪（\(useMobileUserAgent ? "手机 UA" : "桌面 UA")）")
     }
 
     deinit {
         driverTask?.cancel()
+    }
+
+    // MARK: - 日志
+
+    func note(_ line: String) {
+        let stamp = DateFormatter.shortClock.string(from: Date())
+        logLines.append("\(stamp) \(line)")
+        if logLines.count > 60 { logLines.removeFirst(logLines.count - 60) }
     }
 
     // MARK: - 导航
@@ -92,10 +124,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     func loadFavoritesPageIfNeeded() {
         guard !hasLoadedPage else { return }
         hasLoadedPage = true
-        phase = .loading
-        lastError = nil
-        status = "正在打开 \(platform.albumName)…"
-        load(platform.homeURLString)
+        openHomePage()
     }
 
     /// 打开收藏页。
@@ -109,6 +138,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     /// 打开站点首页：登录面板一般在首页触发，收藏页被拦时可以退回去登录。
     func openHomePage() {
+        hasLoadedPage = true
         phase = .loading
         lastError = nil
         status = "正在打开 \(platform.albumName) 首页…"
@@ -117,17 +147,45 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     /// 直接打开站点登录页（抖音是 sso.douyin.com）。
     func openLoginPage() {
+        hasLoadedPage = true
         phase = .loading
         lastError = nil
-        status = "登录页：登录完成后点右上角刷新回收藏页"
+        status = "登录页：登录完成后点「收藏页」回去抓取"
         load(platform.loginURLString)
+    }
+
+    func reloadCurrentPage() {
+        lastError = nil
+        phase = .loading
+        status = "重新加载…"
+        webView.reload()
+    }
+
+    func goBack() {
+        guard webView.canGoBack else { return }
+        webView.goBack()
+    }
+
+    func goForward() {
+        guard webView.canGoForward else { return }
+        webView.goForward()
+    }
+
+    func toggleUserAgent() {
+        useMobileUserAgent.toggle()
+        UserDefaults.standard.set(useMobileUserAgent, forKey: Self.mobileUAKey(platform))
+        webView.customUserAgent = userAgent
+        note("切换为\(useMobileUserAgent ? "手机 UA" : "桌面 UA")")
+        status = "已切换为\(useMobileUserAgent ? "手机" : "桌面")版，正在重新加载…"
+        reloadCurrentPage()
     }
 
     private func load(_ urlString: String) {
         guard let url = URL(string: urlString) else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        webView.customUserAgent = platform.userAgent
+        webView.customUserAgent = userAgent
+        note("打开 \(urlString)")
         webView.load(request)
     }
 
@@ -161,9 +219,22 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         lastCount = videos.count
         startedAt = Date()
         lastError = nil
+        lastScriptError = nil
         status = "正在抓取…如果一直没动静，请先在网页里登录 \(platform.albumName)"
-        webView.evaluateJavaScript(Self.driverScript(for: platform))
+        note("开始抓取")
 
+        installHook { [weak self] in
+            guard let self else { return }
+            self.webView.evaluateJavaScript(Self.driverScript(for: self.platform)) { _, error in
+                if let error {
+                    Task { @MainActor in self.note("驱动脚本失败：\(error.localizedDescription)") }
+                }
+            }
+            self.startTicking()
+        }
+    }
+
+    private func startTicking() {
         driverTask?.cancel()
         driverTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -185,6 +256,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             UserDefaults.standard.set(Date().timeIntervalSince1970,
                                       forKey: Self.lastRefreshKey(platform))
         }
+        note("停止抓取：\(videos.count) 条")
     }
 
     func clear() {
@@ -234,8 +306,13 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         for video in parsed {
             if let index = indexByID[video.id] {
                 // 直链是签名过的，会过期；重抓时用新的覆盖旧的。
-                if videos[index].playURL != video.playURL {
-                    videos[index] = video
+                if videos[index].playURL != video.playURL
+                    || videos[index].videoID != video.videoID {
+                    var updated = video
+                    if (updated.videoID ?? "").isEmpty {
+                        updated.videoID = videos[index].videoID
+                    }
+                    videos[index] = updated
                     changed += 1
                 }
             } else {
@@ -265,17 +342,34 @@ final class ShortVideoCollector: NSObject, ObservableObject {
                 || names.contains("uid_tt")
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if self.loggedIn != loggedIn { self.loggedIn = loggedIn }
+                if self.loggedIn != loggedIn {
+                    self.loggedIn = loggedIn
+                    self.note(loggedIn ? "检测到登录态" : "检测到未登录")
+                }
             }
         }
     }
 
     // MARK: - 注入脚本
 
-    /// 包住 `fetch` / `XMLHttpRequest`，凡是返回体里带平台特征字段的都回传原生。
-    ///
-    /// 顺带收集页面里的 JS 报错和失败的接口请求，回传到状态栏——页面「能显示但点
-    /// 不动」时，这条信息是唯一能拿到的线索。
+    /// 只在抓取时才注入：包住 `fetch` / `XMLHttpRequest`，凡是返回体里带平台
+    /// 特征字段的都回传原生。登录 / 搜索阶段页面是干净的，不会被影响。
+    private func installHook(completion: @escaping () -> Void) {
+        guard !hookInstalled else { completion(); return }
+        webView.evaluateJavaScript(Self.hookScript(for: platform)) { [weak self] _, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.note("注入失败：\(error.localizedDescription)")
+                } else {
+                    self.hookInstalled = true
+                    self.note("接口监听已装上")
+                }
+                completion()
+            }
+        }
+    }
+
     static func hookScript(for platform: ShortVideoPlatform) -> String {
         let markers = platform.payloadMarkers.map { "\"\($0)\"" }.joined(separator: ", ")
         return """
@@ -432,16 +526,93 @@ extension ShortVideoCollector: WKScriptMessageHandler {
         Task { @MainActor [weak self] in
             guard let self else { return }
             if let body { self.ingest(body) }
-            if let error { self.lastScriptError = error }
+            if let error {
+                self.lastScriptError = error
+                self.note("页面：\(error)")
+            }
         }
     }
 }
 
+extension ShortVideoCollector: WKUIDelegate {
+    /// `window.open` / `target=_blank` 一律在本页打开。
+    ///
+    /// 抖音的「登录」、搜索结果、视频详情全是新窗口链接；不实现这个回调，
+    /// 点了就什么都不发生——这正是「登录按钮点不动」的真正原因。
+    nonisolated func webView(_ webView: WKWebView,
+                             createWebViewWith configuration: WKWebViewConfiguration,
+                             for navigationAction: WKNavigationAction,
+                             windowFeatures: WKWindowFeatures) -> WKWebView? {
+        let target = navigationAction.request.url
+        Task { @MainActor [weak self] in
+            guard let self, let target else { return }
+            let scheme = (target.scheme ?? "").lowercased()
+            if scheme == "http" || scheme == "https" || scheme == "about" {
+                self.note("新窗口转本页：\(target.absoluteString.prefix(80))")
+                var request = URLRequest(url: target)
+                request.timeoutInterval = 30
+                self.webView.load(request)
+            } else {
+                self.note("拦下非网页链接：\(target.absoluteString.prefix(80))")
+            }
+        }
+        return nil
+    }
+
+    nonisolated func webView(_ webView: WKWebView,
+                             runJavaScriptAlertPanelWithMessage message: String,
+                             initiatedByFrame frame: WKFrameInfo,
+                             completionHandler: @escaping () -> Void) {
+        completionHandler()
+    }
+
+    nonisolated func webView(_ webView: WKWebView,
+                             runJavaScriptConfirmPanelWithMessage message: String,
+                             initiatedByFrame frame: WKFrameInfo,
+                             completionHandler: @escaping (Bool) -> Void) {
+        completionHandler(true)
+    }
+}
+
 extension ShortVideoCollector: WKNavigationDelegate {
+    nonisolated func webView(_ webView: WKWebView,
+                             decidePolicyFor navigationAction: WKNavigationAction,
+                             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        let url = navigationAction.request.url
+        let scheme = (url?.scheme ?? "").lowercased()
+        if !scheme.isEmpty, scheme != "http", scheme != "https", scheme != "about",
+           scheme != "file", scheme != "data", scheme != "blob" {
+            Task { @MainActor [weak self] in
+                self?.note("拦下 App 跳转：\(scheme)://")
+            }
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.hookInstalled = false
+            self.syncNavigationState()
+        }
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.status = "页面已响应：\(self.webView.url?.absoluteString.prefix(60) ?? "")"
+            self.syncNavigationState()
+        }
+    }
+
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.refreshLoginState()
+            self.syncNavigationState()
+            self.note("加载完成：\(self.webView.url?.absoluteString.prefix(70) ?? "")")
             if self.pendingCollect {
                 self.pendingCollect = false
                 self.beginCollecting()
@@ -470,12 +641,18 @@ extension ShortVideoCollector: WKNavigationDelegate {
     nonisolated func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         Task { @MainActor [weak self] in
             self?.lastError = "网页进程被系统回收，请重新加载"
-            self?.status = "网页进程被系统回收，请点右上角刷新"
+            self?.status = "网页进程被系统回收，请点「重新加载」"
+            self?.note("网页进程被回收")
         }
     }
 }
 
 private extension ShortVideoCollector {
+    func syncNavigationState() {
+        canGoBack = webView.canGoBack
+        canGoForward = webView.canGoForward
+    }
+
     func report(_ error: Error) {
         let ns = error as NSError
         // 用户主动取消的跳转不算错误。
@@ -485,6 +662,15 @@ private extension ShortVideoCollector {
             phase = .failed(error.localizedDescription)
         }
         status = "网页加载失败：\(error.localizedDescription)"
+        note("加载失败：\(ns.code) \(error.localizedDescription)")
     }
+}
+
+private extension DateFormatter {
+    static let shortClock: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
 }
 #endif

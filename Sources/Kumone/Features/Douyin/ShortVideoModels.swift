@@ -118,6 +118,9 @@ struct ShortVideo: Identifiable, Hashable, Codable {
     let cover: String?
     let durationMS: Int
     var playURL: String
+    /// 站点自己的视频 id（抖音是 `play_addr.uri`）。用它拼出来的播放地址
+    /// 不带过期签名，同步到别的手机、或者放几个小时之后都还能播。
+    var videoID: String? = nil
     var updatedAt: Double?
 
     /// 跨 App 的唯一键（不同平台的数字 id 会撞）。
@@ -149,12 +152,28 @@ struct ShortVideo: Identifiable, Hashable, Codable {
             "album": platformKind.albumName,
             "duration": Double(durationMS) / 1000.0,
             "url": playURL,
+            "vid": videoID ?? "",
             "shareURL": shareURL,
         ]
         if let cover, !cover.isEmpty {
             dict["artwork"] = cover
         }
         return PluginMusicItem(normalizing: dict, platform: platform)
+    }
+
+    /// 不带过期签名的播放地址。
+    ///
+    /// 抖音的 `aweme/v1/play/?video_id=` 会 302 到一个新鲜的 CDN 地址，
+    /// 所以不用登录、不用重抓也能一直播——「同步到另一台一首都不能听」
+    /// 和「放几个小时陆续不能听」都是签名直链过期导致的，这个地址不会。
+    var stablePlayURL: String? {
+        guard let videoID, !videoID.isEmpty else { return nil }
+        switch platformKind {
+        case .douyin:
+            return "https://www.iesdouyin.com/aweme/v1/play/?video_id=\(videoID)&ratio=720p&line=0"
+        case .tiktok:
+            return "https://api16-normal-c-useast1a.tiktokv.com/aweme/v1/play/?video_id=\(videoID)&ratio=720p&line=0"
+        }
     }
 
     func withPlayURL(_ url: String) -> ShortVideo {
@@ -204,14 +223,17 @@ enum ShortVideoParser {
         var playURL: String?
         var durationMS = 0
         var cover: String?
+        var videoID: String?
 
         switch platform {
         case .douyin:
             playURL = firstURL(in: video, keys: ["play_addr_h264", "play_addr", "download_addr"])
+            videoID = uri(in: video)
             durationMS = number(video["duration"]) ?? 0
             cover = firstURL(in: video, keys: ["cover", "origin_cover", "dynamic_cover"])
         case .tiktok:
             playURL = tiktokPlayURL(video)
+            videoID = string(video["id"]) ?? string(video["videoID"])
             // TikTok 的 duration 是秒。
             durationMS = (number(video["duration"]) ?? 0) * 1000
             cover = string(video["cover"]) ?? string(video["originCover"])
@@ -229,8 +251,20 @@ enum ShortVideoParser {
             cover: cover,
             durationMS: durationMS,
             playURL: playURL,
+            videoID: videoID,
             updatedAt: Date().timeIntervalSince1970
         )
+    }
+
+    /// 抖音的 `video.play_addr.uri`，形如 `v0300fg10000cj2m3k3c77u7v6k0`。
+    private static func uri(in video: [String: Any]) -> String? {
+        for key in ["play_addr", "play_addr_h264", "download_addr"] {
+            if let entry = video[key] as? [String: Any],
+               let value = string(entry["uri"]), !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     private static func tiktokPlayURL(_ video: [String: Any]) -> String? {
@@ -317,6 +351,8 @@ enum ShortVideoMerge {
                 var merged = winner
                 if merged.playURL.isEmpty { merged.playURL = existing.playURL }
                 if merged.playURL.isEmpty { merged.playURL = video.playURL }
+                if (merged.videoID ?? "").isEmpty { merged.videoID = existing.videoID }
+                if (merged.videoID ?? "").isEmpty { merged.videoID = video.videoID }
                 byKey[key] = merged
             } else {
                 byKey[key] = video

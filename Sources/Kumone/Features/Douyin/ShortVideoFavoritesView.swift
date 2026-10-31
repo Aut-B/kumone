@@ -13,6 +13,7 @@ struct ShortVideoFavoritesView: View {
     @State private var showWeb = false
     @State private var showClearConfirm = false
     @State private var showSyncSettings = false
+    @State private var showLog = false
     @State private var syncMessage: String?
 
     init(platform: ShortVideoPlatform) {
@@ -42,6 +43,52 @@ struct ShortVideoFavoritesView: View {
                         Image(systemName: "arrow.triangle.2.circlepath.icloud")
                     }
                     .accessibilityLabel("收藏同步")
+
+                    Menu {
+                        Button {
+                            collector.toggleUserAgent()
+                        } label: {
+                            Label(collector.useMobileUserAgent ? "改用桌面版" : "改用手机版",
+                                  systemImage: "iphone")
+                        }
+                        Button {
+                            collector.openHomePage()
+                        } label: {
+                            Label("打开首页", systemImage: "house")
+                        }
+                        Button {
+                            collector.openLoginPage()
+                        } label: {
+                            Label("打开登录页", systemImage: "person.crop.circle")
+                        }
+                        Button {
+                            collector.reloadPage()
+                        } label: {
+                            Label("打开收藏页", systemImage: "heart")
+                        }
+                        Divider()
+                        Button {
+                            collector.goBack()
+                        } label: {
+                            Label("后退", systemImage: "chevron.backward")
+                        }
+                        .disabled(!collector.canGoBack)
+                        Button {
+                            collector.goForward()
+                        } label: {
+                            Label("前进", systemImage: "chevron.forward")
+                        }
+                        .disabled(!collector.canGoForward)
+                        Divider()
+                        Button {
+                            showLog = true
+                        } label: {
+                            Label("诊断日志", systemImage: "doc.text.magnifyingglass")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("更多")
 
                     Button {
                         showWeb.toggle()
@@ -88,6 +135,10 @@ struct ShortVideoFavoritesView: View {
         }
     }
 
+    private var legacyCount: Int {
+        collector.videos.filter { ($0.videoID ?? "").isEmpty }.count
+    }
+
     // MARK: - 网页
 
     private var webPane: some View {
@@ -122,6 +173,13 @@ struct ShortVideoFavoritesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                if collector.missingStableID {
+                    Text("有 \(legacyCount) 条是旧数据，重新抓取一次才能长期播放")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 if let scriptError = collector.lastScriptError {
                     Text("页面报错：\(scriptError)")
@@ -187,6 +245,9 @@ struct ShortVideoFavoritesView: View {
             .padding(12)
             .background(.bar)
         }
+        .sheet(isPresented: $showLog) {
+            ShortVideoLogView(lines: collector.logLines)
+        }
     }
 
     // MARK: - 列表
@@ -234,6 +295,9 @@ struct ShortVideoFavoritesView: View {
             }
             .padding(12)
             .background(.bar)
+        }
+        .sheet(isPresented: $showLog) {
+            ShortVideoLogView(lines: collector.logLines)
         }
     }
 
@@ -336,6 +400,38 @@ struct ShortVideoFavoritesView: View {
             syncMessage = "已同步到 WebDAV"
         } catch {
             syncMessage = "同步失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private struct ShortVideoLogView: View {
+    let lines: [String]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    if lines.isEmpty {
+                        Text("还没有日志")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(.caption2, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(12)
+            }
+            .navigationTitle("诊断日志")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
         }
     }
 }

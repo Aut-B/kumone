@@ -311,8 +311,15 @@ final class PluginManager: ObservableObject {
         // track).
         if let shortVideo = ShortVideoPlatform(rawValue: platform.lowercased()),
            let direct = itemObject["url"] as? String,
-           let directURL = URL(string: direct) {
-            return PluginMediaSource(url: directURL, headers: [
+           !direct.isEmpty {
+            // 网页里抄到的直链带过期签名（两小时左右），放久了、同步到别的手机
+            // 都会陆续播不了。优先换成只用 video_id 的长期地址；探测不通再退回直链。
+            let resolved = await ShortVideoResolver.resolve(
+                platform: shortVideo,
+                videoID: itemObject["vid"] as? String,
+                fallback: direct
+            )
+            return PluginMediaSource(url: resolved, headers: [
                 "User-Agent": shortVideo.userAgent,
                 "Referer": shortVideo.referer,
             ])
