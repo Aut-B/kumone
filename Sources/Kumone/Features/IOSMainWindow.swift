@@ -27,6 +27,7 @@ public struct IOSMainWindow: View {
     @State private var lastForegroundRefresh: Date?
     @State private var showLogin = false
     @State private var homePath: [Destination] = []
+    @State private var pluginsPath: [Destination] = []
     @State private var explorePath: [Destination] = []
     @State private var fmPath: [Destination] = []
     @State private var searchPath: [Destination] = []
@@ -80,7 +81,8 @@ public struct IOSMainWindow: View {
                 VStack(spacing: 8) {
                     if let toast = toasts.current {
                         ToastView(toast: toast)
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .transition(AnyTransition.move(edge: Edge.top).combined(with: .opacity))
+                            .padding(.top, 8)
                     }
                     if !player.hasCurrentTrack {
                         PlaybackHandoffBanner()
@@ -167,9 +169,10 @@ public struct IOSMainWindow: View {
 
     @ViewBuilder
     private var appContent: some View {
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            MainWindow(path: $iPadPath)
-        } else {
+        // iPad used to route to the sidebar MainWindow; NavigationSplitView
+        // is iOS 16+ and cannot compile for an iOS 15 deployment target, so
+        // iPad now uses the same tab layout as iPhone.
+        Group {
             tabInterface
                 .overlay {
                     if settings.showMainWindowAmbientBackground {
@@ -203,7 +206,11 @@ public struct IOSMainWindow: View {
 
     @ViewBuilder
     private var tabInterface: some View {
-        if #available(iOS 26.0, *) {
+        // iOS 26's native TabView pushes whatever does not fit into a "更多"
+        // tab — on a 15 Pro Max that swallows 搜索 and 插件. The hand-built
+        // bar lays all six out flat, so it wins unless the escape hatch is
+        // switched off in settings.
+        if #available(iOS 26.0, *), !settings.flattenTabs {
             iOS26TabInterface
         } else {
             customTabInterface
@@ -251,6 +258,10 @@ public struct IOSMainWindow: View {
                 tabStack(.library) { IOSLibraryView(showLogin: $showLogin) }
             }
 
+            Tab("插件", systemImage: "puzzlepiece.extension", value: .plugins) {
+                tabStack(.plugins) { PluginsRootView() }
+            }
+
             Tab(value: .search, role: .search) {
                 tabStack(.search) { SearchView(query: "") }
             } label: {
@@ -267,6 +278,7 @@ public struct IOSMainWindow: View {
                 page(.fm) { tabStack(.fm) { FMView() } }
                 page(.search) { tabStack(.search) { SearchView(query: "") } }
                 page(.library) { tabStack(.library) { IOSLibraryView(showLogin: $showLogin) } }
+                page(.plugins) { tabStack(.plugins) { PluginsRootView() } }
             }
 
             VStack(spacing: 8) {
@@ -293,16 +305,12 @@ public struct IOSMainWindow: View {
         case .fm: fmPath = []
         case .search: searchPath = []
         case .library: libraryPath = []
+        case .plugins: pluginsPath = []
         }
     }
 
     private func openDestination(_ destination: Destination) {
         player.showNowPlaying = false
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            iPadPath.appendIfNotCurrent(destination)
-            return
-        }
-
         let path = binding(for: selectedTab)
         var destinations = path.wrappedValue
         destinations.appendIfNotCurrent(destination)
@@ -312,10 +320,11 @@ public struct IOSMainWindow: View {
     @ViewBuilder
     private func tabStack<Content: View>(
         _ tab: IOSTab,
-        @ViewBuilder _ content: () -> Content
+        // `@escaping` because `AppNavStackPath` stores the closure.
+        @ViewBuilder _ content: @escaping () -> Content
     ) -> some View {
-        NavigationStack(path: binding(for: tab)) {
-            content().appDestinations()
+        AppNavStackPath(path: binding(for: tab)) {
+            content()
         }
     }
 
@@ -337,12 +346,13 @@ public struct IOSMainWindow: View {
         case .fm: return $fmPath
         case .search: return $searchPath
         case .library: return $libraryPath
+        case .plugins: return $pluginsPath
         }
     }
 }
 
 enum IOSTab: Hashable {
-    case home, explore, fm, search, library
+    case home, explore, fm, search, library, plugins
 }
 
 extension IOSMainWindow {
@@ -351,6 +361,7 @@ extension IOSMainWindow {
         .init(tab: .explore, title: "精选", icon: "square.grid.2x2"),
         .init(tab: .fm, title: "漫游", icon: "dot.radiowaves.left.and.right"),
         .init(tab: .search, title: "搜索", icon: "magnifyingglass"),
+        .init(tab: .plugins, title: "插件", icon: "puzzlepiece.extension"),
         .init(tab: .library, title: "我的", icon: "person.crop.circle"),
     ]
 }
@@ -610,9 +621,12 @@ struct IOSMiniPlayerBar: View {
 struct IOSLibraryView: View {
     @Binding var showLogin: Bool
     @EnvironmentObject private var account: AccountStore
+    @ObservedObject private var layout = PlaylistLayoutStore.shared
     @State private var showSettings = false
     @State private var showNewPlaylist = false
     @State private var newPlaylistName = ""
+    @State private var showReorder = false
+    @State private var reorderBase: [PlaylistSummary] = []
 
     var body: some View {
         List {
@@ -672,78 +686,39 @@ struct IOSLibraryView: View {
             if account.hasAuthCookie {
                 Section("我的音乐") {
                     if let liked = account.likedSongsPlaylist {
-                        NavigationLink(value: Destination.playlist(liked.id)) {
+                        DestinationLink(value: Destination.playlist(liked.id)) {
                             Label("我喜欢的音乐", systemImage: "heart.fill")
                                 .foregroundStyle(Theme.accent)
                         }
                     }
-                    NavigationLink(value: Destination.daily) {
+                    DestinationLink(value: Destination.daily) {
                         Label("每日推荐", systemImage: "calendar")
                     }
-                    NavigationLink(value: Destination.recents) {
+                    DestinationLink(value: Destination.recents) {
                         Label("最近播放", systemImage: "clock.fill")
                     }
-                    NavigationLink(value: Destination.collections) {
+                    DestinationLink(value: Destination.collections) {
                         Label("我的收藏", systemImage: "star.fill")
                     }
-                    NavigationLink(value: Destination.cloud) {
+                    DestinationLink(value: Destination.cloud) {
                         Label("音乐云盘", systemImage: "icloud.fill")
                     }
                 }
 
                 if !account.createdPlaylists.isEmpty {
-                    Section {
-                        ForEach(account.createdPlaylists) { playlist in
-                            NavigationLink(value: Destination.playlist(playlist.id)) {
-                                HStack(spacing: 10) {
-                                    CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
-                                        .frame(width: 32, height: 32)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(playlist.name)
-                                            .font(.system(size: 14))
-                                            .lineLimit(1)
-                                        Text("\(playlist.trackCount) 首")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    } header: {
-                        HStack {
-                            Text("创建的歌单")
-                            Spacer()
-                            Button {
-                                showNewPlaylist = true
-                            } label: {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                        }
-                    }
+                    playlistSection(
+                        title: String(localized: "创建的歌单"),
+                        playlists: account.createdPlaylists,
+                        showsNew: true
+                    )
                 }
 
                 if !account.subscribedPlaylists.isEmpty {
-                    Section("收藏的歌单") {
-                        ForEach(account.subscribedPlaylists) { playlist in
-                            NavigationLink(value: Destination.playlist(playlist.id)) {
-                                HStack(spacing: 10) {
-                                    CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
-                                        .frame(width: 32, height: 32)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(playlist.name)
-                                            .font(.system(size: 14))
-                                            .lineLimit(1)
-                                        Text("\(playlist.trackCount) 首")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    playlistSection(
+                        title: String(localized: "收藏的歌单"),
+                        playlists: account.subscribedPlaylists,
+                        showsNew: false
+                    )
                 }
             }
 
@@ -763,8 +738,11 @@ struct IOSLibraryView: View {
                 .accessibilityLabel("设置")
             }
         }
+        .sheet(isPresented: $showReorder) {
+            CloudPlaylistOrderSheet(playlists: reorderBase)
+        }
         .sheet(isPresented: $showSettings) {
-            NavigationStack {
+            AppNavStack {
                 SettingsView()
                     .navigationTitle("设置")
                     .toolbar {
@@ -793,6 +771,73 @@ struct IOSLibraryView: View {
                 }
             }
             Button("取消", role: .cancel) { newPlaylistName = "" }
+        }
+    }
+
+    /// Rows honour the local pin/order layout; NetEase's own order on the
+    /// server is left alone.
+    private func playlistSection(
+        title: String,
+        playlists: [PlaylistSummary],
+        showsNew: Bool
+    ) -> some View {
+        Section {
+            ForEach(layout.orderedCloud(playlists)) { playlist in
+                DestinationLink(value: Destination.playlist(playlist.id)) {
+                    HStack(spacing: 10) {
+                        CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
+                            .frame(width: 32, height: 32)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(playlist.name)
+                                .font(.system(size: 14))
+                                .lineLimit(1)
+                            Text("\(playlist.trackCount) 首")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if layout.isPinned(cloud: playlist.id) {
+                            Image(systemName: "pin.fill")
+                                .font(.caption)
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                }
+                .contextMenu {
+                    Button {
+                        layout.togglePin(cloud: playlist.id)
+                    } label: {
+                        Label(
+                            layout.isPinned(cloud: playlist.id)
+                                ? String(localized: "取消置顶")
+                                : String(localized: "置顶"),
+                            systemImage: layout.isPinned(cloud: playlist.id) ? "pin.slash" : "pin"
+                        )
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Text(title)
+                Spacer()
+                if showsNew {
+                    Button {
+                        showNewPlaylist = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                }
+                Button {
+                    reorderBase = playlists
+                    showReorder = true
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .disabled(playlists.count < 2)
+            }
         }
     }
 }

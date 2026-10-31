@@ -106,6 +106,8 @@ final class SettingsManager: ObservableObject {
         static let volume = "settings.volume"
         static let fmMode = "settings.fmMode"
         static let unblock = "settings.enableUnblock"
+        /// Keep in sync with `UnblockService.fallbackDefaultsKey`.
+        static let unblockFallback = "settings.enableUnblockFallback"
         static let unblockSources = "settings.enabledUnblockSources"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
@@ -124,6 +126,89 @@ final class SettingsManager: ObservableObject {
         static let enableAudioCache = "settings.enableAudioCache"
         static let audioCacheSizeMB = "settings.audioCacheSizeMB"
         static let audioCacheAutomatic = "settings.audioCacheAutomatic"
+        // Player customisation (ported from Beans-Music)
+        static let progressBarStyle = "settings.progressBarStyle"   // 0流光 1辉光 2极光 3波浪
+        static let playerBreath = "settings.playerBreath"           // 0...1 呼吸光晕强度
+        static let djVisual = "settings.djVisual"                   // DJ 节奏脉冲
+        static let djIntensity = "settings.djIntensity"             // 0...1
+        static let mixWithOthers = "settings.mixWithOthers"         // 与其他音频同时播放
+        static let lyricFontSize = "settings.lyricFontSize"         // 12...28
+        static let lyricSpacing = "settings.lyricSpacing"           // 14...40
+        static let circularCover = "settings.circularCover"
+        static let circularCoverSpin = "settings.circularCoverSpin"
+        // Beans-style effects
+        static let progressAccentHex = "settings.progressAccentHex"   // "" = follow accent
+        static let lyricBlurAmount = "settings.lyricBlurAmount"       // 0...10
+        static let lyricTiltX = "settings.lyricTiltX"                 // -30...30
+        static let lyricTiltY = "settings.lyricTiltY"                 // -20...20
+        static let lyricGlow = "settings.lyricGlow"                   // 0...5
+        /// iOS 26 folds overflowing tabs into a "更多" tab; this keeps the
+        /// hand-built bar with every tab laid out flat instead.
+        static let flattenTabs = "settings.flattenTabs"
+    }
+
+    /// Progress bar style: 0 流光 / 1 辉光 / 2 极光 / 3 波浪.
+    @Published var progressBarStyle: Int {
+        didSet { UserDefaults.standard.set(progressBarStyle, forKey: Keys.progressBarStyle) }
+    }
+
+    /// Breathing ambient glow behind the player, 0 (off) ... 1 (full).
+    @Published var playerBreath: Double {
+        didSet { UserDefaults.standard.set(playerBreath, forKey: Keys.playerBreath) }
+    }
+
+    /// DJ-style beat pulse rings (time-driven, decorative).
+    @Published var djVisual: Bool {
+        didSet { UserDefaults.standard.set(djVisual, forKey: Keys.djVisual) }
+    }
+
+    @Published var djIntensity: Double {
+        didSet { UserDefaults.standard.set(djIntensity, forKey: Keys.djIntensity) }
+    }
+
+    /// Keep playing while other apps play audio.
+    @Published var mixWithOthers: Bool {
+        didSet {
+            UserDefaults.standard.set(mixWithOthers, forKey: Keys.mixWithOthers)
+            PlayerService.shared.applyAudioMixPreference()
+        }
+    }
+
+    @Published var lyricFontSize: Double {
+        didSet { UserDefaults.standard.set(lyricFontSize, forKey: Keys.lyricFontSize) }
+    }
+
+    @Published var lyricSpacing: Double {
+        didSet { UserDefaults.standard.set(lyricSpacing, forKey: Keys.lyricSpacing) }
+    }
+
+    @Published var circularCover: Bool {
+        didSet { UserDefaults.standard.set(circularCover, forKey: Keys.circularCover) }
+    }
+
+    @Published var circularCoverSpin: Bool {
+        didSet { UserDefaults.standard.set(circularCoverSpin, forKey: Keys.circularCoverSpin) }
+    }
+
+    /// Custom progress-bar color (hex RRGGBB); empty follows the theme accent.
+    @Published var progressAccentHex: String {
+        didSet { UserDefaults.standard.set(progressAccentHex, forKey: Keys.progressAccentHex) }
+    }
+
+    @Published var lyricBlurAmount: Double {
+        didSet { UserDefaults.standard.set(lyricBlurAmount, forKey: Keys.lyricBlurAmount) }
+    }
+
+    @Published var lyricTiltX: Double {
+        didSet { UserDefaults.standard.set(lyricTiltX, forKey: Keys.lyricTiltX) }
+    }
+
+    @Published var lyricTiltY: Double {
+        didSet { UserDefaults.standard.set(lyricTiltY, forKey: Keys.lyricTiltY) }
+    }
+
+    @Published var lyricGlow: Double {
+        didSet { UserDefaults.standard.set(lyricGlow, forKey: Keys.lyricGlow) }
     }
 
     @Published var audioQuality: AudioQuality {
@@ -210,6 +295,14 @@ final class SettingsManager: ObservableObject {
     /// Resolve gray tracks from third-party sources (UnblockNeteaseMusic-style).
     @Published var enableUnblock: Bool {
         didSet { UserDefaults.standard.set(enableUnblock, forKey: Keys.unblock) }
+    }
+
+    /// Allow the fuzzy 酷狗 / 酷我 fallback when pyncmd has no copy of a track.
+    /// Off by default: pyncmd resolves by the original NetEase id, while those two
+    /// match on name + duration and can return the wrong recording.
+    /// Acts as the master switch: when off, only pyncmd is ever asked.
+    @Published var enableUnblockFallback: Bool {
+        didSet { UserDefaults.standard.set(enableUnblockFallback, forKey: Keys.unblockFallback) }
     }
 
     /// Built-in third-party sources eligible for gray-track resolution.
@@ -325,6 +418,12 @@ final class SettingsManager: ObservableObject {
             )
         }
     }
+    /// Draw the tab bar ourselves instead of letting iOS 26 collapse the
+    /// overflow (搜索 / 插件) into a single "更多" tab.
+    @Published var flattenTabs: Bool {
+        didSet { UserDefaults.standard.set(flattenTabs, forKey: Keys.flattenTabs) }
+    }
+
     private init() {
         let defaults = UserDefaults.standard
         audioQuality = defaults.string(forKey: Keys.quality).flatMap(AudioQuality.init) ?? .exhigh
@@ -346,6 +445,7 @@ final class SettingsManager: ObservableObject {
             ?? (defaults.bool(forKey: Keys.showRomaji) ? .romaji : .off)
         verbatimLyrics = defaults.object(forKey: Keys.verbatimLyrics) as? Bool ?? true
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
+        enableUnblockFallback = defaults.object(forKey: Keys.unblockFallback) as? Bool ?? false
         if let rawSourceIDs = defaults.stringArray(forKey: Keys.unblockSources) {
             enabledAudioSourceIDs = Set(rawSourceIDs.compactMap(AudioSourceID.init))
         } else {
@@ -376,5 +476,20 @@ final class SettingsManager: ObservableObject {
             max(storedAmbientBackgroundIntensity, Self.mainWindowAmbientBackgroundIntensityRange.lowerBound),
             Self.mainWindowAmbientBackgroundIntensityRange.upperBound
         )
+        progressBarStyle = defaults.object(forKey: Keys.progressBarStyle) as? Int ?? 0
+        playerBreath = defaults.object(forKey: Keys.playerBreath) as? Double ?? 0.6
+        djVisual = defaults.object(forKey: Keys.djVisual) as? Bool ?? false
+        djIntensity = defaults.object(forKey: Keys.djIntensity) as? Double ?? 0.5
+        mixWithOthers = defaults.object(forKey: Keys.mixWithOthers) as? Bool ?? false
+        lyricFontSize = defaults.object(forKey: Keys.lyricFontSize) as? Double ?? 20
+        lyricSpacing = defaults.object(forKey: Keys.lyricSpacing) as? Double ?? 24
+        circularCover = defaults.object(forKey: Keys.circularCover) as? Bool ?? false
+        circularCoverSpin = defaults.object(forKey: Keys.circularCoverSpin) as? Bool ?? false
+        progressAccentHex = defaults.string(forKey: Keys.progressAccentHex) ?? ""
+        lyricBlurAmount = defaults.object(forKey: Keys.lyricBlurAmount) as? Double ?? 4
+        lyricTiltX = defaults.object(forKey: Keys.lyricTiltX) as? Double ?? 8
+        lyricTiltY = defaults.object(forKey: Keys.lyricTiltY) as? Double ?? 0
+        lyricGlow = defaults.object(forKey: Keys.lyricGlow) as? Double ?? 2.5
+        flattenTabs = defaults.object(forKey: Keys.flattenTabs) as? Bool ?? true
     }
 }

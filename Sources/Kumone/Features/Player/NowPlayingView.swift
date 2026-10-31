@@ -59,7 +59,7 @@ struct NowPlayingView: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                if isCompact, showsClassicChrome(isCompact: isCompact) {
+                if isCompact, showsClassicChrome(isCompact: isCompact), !player.hasNoLyrics {
                     Button {
                         withAnimation(AppAnimation.standard) {
                             showLyricsOnMobile.toggle()
@@ -116,7 +116,9 @@ struct NowPlayingView: View {
             showQueueOnMobile = false
         }
         .onChange(of: player.currentTrack?.id) { _ in
-            if settings.nowPlayingMode == .minimal || settings.nowPlayingMode == .vinyl {
+            if player.hasNoLyrics
+                || settings.nowPlayingMode == .minimal
+                || settings.nowPlayingMode == .vinyl {
                 showLyricsOnMobile = false
             }
         }
@@ -211,6 +213,7 @@ struct NowPlayingView: View {
                 colors: [.white.opacity(0.12), .clear],
                 center: .topLeading, startRadius: 0, endRadius: 700
             )
+            PlayerAmbienceOverlay()
             LinearGradient(
                 colors: [.clear, .black.opacity(0.35)],
                 startPoint: .top, endPoint: .bottom
@@ -400,7 +403,7 @@ struct NowPlayingView: View {
         let artworkDim = min(size.width - 64, size.height * 0.38, 300)
         return VStack(spacing: 20) {
             Spacer().frame(height: 44)
-            if showLyricsOnMobile {
+            if showLyricsOnMobile, !player.hasNoLyrics {
                 lyricsColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.opacity)
@@ -453,7 +456,7 @@ struct NowPlayingView: View {
                 if showQueueOnMobile {
                     CompactQueueContent()
                         .transition(.opacity)
-                } else {
+                } else if showLyricsOnMobile, !player.hasNoLyrics {
                     IOSImmersiveLyricsColumn()
                         .opacity(showLyricsOnMobile ? 1 : 0)
                         .allowsHitTesting(showLyricsOnMobile)
@@ -722,14 +725,26 @@ struct NowPlayingView: View {
                         .foregroundStyle(.white.opacity(0.3))
                 )
             if let artworkImage {
-                Image(platformImage: artworkImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .transition(.opacity)
+                if settings.circularCover && settings.circularCoverSpin {
+                    TimelineView(.animation(paused: !player.isPlaying)) { timeline in
+                        let degrees = timeline.date.timeIntervalSinceReferenceDate
+                            .truncatingRemainder(dividingBy: 24) / 24 * 360
+                        Image(platformImage: artworkImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .rotationEffect(.degrees(degrees))
+                            .transition(.opacity)
+                    }
+                } else {
+                    Image(platformImage: artworkImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .transition(.opacity)
+                }
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: settings.circularCover ? size / 2 : 18, style: .continuous))
         .shadow(color: .black.opacity(0.45), radius: 36, y: 18)
         .animation(.easeIn(duration: 0.25), value: artworkImage != nil)
         .scaleEffect(player.isPlaying ? 1 : 0.95)
@@ -878,7 +893,7 @@ struct NowPlayingView: View {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 21, weight: .bold))
                     .foregroundStyle(.black.opacity(0.85))
-                    .contentTransition(.opacity)
+                    .compatContentTransitionOpacity()
             }
         }
         .buttonStyle(.pressable)
@@ -932,7 +947,7 @@ struct NowPlayingView: View {
         if let lyrics = player.lyrics, !lyrics.isEmpty {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 26) {
+                    LazyVStack(alignment: .leading, spacing: settings.lyricSpacing) {
                         Color.clear.frame(height: 200)
                         ForEach(lyrics.lines) { line in
                             bigLyricLine(line, isActive: line.id == activeIndex)
@@ -982,6 +997,18 @@ struct NowPlayingView: View {
                     .foregroundStyle(.white.opacity(0.6))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if player.currentTrack?.isPluginTrack == true {
+            // Plugin tracks have no lyric source — show a stable placeholder
+            // instead of spinning forever.
+            VStack(spacing: 10) {
+                Image(systemName: "text.quote")
+                    .font(.system(size: 36, weight: .light))
+                    .foregroundStyle(.white.opacity(0.4))
+                Text("暂无歌词")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView()
                 .controlSize(.small)
@@ -1002,7 +1029,8 @@ struct NowPlayingView: View {
                 }
                 LyricMainText(
                     line: line, isActive: isActive,
-                    size: isActive ? 26 : 20, weight: isActive ? .bold : .semibold,
+                    size: isActive ? settings.lyricFontSize + 6 : settings.lyricFontSize,
+                    weight: isActive ? .bold : .semibold,
                     verbatim: settings.verbatimLyrics
                 )
                 if settings.showLyricsTranslation, let translation = line.translation {
@@ -1014,7 +1042,16 @@ struct NowPlayingView: View {
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .blur(radius: isActive || isUserScrolling ? 0 : 0.6)
+            .blur(radius: isActive || isUserScrolling ? 0 : max(0.6, settings.lyricBlurAmount))
+            .rotation3DEffect(
+                .degrees(isActive ? settings.lyricTiltX : settings.lyricTiltX * 0.3),
+                axis: (x: CGFloat(settings.lyricTiltY / 90), y: 1, z: 0),
+                perspective: 0.4
+            )
+            .shadow(
+                color: .white.opacity(isActive ? 0.06 * settings.lyricGlow : 0),
+                radius: settings.lyricGlow * 4
+            )
             .scaleEffect(isActive ? 1.02 : 1, anchor: .leading)
         }
         .buttonStyle(.plain)
@@ -1232,8 +1269,17 @@ private struct IOSImmersiveLyricsColumn: View {
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .blur(radius: isActive || isUserScrolling ? 0 : 0.4)
-            .scaleEffect(isActive ? 1.02 : 1.0, anchor: .leading)
+            .blur(radius: isActive || isUserScrolling ? 0 : max(0.4, settings.lyricBlurAmount))
+            .rotation3DEffect(
+                .degrees(isActive ? settings.lyricTiltX : settings.lyricTiltX * 0.3),
+                axis: (x: CGFloat(settings.lyricTiltY / 90), y: 1, z: 0),
+                perspective: 0.4
+            )
+            .shadow(
+                color: .white.opacity(isActive ? 0.06 * settings.lyricGlow : 0),
+                radius: settings.lyricGlow * 4
+            )
+            .scaleEffect(isActive ? 1.07 : 0.82, anchor: .leading)
         }
         .buttonStyle(.plain)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isActive)
@@ -1278,7 +1324,17 @@ private struct ImmersiveArtworkFramePreferenceKey: PreferenceKey {
 private struct CompactTrackHeader: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
-    @State private var showAddToPlaylist = false
+
+    /// One enum-driven sheet, so the local-playlist picker and the NetEase
+    /// playlist picker don't compete for the same presentation slot.
+    private enum HeaderSheet: Identifiable {
+        case neteasePlaylist
+        case localPlaylist
+
+        var id: Int { hashValue }
+    }
+
+    @State private var activeSheet: HeaderSheet? = nil
 
     let showsExpandedArtwork: Bool
     let onOpenDestination: (Destination) -> Void
@@ -1332,17 +1388,21 @@ private struct CompactTrackHeader: View {
             if let track = player.currentTrack {
                 let liked = account.isLiked(track.id)
                 HStack(spacing: 0) {
-                    Button {
-                        Task { await account.toggleLike(trackID: track.id) }
-                    } label: {
-                        Image(systemName: liked ? "heart.fill" : "heart")
-                            .font(.system(size: 21, weight: .medium))
-                            .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
-                            .frame(width: 44, height: 44)
+                    // Plugin items have no NetEase id; the heart would post a
+                    // hashed id to the NetEase API.
+                    if track.plugin == nil {
+                        Button {
+                            Task { await account.toggleLike(trackID: track.id) }
+                        } label: {
+                            Image(systemName: liked ? "heart.fill" : "heart")
+                                .font(.system(size: 21, weight: .medium))
+                                .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.pressable)
+                        .accessibilityLabel(liked ? "取消收藏" : "收藏")
+                        .accessibilityIdentifier("immersiveFavoriteButton")
                     }
-                    .buttonStyle(.pressable)
-                    .accessibilityLabel(liked ? "取消收藏" : "收藏")
-                    .accessibilityIdentifier("immersiveFavoriteButton")
 
                     Menu {
                         TrackDownloadActions(track: track, showsIcons: true)
@@ -1353,13 +1413,19 @@ private struct CompactTrackHeader: View {
                             Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
                         }
 
-                        Button {
-                            showAddToPlaylist = true
-                        } label: {
-                            Label("加入歌单…", systemImage: "music.note.list")
+                        if track.plugin == nil {
+                            Button {
+                                activeSheet = .neteasePlaylist
+                            } label: {
+                                Label("加入网易云歌单…", systemImage: "music.note.list")
+                            }
                         }
 
-                        Divider()
+                        Button {
+                            activeSheet = .localPlaylist
+                        } label: {
+                            Label("添加到歌单…", systemImage: "folder.badge.plus")
+                        }
 
                         #if os(iOS)
                         SleepTimerMenu(player: player)
@@ -1367,13 +1433,17 @@ private struct CompactTrackHeader: View {
                         Divider()
                         #endif
 
-                        Button {
-                            Platform.copyToPasteboard(
-                                string: "https://music.163.com/#/song?id=\(track.id)"
-                            )
-                            ToastCenter.shared.show(String(localized: "链接已复制"))
-                        } label: {
-                            Label("复制链接", systemImage: "link")
+                        if track.plugin == nil {
+                            Divider()
+
+                            Button {
+                                Platform.copyToPasteboard(
+                                    string: "https://music.163.com/#/song?id=\(track.id)"
+                                )
+                                ToastCenter.shared.show(String(localized: "链接已复制"))
+                            } label: {
+                                Label("复制链接", systemImage: "link")
+                            }
                         }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -1389,9 +1459,14 @@ private struct CompactTrackHeader: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .sheet(isPresented: $showAddToPlaylist) {
+        .sheet(item: $activeSheet) { sheet in
             if let track = player.currentTrack {
-                AddToPlaylistSheet(track: track)
+                switch sheet {
+                case .neteasePlaylist:
+                    AddToPlaylistSheet(track: track)
+                case .localPlaylist:
+                    AddTracksToPlaylistSheet(tracks: [track])
+                }
             }
         }
     }
@@ -1412,7 +1487,7 @@ private struct CompactTransportControls: View {
             Button(action: player.togglePlayPause) {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 36, weight: .bold))
-                    .contentTransition(.opacity)
+                    .compatContentTransitionOpacity()
                     .frame(maxWidth: .infinity, minHeight: 64)
             }
             .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
@@ -1642,14 +1717,35 @@ private struct CompactQueueContent: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: 4) {
+                    LazyVStack(alignment: .leading, spacing: 4) {
                         PlaybackHandoffList()
                             .padding(.bottom, 4)
-                        ForEach(
-                            Array(player.upcomingTracks.prefix(100).enumerated()),
-                            id: \.offset
-                        ) { index, track in
-                            CompactQueueRow(track: track, upcomingIndex: index)
+                        if !player.queueSections.inserted.isEmpty {
+                            compactSectionLabel("插播")
+                            ForEach(
+                                Array(player.queueSections.inserted.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { _, track in
+                                CompactQueueRow(track: track)
+                            }
+                        }
+                        if !player.queueSections.upcoming.isEmpty {
+                            compactSectionLabel("即将播放")
+                            ForEach(
+                                Array(player.queueSections.upcoming.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { index, track in
+                                CompactQueueRow(track: track, upcomingIndex: index)
+                            }
+                        }
+                        if !player.queueSections.pending.isEmpty {
+                            compactSectionLabel("稍后播放")
+                            ForEach(
+                                Array(player.queueSections.pending.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { _, track in
+                                CompactQueueRow(track: track)
+                            }
                         }
                     }
                 }
@@ -1663,6 +1759,14 @@ private struct CompactQueueContent: View {
             }
         }
         .padding(.top, 6)
+    }
+
+    private func compactSectionLabel(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.5))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
     }
 
     private func modeButton(
@@ -1696,13 +1800,16 @@ private struct CompactQueueContent: View {
 
 private struct CompactQueueRow: View {
     let track: Track
-    let upcomingIndex: Int
+    /// Index within the "即将播放" section; nil for 插播/稍后播放 rows, which
+    /// are matched by track instead of by position.
+    var upcomingIndex: Int? = nil
 
     @EnvironmentObject private var player: PlayerService
 
     var body: some View {
         Button {
-            player.jumpToUpcoming(at: upcomingIndex, matching: track.id)
+            if let upcomingIndex { player.jumpToUpcoming(at: upcomingIndex, matching: track.id) }
+            else { player.jumpTo(track) }
         } label: {
             HStack(spacing: 11) {
                 CachedAsyncImage(url: track.album.picUrl?.resizedImageURL(120), animated: false)
@@ -1946,7 +2053,7 @@ private struct IOSMinimalLyricsColumn: View {
         // ponytail: iOS 16 has no scroll phase API; replace with onScrollPhaseChange
         // when the deployment target reaches iOS 18.
         scrollSettleTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(120))
+            try? await Task.sleep(nanoseconds: UInt64(120 * 1_000_000))
             guard !Task.isCancelled else { return }
             let selection = nearestLine(to: guideY, in: lineCenters) ?? nearestIndex
             selectedIndex = selection
@@ -1963,7 +2070,7 @@ private struct IOSMinimalLyricsColumn: View {
     private func scheduleSelectionTimeout(proxy: ScrollViewProxy) {
         selectionTimeoutTask?.cancel()
         selectionTimeoutTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(nanoseconds: UInt64(5 * 1_000_000_000))
             guard !Task.isCancelled, selectedIndex != nil else { return }
             returnToActiveLine(proxy: proxy)
         }
@@ -2068,8 +2175,22 @@ private struct MinimalLyricCentersKey: PreferenceKey {
 private struct MinimalTrackInfoRow: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
-    @State private var showAddToPlaylist = false
+    /// One enum-driven sheet for every "more" action.
+    ///
+    /// These used to be three separate `.sheet(isPresented:)` modifiers on the
+    /// same view; folding them into one stops the local-playlist picker from
+    /// competing with them for the same presentation slot.
+    private enum MoreSheet: Identifiable {
+        case neteasePlaylist
+        case pluginPlaylist
+        case localPlaylist
+        case share
+
+        var id: Int { hashValue }
+    }
+
     @State private var airPlayRequest = 0
+    @State private var moreSheet: MoreSheet? = nil
     let onOpenDestination: (Destination) -> Void
     var metadataOnly = false
     var actionsOnly = false
@@ -2099,9 +2220,18 @@ private struct MinimalTrackInfoRow: View {
                 }
             }
         }
-        .sheet(isPresented: $showAddToPlaylist) {
+        .sheet(item: $moreSheet) { sheet in
             if let track = player.currentTrack {
-                AddToPlaylistSheet(track: track)
+                switch sheet {
+                case .neteasePlaylist:
+                    AddToPlaylistSheet(track: track)
+                case .pluginPlaylist:
+                    LocalPlaylistPickerSheet(track: track)
+                case .localPlaylist:
+                    AddTracksToPlaylistSheet(tracks: [track])
+                case .share:
+                    ShareSheet(items: Self.shareItems(for: track))
+                }
             }
         }
     }
@@ -2134,19 +2264,24 @@ private struct MinimalTrackInfoRow: View {
         .accessibilityIdentifier("immersiveTrackMetadata")
     }
 
+    @ViewBuilder
     private func favoriteButton(for track: Track) -> some View {
-        let liked = account.isLiked(track.id)
-        return Button {
-            Task { await account.toggleLike(trackID: track.id) }
-        } label: {
-            Image(systemName: liked ? "heart.fill" : "heart")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
-                .frame(width: 44, height: 44)
+        // Plugin items have no NetEase id — favouriting one would post a hashed
+        // id to the NetEase API, so the heart is hidden for them.
+        if track.plugin == nil {
+            let liked = account.isLiked(track.id)
+            Button {
+                Task { await account.toggleLike(trackID: track.id) }
+            } label: {
+                Image(systemName: liked ? "heart.fill" : "heart")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(liked ? Theme.accent : .white.opacity(0.88))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.pressable)
+            .accessibilityLabel(liked ? "取消收藏" : "收藏")
+            .accessibilityIdentifier("immersiveFavoriteButton")
         }
-        .buttonStyle(.pressable)
-        .accessibilityLabel(liked ? "取消收藏" : "收藏")
-        .accessibilityIdentifier("immersiveFavoriteButton")
     }
 
     private func moreMenu(for track: Track) -> some View {
@@ -2165,13 +2300,29 @@ private struct MinimalTrackInfoRow: View {
                 Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
 
-            Button {
-                showAddToPlaylist = true
+            Menu {
+                ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0], id: \.self) { rateOption in
+                    Button {
+                        player.rate = rateOption
+                    } label: {
+                        if abs(player.rate - rateOption) < 0.01 {
+                            Label(String(format: "%.2fx", rateOption), systemImage: "checkmark")
+                        } else {
+                            Text(String(format: "%.2fx", rateOption))
+                        }
+                    }
+                }
             } label: {
-                Label("加入歌单…", systemImage: "music.note.list")
+                Label("倍速播放", systemImage: "speedometer")
             }
 
-            Divider()
+            if !track.isPluginTrack {
+                Button {
+                    moreSheet = .neteasePlaylist
+                } label: {
+                    Label("加入网易云歌单…", systemImage: "music.note.list")
+                }
+            }
 
             #if os(iOS)
             SleepTimerMenu(player: player)
@@ -2180,12 +2331,36 @@ private struct MinimalTrackInfoRow: View {
             #endif
 
             Button {
-                Platform.copyToPasteboard(
-                    string: "https://music.163.com/#/song?id=\(track.id)"
-                )
-                ToastCenter.shared.show(String(localized: "链接已复制"))
+                moreSheet = .localPlaylist
             } label: {
-                Label("复制链接", systemImage: "link")
+                Label("添加到歌单…", systemImage: "folder.badge.plus")
+            }
+
+            if track.isPluginTrack {
+                Button {
+                    moreSheet = .pluginPlaylist
+                } label: {
+                    Label("添加到插件歌单…", systemImage: "internaldrive")
+                }
+            }
+
+            Button {
+                moreSheet = .share
+            } label: {
+                Label("分享歌曲", systemImage: "square.and.arrow.up")
+            }
+
+            if !track.isPluginTrack {
+                Divider()
+
+                Button {
+                    Platform.copyToPasteboard(
+                        string: "https://music.163.com/#/song?id=\(track.id)"
+                    )
+                    ToastCenter.shared.show(String(localized: "链接已复制"))
+                } label: {
+                    Label("复制链接", systemImage: "link")
+                }
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -2204,6 +2379,16 @@ private struct MinimalTrackInfoRow: View {
             )
             .opacity(0.01)
         }
+    }
+
+    static func shareItems(for track: Track) -> [Any] {
+        if track.isPluginTrack {
+            return ["\(track.name) - \(track.artistNames)\n（Kumone 插件音源）"]
+        }
+        return [
+            "\(track.name) - \(track.artistNames)",
+            "https://music.163.com/#/song?id=\(track.id)",
+        ]
     }
 }
 
@@ -2236,7 +2421,7 @@ private struct MinimalTransportControls: View {
             Button(action: player.togglePlayPause) {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 38, weight: .bold))
-                    .contentTransition(.opacity)
+                    .compatContentTransitionOpacity()
                     .frame(maxWidth: .infinity, minHeight: 64)
             }
             .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
@@ -2267,11 +2452,11 @@ private struct MinimalTransportControls: View {
     private var queueSheet: some View {
         if #available(iOS 16.4, *) {
             IOSPlaybackQueueView(backdrop: backdrop)
-                .presentationDetents([.fraction(0.5)])
+                .compatPresentationDetentsFraction(0.5)
                 .presentationBackgroundInteraction(.enabled)
         } else {
             IOSPlaybackQueueView(backdrop: backdrop)
-                .presentationDetents([.fraction(0.5)])
+                .compatPresentationDetentsFraction(0.5)
         }
     }
 
@@ -2325,6 +2510,7 @@ private struct MinimalTransportControls: View {
 
 struct NowPlayingScrubber: View {
     @EnvironmentObject private var player: PlayerService
+    @EnvironmentObject private var settings: SettingsManager
     @ObservedObject private var clock = PlayerService.shared.clock
 
     @State private var isHovering = false
@@ -2341,36 +2527,17 @@ struct NowPlayingScrubber: View {
         VStack(spacing: 5) {
             GeometryReader { geo in
                 let width = geo.size.width
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(.white.opacity(0.25))
-                        .frame(height: 4)
-                    Capsule()
-                        .fill(.white)
-                        .frame(width: max(4, width * fraction), height: 4)
-                    Circle()
-                        .fill(.white)
-                        .frame(width: thumbDiameter, height: thumbDiameter)
-                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-                        .offset(x: width * fraction - thumbDiameter / 2)
-                        .opacity(isHovering || isDragging ? 1 : 0)
+                ZStack {
+                    switch settings.progressBarStyle {
+                    case 1: glowTrack(width: width)
+                    case 2: auroraTrack(width: width)
+                    case 3: waveTrack(width: width)
+                    default: flowingTrack(width: width)
+                    }
                 }
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            guard player.duration > 0 else { return }
-                            isDragging = true
-                            player.isScrubbing = true
-                            dragProgress = min(max(value.location.x / width, 0), 1) * player.duration
-                        }
-                        .onEnded { _ in
-                            player.seek(to: dragProgress)
-                            isDragging = false
-                            player.isScrubbing = false
-                        }
-                )
+                .gesture(scrubGesture(width: width))
             }
             .frame(height: 14)
             .onHover { hovering in
@@ -2387,8 +2554,126 @@ struct NowPlayingScrubber: View {
         }
     }
 
+    private func scrubGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard player.duration > 0 else { return }
+                isDragging = true
+                player.isScrubbing = true
+                dragProgress = min(max(value.location.x / width, 0), 1) * player.duration
+            }
+            .onEnded { _ in
+                player.seek(to: dragProgress)
+                isDragging = false
+                player.isScrubbing = false
+            }
+    }
+
     private var thumbDiameter: CGFloat {
         isDragging ? 13 : (isHovering ? 11 : 9)
+    }
+
+    /// Progress color: custom setting or white on the player backdrop.
+    private var accent: Color {
+        Color(hex: settings.progressAccentHex) ?? .white
+    }
+
+    /// 0 流光: slim bar with a bright top highlight and a travelling spark.
+    @ViewBuilder
+    private func flowingTrack(width: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            Capsule().fill(.white.opacity(0.25)).frame(height: 4)
+            Capsule().fill(accent).frame(width: max(4, width * fraction), height: 4)
+            Capsule()
+                .fill(LinearGradient(colors: [.white.opacity(0.9), .clear], startPoint: .top, endPoint: .bottom))
+                .frame(width: max(4, width * fraction), height: 2)
+                .offset(y: -1.5)
+            if fraction > 0.02 {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 3.5, height: 3.5)
+                    .shadow(color: .white, radius: 4)
+                    .offset(x: width * fraction - 2)
+            }
+            thumb(width: width)
+        }
+    }
+
+    /// 1 辉光: full-width gradient rail with a soft glow under the fill.
+    @ViewBuilder
+    private func glowTrack(width: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            Capsule()
+                .fill(LinearGradient(colors: [.white.opacity(0.3), .white.opacity(0.1)], startPoint: .leading, endPoint: .trailing))
+                .frame(height: 5)
+            Capsule()
+                .fill(accent)
+                .frame(width: max(4, width * fraction), height: 5)
+                .shadow(color: accent.opacity(0.8), radius: 5)
+            Capsule()
+                .fill(.white.opacity(0.35))
+                .blur(radius: 6)
+                .frame(width: max(4, width * fraction), height: 8)
+                .offset(y: 5)
+            thumb(width: width)
+        }
+    }
+
+    /// 2 极光: hairline with an oversized soft knob.
+    @ViewBuilder
+    private func auroraTrack(width: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            Capsule().fill(.white.opacity(0.15)).frame(height: 1.5)
+            Capsule().fill(accent).frame(width: max(2, width * fraction), height: 1.5)
+            Circle()
+                .fill(.white)
+                .frame(width: isDragging ? 15 : 11, height: isDragging ? 15 : 11)
+                .shadow(color: .white.opacity(0.6), radius: 6)
+                .offset(x: width * fraction - (isDragging ? 7.5 : 5.5))
+        }
+    }
+
+    /// 3 波浪: a sine-wave ribbon filling with progress.
+    @ViewBuilder
+    private func waveTrack(width: CGFloat) -> some View {
+        Canvas { context, size in
+            let midY = size.height / 2
+            let fillX = size.width * fraction
+            let amplitude: CGFloat = 2.2
+            let wavelength: CGFloat = 26
+            var path = Path()
+            path.move(to: CGPoint(x: 0, y: midY))
+            for x in stride(from: CGFloat(0), through: fillX + 1, by: 1) {
+                let y = midY + sin(x / wavelength * .pi * 2) * amplitude
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+            var dimPath = Path()
+            dimPath.move(to: CGPoint(x: 0, y: midY))
+            for x in stride(from: CGFloat(0), through: size.width, by: 2) {
+                let y = midY + sin(x / wavelength * .pi * 2) * amplitude
+                dimPath.addLine(to: CGPoint(x: x, y: y))
+            }
+            context.stroke(dimPath, with: .color(.white.opacity(0.2)), lineWidth: 1.5)
+            context.stroke(path, with: .color(accent), lineWidth: 2)
+        }
+        .overlay(alignment: .leading) {
+            if fraction > 0 {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: .white, radius: 3)
+                    .offset(x: width * fraction - 3)
+            }
+        }
+    }
+
+    private func thumb(width: CGFloat) -> some View {
+        Circle()
+            .fill(accent)
+            .frame(width: thumbDiameter, height: thumbDiameter)
+            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+            .offset(x: width * fraction - thumbDiameter / 2)
+            .opacity(isHovering || isDragging ? 1 : 0)
     }
 }
 
@@ -2445,5 +2730,182 @@ struct MiniLyricsView: View {
             .padding(.horizontal, 28)
             .id(line?.id)
             .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+}
+
+// MARK: - Ambient glow / DJ pulse (ported from Beans-Music)
+
+/// Breathing radial glow + optional DJ beat rings, painted behind the player
+/// content. Time-driven and cheap (single Canvas per frame, paused with music).
+struct PlayerAmbienceOverlay: View {
+    @EnvironmentObject private var player: PlayerService
+    @EnvironmentObject private var settings: SettingsManager
+
+    var body: some View {
+        if settings.playerBreath > 0.01 || settings.djVisual {
+            TimelineView(.animation(paused: !player.isPlaying)) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                Canvas { context, size in
+                    let center = CGPoint(x: size.width * 0.5, y: size.height * 0.32)
+                    if settings.playerBreath > 0.01 {
+                        let breathe = 0.85 + 0.15 * sin(t * 1.1)
+                        let strength = CGFloat(breathe * settings.playerBreath)
+                        let radius = size.width * 0.55 * strength
+                        let secondaryCenter = CGPoint(x: size.width * 0.72, y: size.height * 0.22)
+                        let secondaryRadius = size.width * 0.3 * strength
+                        context.fill(
+                            Path(ellipseIn: CGRect(
+                                x: center.x - radius, y: center.y - radius,
+                                width: radius * 2, height: radius * 2
+                            )),
+                            with: .radialGradient(
+                                Gradient(colors: [.white.opacity(0.34), .white.opacity(0.09), .clear]),
+                                center: center, startRadius: 0, endRadius: radius
+                            )
+                        )
+                        context.fill(
+                            Path(ellipseIn: CGRect(
+                                x: secondaryCenter.x - secondaryRadius, y: secondaryCenter.y - secondaryRadius,
+                                width: secondaryRadius * 2, height: secondaryRadius * 2
+                            )),
+                            with: .radialGradient(
+                                Gradient(colors: [.white.opacity(0.18), .clear]),
+                                center: secondaryCenter, startRadius: 0, endRadius: secondaryRadius
+                            )
+                        )
+                    }
+                    if settings.djVisual {
+                        let beat = (t.truncatingRemainder(dividingBy: 0.55)) / 0.55
+                        let eased = 1 - pow(1 - beat, 2)
+                        let ringRadius = size.width * 0.28 * (0.2 + 0.8 * eased)
+                        let alpha = (1 - beat) * settings.djIntensity
+                        let ring = Path(ellipseIn: CGRect(
+                            x: center.x - ringRadius, y: center.y - ringRadius,
+                            width: ringRadius * 2, height: ringRadius * 2
+                        ))
+                        context.stroke(ring, with: .color(.white.opacity(0.6 * alpha)), lineWidth: 3)
+                        let inner = ringRadius * 0.55
+                        let ring2 = Path(ellipseIn: CGRect(
+                            x: center.x - inner, y: center.y - inner,
+                            width: inner * 2, height: inner * 2
+                        ))
+                        context.stroke(ring2, with: .color(.white.opacity(0.4 * alpha)), lineWidth: 2)
+                    }
+                    // Floating dust particles (Beans-style), 22 of them.
+                    for i in 0..<22 {
+                        let fi = CGFloat(i)
+                        let px = size.width * (0.1 + 0.8 * ((fi * 37).truncatingRemainder(dividingBy: 100) / 100))
+                        let py = size.height * (0.15 + 0.7 * ((fi * 61).truncatingRemainder(dividingBy: 100) / 100))
+                        let driftX = sin(t * 0.4 + fi * 1.7) * 18
+                        let driftY = cos(t * 0.3 + fi * 2.3) * 24
+                        let radius = 1.2 + (fi.truncatingRemainder(dividingBy: 3)) * 0.8
+                        let twinkle = 0.25 + 0.2 * sin(t * 0.9 + fi)
+                        let dot = Path(ellipseIn: CGRect(
+                            x: px + driftX - radius, y: py + driftY - radius,
+                            width: radius * 2, height: radius * 2
+                        ))
+                        context.fill(dot, with: .color(.white.opacity(twinkle)))
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+            .ignoresSafeArea()
+        }
+    }
+}
+
+// MARK: - Share sheet
+
+#if os(iOS)
+/// UIActivityViewController wrapper for sharing track info.
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+#endif
+
+// MARK: - Local playlist picker (plugin tracks)
+
+/// Picks (or creates) a local playlist to append the current plugin track to.
+struct LocalPlaylistPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let track: Track
+
+    @State private var newPlaylistName = ""
+    @State private var showCreate = false
+
+    var body: some View {
+        AppNavStack {
+            Form {
+                Section {
+                    ForEach(ImportedPlaylistStore.shared.playlists) { playlist in
+                        Button {
+                            add(to: playlist)
+                        } label: {
+                            HStack {
+                                Image(systemName: "music.note.list")
+                                    .foregroundStyle(Theme.accent)
+                                Text(playlist.name)
+                                Spacer()
+                                Text("\(playlist.itemCount)")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("选择插件歌单")
+                } footer: {
+                    Text("本地歌单两种音源的歌都能放，新添加的歌会排在最前面。")
+                }
+                Section {
+                    Button {
+                        showCreate = true
+                    } label: {
+                        Label("新建歌单", systemImage: "plus")
+                    }
+                }
+            }
+            .navigationTitle("添加到插件歌单")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("取消") { dismiss() }
+                }
+            }
+            .alert("新建歌单", isPresented: $showCreate) {
+                TextField("歌单名称", text: $newPlaylistName)
+                Button("创建并添加") {
+                    createAndAdd()
+                }
+                Button("取消", role: .cancel) {}
+            }
+        }
+    }
+
+    private func add(to playlist: ImportedPlaylist) {
+        guard let entry = LocalTrackEntry(track: track) else { return }
+        let added = ImportedPlaylistStore.shared.addEntries([entry], to: playlist)
+        guard added > 0 else {
+            ToastCenter.shared.show(String(localized: "这首歌已经在歌单里了"))
+            return
+        }
+        ToastCenter.shared.show(String(localized: "已添加到「\(playlist.name)」，放在最前面"))
+        dismiss()
+    }
+
+    private func createAndAdd() {
+        let name = newPlaylistName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            let playlist = try ImportedPlaylistStore.shared.createPlaylist(name: name)
+            add(to: playlist)
+        } catch {
+            ToastCenter.shared.show(String(localized: "创建歌单失败"))
+        }
     }
 }

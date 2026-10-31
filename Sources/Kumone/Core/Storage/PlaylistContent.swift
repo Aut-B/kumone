@@ -191,6 +191,22 @@ final class PlaylistContent: ObservableObject {
         }
     }
 
+    /// Batch removal: one network call already deleted them on the server, so
+    /// the local list just drops every id at once.
+    func remove(ids: Set<Int>) async {
+        removedTrackIDs.formUnion(ids)
+        tracks.removeAll { ids.contains($0.id) }
+        detail?.tracks.removeAll { ids.contains($0.id) }
+        detail?.trackIds.removeAll { ids.contains($0.id) }
+        detail?.trackCount = detail?.trackIds.count ?? 0
+        for id in ids { privileges[id] = nil }
+        if let scope = loadedScope, scope == accountScope() {
+            for id in ids {
+                try? await snapshots?.remove(trackID: id, playlistID: playlistID, scope: scope)
+            }
+        }
+    }
+
     private func applyingRecommendations(to snapshot: PlaylistSnapshot) -> PlaylistSnapshot {
         var snapshot = snapshot
         for (id, replacement) in recommendationReplacements {

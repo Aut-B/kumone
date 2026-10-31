@@ -92,6 +92,10 @@ enum Destination: Hashable {
     case collections
     case cloud
     case search(String)
+    /// A locally stored playlist (plugin items and NetEase references), opened
+    /// by pushing it onto the current tab's stack. The playlist travels by
+    /// value so the route does not have to read the store.
+    case localPlaylist(ImportedPlaylist)
 }
 
 extension Array where Element == Destination {
@@ -102,11 +106,15 @@ extension Array where Element == Destination {
 }
 
 /// Registers all shared navigation destinations on a stack.
-struct DestinationsModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content.navigationDestination(for: Destination.self) { destination in
-            Group {
-                switch destination {
+/// The view a `Destination` stands for. iOS 16 registers it once with
+/// `navigationDestination`; on iOS 15 each `DestinationLink` builds it
+/// directly, because value-based links do not exist there.
+struct DestinationView: View {
+    let destination: Destination
+
+    var body: some View {
+        Group {
+            switch destination {
                 case .downloaded:
                     DownloadedMusicView()
                 case .downloadTasks:
@@ -129,11 +137,26 @@ struct DestinationsModifier: ViewModifier {
                     CollectionsView()
                 case .cloud:
                     CloudView()
+                case .localPlaylist(let playlist):
+                    ImportedPlaylistDetailView(playlist: playlist)
                 case .search(let query):
                     SearchView(query: query)
                 }
+        }
+        .playerContentInset()
+    }
+}
+
+struct DestinationsModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.navigationDestination(for: Destination.self) { destination in
+                DestinationView(destination: destination)
             }
-            .playerContentInset()
+        } else {
+            // iOS 15 links carry their own destination view.
+            content
         }
     }
 }

@@ -1,5 +1,7 @@
 import SwiftUI
 
+#if os(macOS)
+
 struct MainWindow: View {
     private let externalPath: Binding<[Destination]>?
 #if os(macOS)
@@ -184,10 +186,10 @@ struct MainWindow: View {
                 // window, so they are its only way to close, dock or zoom it
                 // (#128).
                 nowPlayingChromeTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(120))
+                    try? await Task.sleep(nanoseconds: UInt64(120 * 1_000_000))
                     guard !Task.isCancelled else { return }
                     nowPlayingChromeFadedOut = true
-                    try? await Task.sleep(for: .milliseconds(230))
+                    try? await Task.sleep(nanoseconds: UInt64(230 * 1_000_000))
                     guard !Task.isCancelled else { return }
                     nowPlayingChromeHidden = true
                 }
@@ -678,16 +680,8 @@ struct SearchFieldView: View {
 }
 
 // MARK: - Toast
-
-struct ToastView: View {
-    let toast: Toast
-
-    var body: some View {
-        Text(toast.message)
-            .font(.system(size: 12.5, weight: .medium))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 9)
-            .compatGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
-    }
-}
+//
+// `ToastView` moved to Features/ToastView.swift: this file is macOS-only now
+// (its sidebar layout needs NavigationSplitView, which an iOS 15 deployment
+// target cannot build), and iOS shows toasts as well.
+#endif

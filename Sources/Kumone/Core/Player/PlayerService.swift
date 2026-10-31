@@ -189,10 +189,24 @@ final class PlayerService: ObservableObject {
         }
     }
 
-    var upcomingTracks: [Track] {
-        guard !activeQueue.isEmpty, currentIndex >= 0 else { return playNextList }
+    /// What is left of the list being played, without anything inserted.
+    var remainingQueueTracks: [Track] {
+        guard !activeQueue.isEmpty, currentIndex >= 0 else { return [] }
         let rest = activeQueue.suffix(from: min(currentIndex + 1, activeQueue.count))
-        return playNextList + Array(rest.prefix(200))
+        return Array(rest.prefix(200))
+    }
+
+    /// macOS builds the queue panel too; it reads the same three sections.
+    /// (AutoMix owns advancing here, so the tail is only ever display-only.)
+    @Published private(set) var pendingQueue: [Track] = []
+
+    func addToQueueEnd(_ tracks: [Track]) {
+        pendingQueue.append(contentsOf: tracks)
+    }
+
+    var upcomingTracks: [Track] {
+        guard !activeQueue.isEmpty, currentIndex >= 0 else { return playNextList + pendingQueue }
+        return playNextList + remainingQueueTracks + pendingQueue
     }
 
     var hasCurrentTrack: Bool { currentTrack != nil }
