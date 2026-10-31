@@ -38,14 +38,37 @@ enum ShortVideoPlatform: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    /// 抖音用桌面 Chrome UA 能正常渲染（已在真机验证）；TikTok 认引擎，
-    /// 用 Safari UA 更稳。
+    /// 两边都用 Safari 桌面 UA：WKWebView 就是 WebKit，冒充 Chrome 会让站点
+    /// 走到只对 Chrome 成立的代码路径（抖音的搜索、个人页、登录面板都会静默
+    /// 失效）。TikTok 用这个 UA 已实测可以登录 + 抓取。
     var userAgent: String {
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+    }
+
+    /// 站点自己的登录页。桌面版右上角「登录」按钮在某些 WebView 里点不动，
+    /// 直接跳到登录页最省事；登录完 cookie 落在同一个域上，回收藏页即可。
+    var loginURLString: String {
         switch self {
-        case .douyin:
-            return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        case .tiktok:
-            return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+        case .douyin: return "https://sso.douyin.com/"
+        case .tiktok: return "https://www.tiktok.com/login"
+        }
+    }
+
+    /// 桌面版登录不了时的兜底：手机版页面用短信登录，登录态是同域的 cookie，
+    /// 回到桌面版照样有效。
+    var mobileUserAgent: String {
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
+            + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1"
+    }
+
+    /// 登录态 cookie 必须按域名判断：两个站都用 `sessionid` / `sid_guard`
+    /// 这类名字，而 WKWebView 的 cookie 是全 App 共享的，不区分域名就会
+    /// 「登录了 TikTok，抖音也说自己已登录」。
+    var cookieDomainNeedle: String {
+        switch self {
+        case .douyin: return "douyin.com"
+        case .tiktok: return "tiktok.com"
         }
     }
 

@@ -87,6 +87,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
+        webView.customUserAgent = platform.userAgent
         webView.load(request)
     }
 
@@ -97,7 +98,19 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         status = "正在打开 \(platform.albumName) 首页…"
         let home = platform == .douyin ? "https://www.douyin.com/" : "https://www.tiktok.com/"
         guard let url = URL(string: home) else { return }
+        webView.customUserAgent = platform.userAgent
         webView.load(URLRequest(url: url))
+    }
+
+    /// 直接打开站点登录页（抖音是 sso.douyin.com）。登录完 cookie 落在同一个
+    /// 域上，点「刷新」回收藏页就能用。
+    func openLoginPage() {
+        phase = .loading
+        lastError = nil
+        status = "登录页：登录完成后点右上角刷新回收藏页"
+        guard let target = URL(string: platform.loginURLString) else { return }
+        webView.customUserAgent = platform.userAgent
+        webView.load(URLRequest(url: target))
     }
 
     // MARK: - 抓取
@@ -196,13 +209,17 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     // MARK: - 登录状态
 
     func refreshLoginState() {
+        let needle = platform.cookieDomainNeedle
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
             var names: Set<String> = []
-            for cookie in cookies { names.insert(cookie.name) }
+            for cookie in cookies where cookie.domain.lowercased().contains(needle) {
+                names.insert(cookie.name)
+            }
             let loggedIn = names.contains("sessionid")
                 || names.contains("sessionid_ss")
                 || names.contains("sid_guard")
                 || names.contains("sid_tt")
+                || names.contains("uid_tt")
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if self.loggedIn != loggedIn { self.loggedIn = loggedIn }

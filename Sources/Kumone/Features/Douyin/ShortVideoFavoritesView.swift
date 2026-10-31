@@ -146,6 +146,14 @@ struct ShortVideoFavoritesView: View {
                     .accessibilityLabel("打开首页登录")
 
                     Button {
+                        collector.openLoginPage()
+                    } label: {
+                        Image(systemName: "person.crop.circle.badge.checkmark")
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("打开登录页")
+
+                    Button {
                         collector.reloadPage()
                     } label: {
                         Image(systemName: "arrow.clockwise")
