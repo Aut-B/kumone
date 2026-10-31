@@ -2,7 +2,7 @@ name: Build unsigned iOS IPA
 
 on:
   push:
-    branches: ["dev-musicfree", "dev-musicfree-0.3.17", "dev-musicfree-0.3.19", "dev-musicfree-0.3.20", "dev-musicfree-0.3.20-ios15", "dev-musicfree-0.3.21", "dev-musicfree-0.3.21-ios15"]
+    branches: ["dev-musicfree", "dev-musicfree-0.3.17", "dev-musicfree-0.3.19", "dev-musicfree-0.3.20", "dev-musicfree-0.3.20-ios15", "dev-musicfree-0.3.21", "dev-musicfree-0.3.21-ios15", "dev-musicfree-0.3.24", "dev-musicfree-0.3.24-ios15"]
   workflow_dispatch:
 
 permissions:
@@ -18,8 +18,8 @@ jobs:
         env:
           # The iOS 15 lane exists for older phones; every other lane targets 16.
           DEPLOY_TARGET: ${{ endsWith(github.ref_name, '-ios15') && '15.0' || '16.0' }}
-          BUILD_NUM: ${{ endsWith(github.ref_name, '-ios15') && '164' || '163' }}
-          MARKETING: ${{ startsWith(github.ref_name, 'dev-musicfree-0.3.21') && '0.3.21' || '0.3.20' }}
+          BUILD_NUM: ${{ endsWith(github.ref_name, '-ios15') && (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '174' || '164') || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '173' || '163') }}
+          MARKETING: ${{ startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.21') && '0.3.21' || '0.3.20') }}
         run: |
           xcodebuild -workspace ios/KumoneIOS.xcworkspace -scheme KumoneIOS \
             -configuration Release -destination 'generic/platform=iOS' \
