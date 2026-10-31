@@ -82,7 +82,7 @@ struct PluginsRootView: View {
     @State private var showNewPlaylist = false
     @State private var showReorder = false
     @State private var newPlaylistName = ""
-    @State private var showDouyin = false
+    @State private var shortVideoPlatform: ShortVideoPlatform?
 
     /// Pinned first, then in the user's own order.
     private var orderedPlaylists: [ImportedPlaylist] { layout.orderedLocal(store.playlists) }
@@ -139,8 +139,8 @@ struct PluginsRootView: View {
                 LocalPlaylistOrderSheet()
             }
             #if os(iOS)
-            .sheet(isPresented: $showDouyin) {
-                DouyinFavoritesView()
+            .sheet(item: $shortVideoPlatform) { platform in
+                ShortVideoFavoritesView(platform: platform)
             }
             #endif
             .alert("新建本地歌单", isPresented: $showNewPlaylist) {
@@ -173,7 +173,7 @@ struct PluginsRootView: View {
         if PluginManager.shared.plugins.isEmpty {
             VStack(spacing: 0) {
                 #if os(iOS)
-                douyinCard
+                shortVideoCards
                     .padding(.top, 12)
                 #endif
                 EmptyStateView(
@@ -186,7 +186,7 @@ struct PluginsRootView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     #if os(iOS)
-                    douyinCard
+                    shortVideoCards
                     #endif
                     pluginPicker
                     if query.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -217,21 +217,31 @@ struct PluginsRootView: View {
     }
 
     #if os(iOS)
-    /// Entry point for the Douyin favourites scraper.
-    private var douyinCard: some View {
+    /// 抖音 / TikTok 收藏夹抓取入口。
+    private var shortVideoCards: some View {
+        VStack(spacing: 8) {
+            shortVideoCard(.douyin)
+            shortVideoCard(.tiktok)
+        }
+    }
+
+    private func shortVideoCard(_ platform: ShortVideoPlatform) -> some View {
         Button {
-            showDouyin = true
+            shortVideoPlatform = platform
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: "play.rectangle.fill")
                     .font(.title2)
                     .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
-                    .background(Color.black, in: RoundedRectangle(cornerRadius: 10))
+                    .background(
+                        platform == .douyin ? Color.black : Color(red: 0.09, green: 0.09, blue: 0.12),
+                        in: RoundedRectangle(cornerRadius: 10)
+                    )
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("抖音收藏")
+                    Text(platform.displayName)
                         .font(.headline)
-                    Text("听抖音 · 收藏夹 · 循环播放")
+                    Text("听 · 收藏夹 · 循环播放 · WebDAV 同步")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

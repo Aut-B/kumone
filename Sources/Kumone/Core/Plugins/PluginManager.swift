@@ -305,15 +305,16 @@ final class PluginManager: ObservableObject {
               let itemObject = (try? JSONSerialization.jsonObject(with: itemData)) as? [String: Any] else {
             return PluginMediaSource(url: nil, headers: nil)
         }
-        // Douyin favourites carry their play URL straight from the captured
-        // web response. There is no mounted plugin and nothing to sign, so
-        // hand the URL to the player as-is (it plays the mp4's audio track).
-        if platform.lowercased() == DouyinPlatform.identifier,
+        // Douyin / TikTok favourites carry their play URL straight from the
+        // captured web response. There is no mounted plugin and nothing to
+        // sign, so hand the URL to the player as-is (it plays the mp4's audio
+        // track).
+        if let shortVideo = ShortVideoPlatform(rawValue: platform.lowercased()),
            let direct = itemObject["url"] as? String,
            let directURL = URL(string: direct) {
             return PluginMediaSource(url: directURL, headers: [
-                "User-Agent": DouyinPlatform.browserUserAgent,
-                "Referer": "https://www.douyin.com/",
+                "User-Agent": shortVideo.userAgent,
+                "Referer": shortVideo.referer,
             ])
         }
         // Bilibili: resolve natively FIRST. The native path (view -> cid ->

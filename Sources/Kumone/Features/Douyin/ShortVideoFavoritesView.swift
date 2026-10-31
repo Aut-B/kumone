@@ -1,14 +1,24 @@
 #if os(iOS)
+import Combine
 import SwiftUI
 import WebKit
 
-/// Douyin favourites: log in inside the embedded web page, scrape the list,
-/// then play it with the normal queue (audio only, screen off included).
-struct DouyinFavoritesView: View {
-    @StateObject private var collector = DouyinCollector()
+/// 抖音 / TikTok 收藏夹：在网页里登录一次，抓下来，然后用普通的播放队列听
+/// （后台、锁屏都走 Kumone 原有的音频通道）。
+struct ShortVideoFavoritesView: View {
+    let platform: ShortVideoPlatform
+
+    @StateObject private var collector: ShortVideoCollector
     @Environment(\.dismiss) private var dismiss
     @State private var showWeb = false
     @State private var showClearConfirm = false
+    @State private var showSyncSettings = false
+    @State private var syncMessage: String?
+
+    init(platform: ShortVideoPlatform) {
+        self.platform = platform
+        _collector = StateObject(wrappedValue: ShortVideoCollector(platform: platform))
+    }
 
     var body: some View {
         AppNavStack {
@@ -19,13 +29,20 @@ struct DouyinFavoritesView: View {
                     listPane
                 }
             }
-            .navigationTitle("抖音收藏")
+            .navigationTitle(platform.displayName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        showSyncSettings = true
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                    }
+                    .accessibilityLabel("收藏同步")
+
                     Button {
                         showWeb.toggle()
                     } label: {
@@ -42,22 +59,35 @@ struct DouyinFavoritesView: View {
                     .accessibilityLabel("全部播放")
                 }
             }
-            .onAppear { collector.loadFavoritesPageIfNeeded() }
+            .onAppear {
+                collector.loadFavoritesPageIfNeeded()
+                Task { await autoSync() }
+            }
             .onDisappear {
                 if collector.isCollecting { collector.stopCollecting() }
+            }
+            .onChange(of: collector.phase) { phase in
+                guard phase == .finished else { return }
+                Task { await pushAfterCollect() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .shortVideoDidSync)) { _ in
+                collector.applyRemote(ShortVideoStore.load(platform))
             }
             .confirmationDialog("清空已抓取的收藏？", isPresented: $showClearConfirm, titleVisibility: .visible) {
                 Button("清空", role: .destructive) { collector.clear() }
                 Button("取消", role: .cancel) {}
             }
+            .sheet(isPresented: $showSyncSettings) {
+                ShortVideoSyncSettingsView()
+            }
         }
     }
 
-    // MARK: - Web pane
+    // MARK: - 网页
 
     private var webPane: some View {
         VStack(spacing: 0) {
-            DouyinWebView(webView: collector.webView)
+            ShortVideoWebView(webView: collector.webView)
                 .overlay(alignment: .top) {
                     if collector.isCollecting {
                         HStack(spacing: 8) {
@@ -73,12 +103,22 @@ struct DouyinFavoritesView: View {
                 }
 
             VStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: collector.loggedIn ? "checkmark.circle.fill" : "person.crop.circle.badge.exclamationmark")
+                        .font(.footnote)
+                        .foregroundStyle(collector.loggedIn ? Color.green : Color.secondary)
+                    Text(collector.loggedIn ? "已登录 \(platform.albumName)" : "未登录：在网页里点「登录」")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
                 Text(collector.status)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     if collector.isCollecting {
                         Button {
                             collector.stopCollecting()
@@ -98,11 +138,20 @@ struct DouyinFavoritesView: View {
                     }
 
                     Button {
+                        collector.openHomePage()
+                    } label: {
+                        Image(systemName: "house")
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("打开首页登录")
+
+                    Button {
                         collector.reloadPage()
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
                     .buttonStyle(.bordered)
+                    .accessibilityLabel("重新加载收藏页")
 
                     if !collector.videos.isEmpty {
                         Button {
@@ -111,6 +160,7 @@ struct DouyinFavoritesView: View {
                             Image(systemName: "list.bullet")
                         }
                         .buttonStyle(.bordered)
+                        .accessibilityLabel("收藏列表")
                     }
                 }
             }
@@ -119,7 +169,7 @@ struct DouyinFavoritesView: View {
         }
     }
 
-    // MARK: - List pane
+    // MARK: - 列表
 
     private var listPane: some View {
         List {
@@ -138,28 +188,36 @@ struct DouyinFavoritesView: View {
         }
         .listStyle(.plain)
         .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 12) {
-                Button {
-                    saveAsPlaylist()
-                } label: {
-                    Label("存为歌单", systemImage: "text.badge.plus")
-                        .frame(maxWidth: .infinity)
+            VStack(spacing: 8) {
+                if let syncMessage {
+                    Text(syncMessage)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.bordered)
+                HStack(spacing: 12) {
+                    Button {
+                        saveAsPlaylist()
+                    } label: {
+                        Label("存为歌单", systemImage: "text.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
 
-                Button {
-                    showClearConfirm = true
-                } label: {
-                    Image(systemName: "trash")
+                    Button {
+                        showClearConfirm = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
             .padding(12)
             .background(.bar)
         }
     }
 
-    private func row(_ video: DouyinVideo) -> some View {
+    private func row(_ video: ShortVideo) -> some View {
         HStack(spacing: 12) {
             AsyncImage(url: video.cover.flatMap(URL.init(string:))) { image in
                 image.resizable().scaledToFill()
@@ -173,7 +231,7 @@ struct DouyinFavoritesView: View {
                 Text(video.title)
                     .font(.subheadline)
                     .lineLimit(2)
-                Text(video.author.isEmpty ? "抖音" : video.author)
+                Text(video.author.isEmpty ? platform.albumName : video.author)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -191,16 +249,16 @@ struct DouyinFavoritesView: View {
         .contentShape(Rectangle())
     }
 
-    // MARK: - Actions
+    // MARK: - 操作
 
-    private func play(_ video: DouyinVideo) {
+    private func play(_ video: ShortVideo) {
         guard let item = video.pluginItem else { return }
         let track = Track(pluginItem: item)
         PlayerService.shared.repeatMode = .one
         PlayerService.shared.play(
             tracks: [track],
             source: .plugins,
-            context: .plugins(name: "抖音收藏")
+            context: .plugins(name: platform.displayName)
         )
     }
 
@@ -211,7 +269,7 @@ struct DouyinFavoritesView: View {
         PlayerService.shared.play(
             tracks: tracks,
             source: .plugins,
-            context: .plugins(name: "抖音收藏")
+            context: .plugins(name: platform.displayName)
         )
     }
 
@@ -219,8 +277,12 @@ struct DouyinFavoritesView: View {
         let items = collector.videos.compactMap { $0.pluginItem }
         guard !items.isEmpty else { return }
         do {
-            try ImportedPlaylistStore.shared.importItems(items, name: "抖音收藏", source: "抖音")
-            ToastCenter.shared.show("已保存到本地歌单「抖音收藏」")
+            try ImportedPlaylistStore.shared.importItems(
+                items,
+                name: platform.displayName,
+                source: platform.albumName
+            )
+            ToastCenter.shared.show("已保存到本地歌单「\(platform.displayName)」")
         } catch {
             ToastCenter.shared.show("保存失败：\(error.localizedDescription)")
         }
@@ -231,9 +293,34 @@ struct DouyinFavoritesView: View {
         let total = milliseconds / 1000
         return String(format: "%d:%02d", total / 60, total % 60)
     }
+
+    // MARK: - 同步
+
+    private func autoSync() async {
+        let config = ShortVideoSyncConfig.load()
+        guard config.isValid else { return }
+        do {
+            try await ShortVideoSyncService.synchronize(config)
+            collector.applyRemote(ShortVideoStore.load(platform))
+            syncMessage = "已与 WebDAV 同步（\(collector.videos.count) 条）"
+        } catch {
+            syncMessage = "同步失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func pushAfterCollect() async {
+        let config = ShortVideoSyncConfig.load()
+        guard config.isValid else { return }
+        do {
+            try await ShortVideoSyncService.synchronize(config)
+            syncMessage = "已同步到 WebDAV"
+        } catch {
+            syncMessage = "同步失败：\(error.localizedDescription)"
+        }
+    }
 }
 
-private struct DouyinWebView: UIViewRepresentable {
+private struct ShortVideoWebView: UIViewRepresentable {
     let webView: WKWebView
 
     func makeUIView(context: Context) -> WKWebView { webView }
