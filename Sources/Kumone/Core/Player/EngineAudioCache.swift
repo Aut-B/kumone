@@ -36,7 +36,7 @@ actor EngineAudioCache {
     /// last reported by the player. Lock-protected rather than actor-isolated
     /// so the player can replace it synchronously, in order, from the main
     /// actor — an async hop per change could land out of order.
-    private let inUse = OSAllocatedUnfairLock(initialState: Set<String>())
+    private let inUse = CompatUnfairLock(initialState: Set<String>())
 
     private init() {
         directory = KumoneDirectories.caches("Audio")

@@ -972,7 +972,7 @@ struct NowPlayingView: View {
                     guard index != activeIndex else { return }
                     activeIndex = index
                     guard !isUserScrolling, let index else { return }
-                    withAnimation(.spring(response: 0.8, dampingFraction: 0.85)) {
+                    withAnimation(.compatSpring(response: 0.8, dampingFraction: 0.85)) {
                         proxy.scrollTo(index, anchor: .center)
                     }
                 }
@@ -1055,7 +1055,7 @@ struct NowPlayingView: View {
             .scaleEffect(isActive ? 1.02 : 1, anchor: .leading)
         }
         .buttonStyle(.plain)
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isActive)
+        .animation(.compatSpring(response: 0.4, dampingFraction: 0.8), value: isActive)
         .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
 }
@@ -1188,7 +1188,7 @@ private struct IOSImmersiveLyricsColumn: View {
                     }
                     .lyricsScrollTracking(isUserScrolling: $isUserScrolling) {
                         guard let activeIndex else { return }
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                        withAnimation(.compatSpring(response: 0.45, dampingFraction: 0.85)) {
                             proxy.scrollTo(activeIndex, anchor: .center)
                         }
                     }
@@ -1222,7 +1222,7 @@ private struct IOSImmersiveLyricsColumn: View {
         activeIndex = index
         guard let index else { return }
         DispatchQueue.main.async {
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+            withAnimation(.compatSpring(response: 0.5, dampingFraction: 0.85)) {
                 proxy.scrollTo(index, anchor: .center)
             }
         }
@@ -1282,7 +1282,7 @@ private struct IOSImmersiveLyricsColumn: View {
             .scaleEffect(isActive ? 1.07 : 0.82, anchor: .leading)
         }
         .buttonStyle(.plain)
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isActive)
+        .animation(.compatSpring(response: 0.35, dampingFraction: 0.85), value: isActive)
         .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
 }
@@ -1536,7 +1536,7 @@ private struct CompactVolumePopover: View {
                             isDragging = false
                         }
                 )
-                .animation(.spring(response: 0.24, dampingFraction: 0.82), value: isDragging)
+                .animation(.compatSpring(response: 0.24, dampingFraction: 0.82), value: isDragging)
             }
             .frame(width: 32, height: 132)
             .accessibilityElement()
@@ -1601,7 +1601,7 @@ private struct CompactSecondaryControls: View {
                 label: showsVolumeControl ? "关闭音量控制" : "显示音量控制",
                 isActive: showsVolumeControl
             ) {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                withAnimation(.compatSpring(response: 0.28, dampingFraction: 0.82)) {
                     showsVolumeControl.toggle()
                 }
             }
@@ -2060,7 +2060,7 @@ private struct IOSMinimalLyricsColumn: View {
             nearestIndex = selection
             scrollSettleTask = nil
             guard let selection else { return }
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            withAnimation(.compatSpring(response: 0.32, dampingFraction: 0.86)) {
                 proxy.scrollTo(selection, anchor: .center)
             }
             scheduleSelectionTimeout(proxy: proxy)
@@ -2082,7 +2082,7 @@ private struct IOSMinimalLyricsColumn: View {
         selectedIndex = nil
         nearestIndex = nil
         guard let activeIndex else { return }
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+        withAnimation(.compatSpring(response: 0.32, dampingFraction: 0.86)) {
             proxy.scrollTo(activeIndex, anchor: .center)
         }
     }
@@ -2157,7 +2157,7 @@ private struct IOSMinimalLyricsColumn: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .animation(.spring(response: 0.28, dampingFraction: 0.9), value: isActive)
+        .animation(.compatSpring(response: 0.28, dampingFraction: 0.9), value: isActive)
         .animation(.easeOut(duration: 0.18), value: isSelected)
     }
 }
@@ -2713,7 +2713,7 @@ struct MiniLyricsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onOpen)
-                .animation(.spring(response: 0.4, dampingFraction: 0.85), value: current?.id)
+                .animation(.compatSpring(response: 0.4, dampingFraction: 0.85), value: current?.id)
             } else {
                 Color.clear
             }

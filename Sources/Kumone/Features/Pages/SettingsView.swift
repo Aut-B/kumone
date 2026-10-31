@@ -174,9 +174,28 @@ struct SettingsView: View {
             }
 
             Section("存储") {
+                #if os(macOS)
                 NavigationLink(value: SettingsPage.storage) {
                     Label("存储空间", systemImage: "internaldrive")
                 }
+                #else
+                if #available(iOS 16.0, *) {
+                    NavigationLink(value: SettingsPage.storage) {
+                        Label("存储空间", systemImage: "internaldrive")
+                    }
+                } else {
+                    // iOS 15 has no value-based links: the link carries its own
+                    // destination instead of pushing onto a path.
+                    NavigationLink {
+                        StorageSpaceView {
+                            dismiss()
+                            openDestination(.downloaded)
+                        }
+                    } label: {
+                        Label("存储空间", systemImage: "internaldrive")
+                    }
+                }
+                #endif
             }
 
             #if os(macOS)
@@ -232,7 +251,7 @@ struct SettingsView: View {
         #if os(macOS)
         .frame(width: 440, height: 600)
         #endif
-        .navigationDestination(for: SettingsPage.self) { page in
+        .compatNavigationDestination(for: SettingsPage.self) { page in
             Group {
                 switch page {
                 case .storage:

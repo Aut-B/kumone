@@ -61,7 +61,7 @@ struct PlaybackHandoffBanner: View {
                 .disabled(sync.resumingDeviceID == record.id)
 
                 Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    withAnimation(.compatSpring(response: 0.35, dampingFraction: 0.8)) {
                         dismissedRecordID = record.id
                     }
                 } label: {

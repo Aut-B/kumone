@@ -271,7 +271,7 @@ final class PlayerService: ObservableObject {
     // MARK: - Engine
 
     private let engine = AVPlayer()
-    private var lastPlaybackCheckpoint = ContinuousClock.now
+    private var lastPlaybackCheckpoint = CompatClock.now
 
     /// Live playback position straight from the player, for smooth per-frame
     /// karaoke highlighting (the published `progress` is intentionally coarse).
@@ -397,7 +397,7 @@ final class PlayerService: ObservableObject {
                     self.progress = seconds
                     NowPlayingManager.shared.updateElapsed(seconds, rate: self.isPlaying ? 1 : 0)
                 }
-                if self.isPlaying, self.lastPlaybackCheckpoint.duration(to: .now) >= .seconds(20) {
+                if self.isPlaying, self.lastPlaybackCheckpoint.duration(to: .now) >= 20 {
                     self.persistState()
                 }
             }

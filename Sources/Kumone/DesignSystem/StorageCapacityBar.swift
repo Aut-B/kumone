@@ -13,8 +13,9 @@ struct StorageCapacityBar: View {
                 .progressViewStyle(SegmentedStorageProgressStyle(fractions: capacity.fractions(appBytes: appBytes), height: height))
                 .accessibilityLabel("设备存储占用")
                 .accessibilityValue(Text("已用 \(format(capacity.used))，共 \(format(capacity.total))"))
-            ViewThatFits(in: .horizontal) {
+            CompatViewThatFits {
                 HStack(spacing: 16) { legend }
+            } narrow: {
                 VStack(alignment: .leading, spacing: 6) { legend }
             }
             .font(.caption)

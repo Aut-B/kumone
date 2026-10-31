@@ -58,7 +58,7 @@ struct KaraokeLyricLine: PlatformViewRepresentable {
                     playing: playing)
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: KaraokeLineView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: CGSize, uiView: KaraokeLineView, context: Context) -> CGSize? {
         KaraokeLineView.fittedSize(line: line, size: size, weight: weight,
                                    alignment: alignment, rounded: rounded,
                                    width: proposal.width)

@@ -138,7 +138,7 @@ final class DownloadManager: ObservableObject {
     private let metadataFetcher: MetadataFetcher
     private let metadataReader: (Int, String) async -> Track?
     private let cachedTracks: () async -> Set<Int>
-    private let retrySleep: (Duration) async throws -> Void
+    private let retrySleep: (TimeInterval) async throws -> Void
     private var catalog = DownloadCatalog()
     private var networkRetries: [UUID: Int] = [:]
     private var networkRetryTasks: [UUID: Task<Void, Never>] = [:]
@@ -167,7 +167,7 @@ final class DownloadManager: ObservableObject {
          metadataFetcher: MetadataFetcher? = nil,
          metadataReader: ((Int, String) async -> Track?)? = nil,
          cachedTracks: @escaping () async -> Set<Int> = { await DownloadManager.platformCachedTrackIDs() },
-         retrySleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+         retrySleep: @escaping (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) {
         self.store = store
         self.metadata = metadata
         self.persistence = persistence
@@ -847,7 +847,7 @@ final class DownloadManager: ObservableObject {
         guard current(job) else { return }
         if let token = job.token { await store.releaseDownloadReservation(token: token) }
         guard current(job), let i = index(job.id) else { return }
-        let delays: [Duration] = [.seconds(1), .seconds(2), .seconds(4)]
+        let delays: [TimeInterval] = [1, 2, 4]
         let retries = networkRetries[job.id, default: 0]
         let waitsForNetwork = ConnectivityFailure.matches(error)
             && (!network.permits(catalog.jobs[i]) || retries < delays.count)

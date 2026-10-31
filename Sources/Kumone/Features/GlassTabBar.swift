@@ -33,7 +33,7 @@ struct GlassTabBar: View {
 
     private let innerInset: CGFloat = 4
     private let contentHeight: CGFloat = 56
-    private let settle = Animation.spring(response: 0.35, dampingFraction: 0.82)
+    private let settle = Animation.compatSpring(response: 0.35, dampingFraction: 0.82)
 
     var body: some View {
         GeometryReader { geo in
