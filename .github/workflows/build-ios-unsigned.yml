@@ -18,7 +18,7 @@ jobs:
         env:
           # The iOS 15 lane exists for older phones; every other lane targets 16.
           DEPLOY_TARGET: ${{ endsWith(github.ref_name, '-ios15') && '15.0' || '16.0' }}
-          BUILD_NUM: ${{ contains(github.ref_name, 'douyin') && '182' || (endsWith(github.ref_name, '-ios15') && (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '174' || '164') || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '173' || '163')) }}
+          BUILD_NUM: ${{ contains(github.ref_name, 'douyin') && '183' || (endsWith(github.ref_name, '-ios15') && (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '174' || '164') || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '173' || '163')) }}
           MARKETING: ${{ contains(github.ref_name, 'douyin') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.21') && '0.3.21' || '0.3.20')) }}
         run: |
           xcodebuild -workspace ios/KumoneIOS.xcworkspace -scheme KumoneIOS \

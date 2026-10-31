@@ -24,9 +24,19 @@ enum ShortVideoPlatform: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    var homeURLString: String {
+    /// 抓取用的收藏页。
+    var favoritesURLString: String {
         switch self {
         case .douyin: return "https://www.douyin.com/user/self?showTab=favorite_collection"
+        case .tiktok: return "https://www.tiktok.com/@me"
+        }
+    }
+
+    /// 入口页：先在能正常工作的首页登录，再回收藏页抓。
+    /// 抖音的 `/user/self` 在未登录时是个半残页面，登录按钮都点不动。
+    var homeURLString: String {
+        switch self {
+        case .douyin: return "https://www.douyin.com/"
         case .tiktok: return "https://www.tiktok.com/@me"
         }
     }

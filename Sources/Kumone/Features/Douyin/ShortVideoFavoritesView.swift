@@ -62,6 +62,11 @@ struct ShortVideoFavoritesView: View {
             .onAppear {
                 collector.loadFavoritesPageIfNeeded()
                 Task { await autoSync() }
+                // 直链两小时左右就失效，过期了自动重抓一遍（不用用户点）。
+                if collector.isStale {
+                    showWeb = true
+                    collector.startCollecting()
+                }
             }
             .onDisappear {
                 if collector.isCollecting { collector.stopCollecting() }
@@ -117,6 +122,13 @@ struct ShortVideoFavoritesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let scriptError = collector.lastScriptError {
+                    Text("页面报错：\(scriptError)")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 HStack(spacing: 10) {
                     if collector.isCollecting {
