@@ -82,6 +82,7 @@ struct PluginsRootView: View {
     @State private var showNewPlaylist = false
     @State private var showReorder = false
     @State private var newPlaylistName = ""
+    @State private var showDouyin = false
 
     /// Pinned first, then in the user's own order.
     private var orderedPlaylists: [ImportedPlaylist] { layout.orderedLocal(store.playlists) }
@@ -137,6 +138,11 @@ struct PluginsRootView: View {
             .sheet(isPresented: $showReorder) {
                 LocalPlaylistOrderSheet()
             }
+            #if os(iOS)
+            .sheet(isPresented: $showDouyin) {
+                DouyinFavoritesView()
+            }
+            #endif
             .alert("新建本地歌单", isPresented: $showNewPlaylist) {
                 TextField("歌单名称", text: $newPlaylistName)
                 Button("创建") {
@@ -165,14 +171,23 @@ struct PluginsRootView: View {
     @ViewBuilder
     private var content: some View {
         if PluginManager.shared.plugins.isEmpty {
-            EmptyStateView(
-                icon: "puzzlepiece.extension",
-                title: "还没有安装插件音源",
-                subtitle: "点击右上角菜单里的「插件管理」安装音源，兼容 MusicFree 插件生态"
-            )
+            VStack(spacing: 0) {
+                #if os(iOS)
+                douyinCard
+                    .padding(.top, 12)
+                #endif
+                EmptyStateView(
+                    icon: "puzzlepiece.extension",
+                    title: "还没有安装插件音源",
+                    subtitle: "点击右上角菜单里的「插件管理」安装音源，兼容 MusicFree 插件生态"
+                )
+            }
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    #if os(iOS)
+                    douyinCard
+                    #endif
                     pluginPicker
                     if query.trimmingCharacters(in: .whitespaces).isEmpty {
                         playlistSection
@@ -200,6 +215,38 @@ struct PluginsRootView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 26)
     }
+
+    #if os(iOS)
+    /// Entry point for the Douyin favourites scraper.
+    private var douyinCard: some View {
+        Button {
+            showDouyin = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "play.rectangle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(Color.black, in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("抖音收藏")
+                        .font(.headline)
+                    Text("听抖音 · 收藏夹 · 循环播放")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(12)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+    }
+    #endif
 
     private var pluginPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
