@@ -141,14 +141,26 @@ final class DouyinCollector: NSObject, ObservableObject {
     private func ingest(_ body: String) {
         let parsed = DouyinParser.videos(fromResponseBody: body)
         guard !parsed.isEmpty else { return }
-        var known = Set(videos.map(\.id))
-        var added = 0
-        for video in parsed where !known.contains(video.id) {
-            known.insert(video.id)
-            videos.append(video)
-            added += 1
+        var indexByID = Dictionary(
+            videos.enumerated().map { ($1.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var changed = 0
+        for video in parsed {
+            if let index = indexByID[video.id] {
+                // Play URLs are signed and expire; a re-scrape refreshes them
+                // instead of keeping the stale copy.
+                if videos[index].playURL != video.playURL {
+                    videos[index] = video
+                    changed += 1
+                }
+            } else {
+                videos.append(video)
+                indexByID[video.id] = videos.count - 1
+                changed += 1
+            }
         }
-        guard added > 0 else { return }
+        guard changed > 0 else { return }
         status = "已抓取 \(videos.count) 条…"
         DouyinStore.save(videos)
     }
