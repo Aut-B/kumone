@@ -223,15 +223,28 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         status = "正在抓取…如果一直没动静，请先在网页里登录 \(platform.albumName)"
         note("开始抓取")
 
-        installHook { [weak self] in
-            guard let self else { return }
-            self.webView.evaluateJavaScript(Self.driverScript(for: self.platform)) { _, error in
-                if let error {
-                    Task { @MainActor in self.note("驱动脚本失败：\(error.localizedDescription)") }
-                }
-            }
-            self.startTicking()
+        if hookInstalled {
+            startDriver()
+            return
         }
+        webView.evaluateJavaScript(Self.hookScript(for: platform)) { [weak self] _, error in
+            guard let self else { return }
+            if let error {
+                self.note("注入失败：\(error.localizedDescription)")
+            } else {
+                self.hookInstalled = true
+                self.note("接口监听已装上")
+            }
+            self.startDriver()
+        }
+    }
+
+    private func startDriver() {
+        webView.evaluateJavaScript(Self.driverScript(for: platform)) { [weak self] _, error in
+            guard let self, let error else { return }
+            self.note("驱动脚本失败：\(error.localizedDescription)")
+        }
+        startTicking()
     }
 
     private func startTicking() {
@@ -352,23 +365,6 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     // MARK: - 注入脚本
 
-    /// 只在抓取时才注入：包住 `fetch` / `XMLHttpRequest`，凡是返回体里带平台
-    /// 特征字段的都回传原生。登录 / 搜索阶段页面是干净的，不会被影响。
-    private func installHook(completion: @escaping () -> Void) {
-        guard !hookInstalled else { completion(); return }
-        webView.evaluateJavaScript(Self.hookScript(for: platform)) { [weak self] _, error in
-            Task { @MainActor in
-                guard let self else { return }
-                if let error {
-                    self.note("注入失败：\(error.localizedDescription)")
-                } else {
-                    self.hookInstalled = true
-                    self.note("接口监听已装上")
-                }
-                completion()
-            }
-        }
-    }
 
     static func hookScript(for platform: ShortVideoPlatform) -> String {
         let markers = platform.payloadMarkers.map { "\"\($0)\"" }.joined(separator: ", ")

@@ -11,20 +11,27 @@ import Foundation
 /// 不通再退回签名直链（至少当下能播）。
 enum ShortVideoResolver {
     private final class Cache: @unchecked Sendable {
+        private struct Entry {
+            /// 空字符串表示「探过、不通」，别再试。
+            let url: String
+            let at: Date
+        }
+
         private let lock = NSLock()
-        private var hits: [String: (url: String, at: Date)] = [:]
+        private var entries: [String: Entry] = [:]
 
         func get(_ key: String) -> String? {
             lock.lock()
             defer { lock.unlock() }
-            guard let hit = hits[key],
-                  Date().timeIntervalSince(hit.at) < 1800 else { return nil }
-            return hit.url
+            guard let entry = entries[key] else { return nil }
+            let ttl: TimeInterval = entry.url.isEmpty ? 600 : 1800
+            guard Date().timeIntervalSince(entry.at) < ttl else { return nil }
+            return entry.url
         }
 
         func set(_ key: String, _ url: String) {
             lock.lock()
-            hits[key] = (url, Date())
+            entries[key] = Entry(url: url, at: Date())
             lock.unlock()
         }
     }
@@ -38,23 +45,39 @@ enum ShortVideoResolver {
         let trimmed = (videoID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             let key = "\(platform.rawValue):\(trimmed)"
-            if let hit = cache.get(key) { return URL(string: hit) }
-            if let stable = stableURL(platform: platform, videoID: trimmed),
-               await probe(stable, platform: platform) {
-                cache.set(key, stable.absoluteString)
-                return stable
+            if let cached = cache.get(key) {
+                // 探过且不通：直接走直链，别再等一遍。
+                return cached.isEmpty ? URL(string: fallback) : URL(string: cached)
             }
+            for candidate in stableURLs(platform: platform, videoID: trimmed) {
+                if await probe(candidate, platform: platform) {
+                    cache.set(key, candidate.absoluteString)
+                    return candidate
+                }
+            }
+            cache.set(key, "")
         }
         return URL(string: fallback)
     }
 
-    static func stableURL(platform: ShortVideoPlatform, videoID: String) -> URL? {
+    /// 老播放接口，多个域名各试一次。
+    static func stableURLs(platform: ShortVideoPlatform, videoID: String) -> [URL] {
         let encoded = videoID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? videoID
+        let hosts: [String]
         switch platform {
         case .douyin:
-            return URL(string: "https://www.iesdouyin.com/aweme/v1/play/?video_id=\(encoded)&ratio=720p&line=0")
+            hosts = [
+                "https://www.iesdouyin.com/aweme/v1/play/",
+                "https://aweme.snssdk.com/aweme/v1/play/",
+            ]
         case .tiktok:
-            return URL(string: "https://api16-normal-c-useast1a.tiktokv.com/aweme/v1/play/?video_id=\(encoded)&ratio=720p&line=0")
+            hosts = [
+                "https://api16-normal-c-useast1a.tiktokv.com/aweme/v1/play/",
+                "https://api19-normal-c-useast1a.tiktokv.com/aweme/v1/play/",
+            ]
+        }
+        return hosts.compactMap {
+            URL(string: $0 + "?video_id=\(encoded)&ratio=720p&line=0")
         }
     }
 
@@ -65,11 +88,11 @@ enum ShortVideoResolver {
         request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
         request.setValue(platform.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(platform.referer, forHTTPHeaderField: "Referer")
-        request.timeoutInterval = 6
+        request.timeoutInterval = 5
 
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 6
-        configuration.timeoutIntervalForResource = 10
+        configuration.timeoutIntervalForRequest = 5
+        configuration.timeoutIntervalForResource = 8
         let session = URLSession(configuration: configuration)
         defer { session.finishTasksAndInvalidate() }
 

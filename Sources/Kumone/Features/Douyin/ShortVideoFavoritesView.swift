@@ -417,8 +417,8 @@ private struct ShortVideoLogView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
+                    ForEach(lines.indices, id: \.self) { index in
+                        Text(lines[index])
                             .font(.system(.caption2, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
