@@ -23,6 +23,7 @@ final class ShortVideoMediaCache: ObservableObject {
     @Published private(set) var lastError: String?
 
     private var worker: Task<Void, Never>?
+    private var downloading: Set<String> = []
 
     var isRunning: Bool { worker != nil }
 
@@ -96,6 +97,21 @@ final class ShortVideoMediaCache: ObservableObject {
         }
     }
 
+    /// 播到一条还没落本地的条目时顺手补下。
+    ///
+    /// 同步过来的歌单（或者抓取时没下完的）没有本地文件，只能靠会过期的直链。
+    /// 这一条如果现在还能拉下来，补存之后以后就永远能播，歌单会自己慢慢修好。
+    func cacheOne(platform: ShortVideoPlatform, id: String, url: URL) {
+        guard !id.isEmpty else { return }
+        guard Self.localURL(platform: platform, id: id) == nil else { return }
+        guard !downloading.contains(id) else { return }
+        downloading.insert(id)
+        Task { [weak self] in
+            await self?.download(platform: platform, id: id, url: url)
+            self?.downloading.remove(id)
+        }
+    }
+
     func cancel() {
         worker?.cancel()
         worker = nil
@@ -114,6 +130,10 @@ final class ShortVideoMediaCache: ObservableObject {
 
     private func download(_ video: ShortVideo, platform: ShortVideoPlatform) async {
         guard let url = URL(string: video.playURL) else { return }
+        await download(platform: platform, id: video.id, url: url)
+    }
+
+    private func download(platform: ShortVideoPlatform, id: String, url: URL) async {
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
         request.setValue(platform.userAgent, forHTTPHeaderField: "User-Agent")
@@ -126,7 +146,7 @@ final class ShortVideoMediaCache: ObservableObject {
                 lastError = "HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)"
                 return
             }
-            let target = Self.folder(platform).appendingPathComponent("\(video.id).mp4")
+            let target = Self.folder(platform).appendingPathComponent("\(id).mp4")
             try? FileManager.default.removeItem(at: target)
             try FileManager.default.moveItem(at: temp, to: target)
         } catch {

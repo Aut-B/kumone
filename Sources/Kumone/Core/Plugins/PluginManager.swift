@@ -324,6 +324,15 @@ final class PluginManager: ObservableObject {
                 fallback: direct,
                 capturedAt: (itemObject["updatedAt"] as? NSNumber)?.doubleValue ?? 0
             )
+            if let resolved {
+                // 还没落本地、直链又还能拉：顺手补存一份，以后就永远能播。
+                // 同步过来的歌单就是这样一条条自己修好的。
+                ShortVideoMediaCache.shared.cacheOne(
+                    platform: shortVideo,
+                    id: item.itemID,
+                    url: resolved
+                )
+            }
             return PluginMediaSource(url: resolved, headers: [
                 "User-Agent": shortVideo.userAgent,
                 "Referer": shortVideo.referer,

@@ -70,6 +70,14 @@ enum ShortVideoResolver {
         return URL(string: fallback)
     }
 
+    /// TikTok 的 `aweme/v1/play/` 只认 App 的 UA，桌面 Safari 的 UA 会被直接拒掉，
+    /// 探出来全是 403——以前同步过来的 TikTok 一条都播不了就是这个原因。
+    static let tiktokAppUserAgent =
+        "com.zhiliaoapp.musically/2022803040 (Linux; U; Android 12; en; "
+        + "Pixel 6; Build/SQ3A.220705.004;tt-ok/3.12.13.4-tiktok) "
+        + "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 "
+        + "Chrome/99.0.4844.88 Mobile Safari/537.36"
+
     /// 老播放接口，多个域名各试一次。
     static func stableURLs(platform: ShortVideoPlatform, videoID: String) -> [URL] {
         let encoded = videoID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? videoID
@@ -84,6 +92,9 @@ enum ShortVideoResolver {
             hosts = [
                 "https://api16-normal-c-useast1a.tiktokv.com/aweme/v1/play/",
                 "https://api19-normal-c-useast1a.tiktokv.com/aweme/v1/play/",
+                "https://api22-normal-c-useast1a.tiktokv.com/aweme/v1/play/",
+                "https://api-h2.tiktokv.com/aweme/v1/play/",
+                "https://api.tiktokv.com/aweme/v1/play/",
             ]
         }
         return hosts.compactMap {
@@ -96,9 +107,12 @@ enum ShortVideoResolver {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
-        request.setValue(platform.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(
+            platform == .tiktok ? tiktokAppUserAgent : platform.userAgent,
+            forHTTPHeaderField: "User-Agent"
+        )
         request.setValue(platform.referer, forHTTPHeaderField: "Referer")
-        request.timeoutInterval = 4
+        request.timeoutInterval = 6
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 4
