@@ -9,6 +9,7 @@ struct ShortVideoFavoritesView: View {
     let platform: ShortVideoPlatform
 
     @StateObject private var collector: ShortVideoCollector
+    @ObservedObject private var cache = ShortVideoMediaCache.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showWeb = false
     @State private var showClearConfirm = false
@@ -85,6 +86,11 @@ struct ShortVideoFavoritesView: View {
                         } label: {
                             Label("诊断日志", systemImage: "doc.text.magnifyingglass")
                         }
+                        Button(role: .destructive) {
+                            cache.clear(platform)
+                        } label: {
+                            Label("清空本地缓存", systemImage: "trash.slash")
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -121,6 +127,8 @@ struct ShortVideoFavoritesView: View {
             .onChange(of: collector.phase) { phase in
                 guard phase == .finished else { return }
                 Task { await pushAfterCollect() }
+                // 抓完立刻下到本地：直链只有两小时签名，趁现在存下来才留得住。
+                cache.cacheAll(collector.videos, platform: platform)
             }
             .onReceive(NotificationCenter.default.publisher(for: .shortVideoDidSync)) { _ in
                 collector.applyRemote(ShortVideoStore.load(platform))
@@ -264,7 +272,7 @@ struct ShortVideoFavoritesView: View {
                     .buttonStyle(.plain)
                 }
             } header: {
-                Text("\(collector.videos.count) 条 · \(collector.status)")
+                Text("\(collector.videos.count) 条 · 本地 \(ShortVideoMediaCache.cachedCount(platform)) · \(collector.status)")
             }
         }
         .listStyle(.plain)
@@ -276,6 +284,7 @@ struct ShortVideoFavoritesView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                cacheRow
                 HStack(spacing: 12) {
                     Button {
                         saveAsPlaylist()
@@ -298,6 +307,37 @@ struct ShortVideoFavoritesView: View {
         }
         .sheet(isPresented: $showLog) {
             ShortVideoLogView(lines: collector.logLines)
+        }
+    }
+
+    @ViewBuilder
+    private var cacheRow: some View {
+        if cache.isRunning, cache.runningPlatform == platform {
+            HStack(spacing: 8) {
+                ProgressView(value: cache.total > 0
+                             ? Double(cache.completed) / Double(cache.total)
+                             : 0)
+                Text("正在缓存 \(cache.completed)/\(cache.total)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("停止") { cache.cancel() }
+                    .font(.caption2)
+            }
+        } else {
+            HStack(spacing: 8) {
+                Text("本地已缓存 \(ShortVideoMediaCache.cachedCount(platform))/\(collector.videos.count)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button {
+                    cache.cacheAll(collector.videos, platform: platform)
+                } label: {
+                    Label("缓存到本地", systemImage: "arrow.down.to.line")
+                        .font(.caption2)
+                }
+                .disabled(collector.videos.isEmpty || cache.isRunning)
+            }
         }
     }
 
@@ -325,6 +365,12 @@ struct ShortVideoFavoritesView: View {
             }
 
             Spacer(minLength: 0)
+
+            if ShortVideoMediaCache.localURL(platform: platform, id: video.id) != nil {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Image(systemName: "play.circle.fill")
                 .font(.title3)

@@ -191,26 +191,15 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     // MARK: - 抓取
 
-    /// 开始抓取。当前不在收藏页时先去收藏页，加载完再自动开始。
+    /// 开始抓取。
+    ///
+    /// 每次都重新加载一次收藏页：登录之后，旧页面还在用登录前的 cookie 拉数据，
+    /// 接口会一直失败——「点了开始抓取一直在请求失败」就是这么来的。
     func startCollecting() {
         guard phase != .collecting else { return }
-        if !isOnFavoritesPage {
-            pendingCollect = true
-            reloadPage()
-            status = "正在打开收藏页，加载完自动开始抓取…"
-            return
-        }
-        beginCollecting()
-    }
-
-    private var isOnFavoritesPage: Bool {
-        guard let current = webView.url?.absoluteString else { return false }
-        switch platform {
-        case .douyin:
-            return current.contains("/user/self") || current.contains("showTab=favorite")
-        case .tiktok:
-            return current.contains("tiktok.com/@")
-        }
+        pendingCollect = true
+        reloadPage()
+        status = "正在打开收藏页，加载完自动开始抓取…"
     }
 
     private func beginCollecting() {

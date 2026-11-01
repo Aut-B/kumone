@@ -312,6 +312,10 @@ final class PluginManager: ObservableObject {
         if let shortVideo = ShortVideoPlatform(rawValue: platform.lowercased()),
            let direct = itemObject["url"] as? String,
            !direct.isEmpty {
+            // 下到本地的最省事：文件在就永远能播，不受签名过期影响。
+            if let local = ShortVideoMediaCache.localURL(platform: shortVideo, id: item.itemID) {
+                return PluginMediaSource(url: local, headers: nil)
+            }
             // 网页里抄到的直链带过期签名（两小时左右），放久了、同步到别的手机
             // 都会陆续播不了。优先换成只用 video_id 的长期地址；探测不通再退回直链。
             let resolved = await ShortVideoResolver.resolve(
