@@ -1,5 +1,6 @@
 #if os(iOS)
 import Foundation
+import UIKit
 
 /// 把收藏里的视频下到本地，播放时直接读文件。
 ///
@@ -13,8 +14,8 @@ import Foundation
 final class ShortVideoMediaCache: ObservableObject {
     static let shared = ShortVideoMediaCache()
 
-    /// 一次最多缓存这么多条，别把手机塞满（一条 15~60 秒的视频大约 2~6 MB）。
-    static let maxItems = 200
+    /// 一次最多缓存这么多条（一条 15~60 秒的视频大约 2~6 MB）。
+    static let maxItems = 500
 
     @Published private(set) var runningPlatform: ShortVideoPlatform?
     @Published private(set) var completed = 0
@@ -79,6 +80,8 @@ final class ShortVideoMediaCache: ObservableObject {
         total = pending.count
         lastError = nil
 
+        // 下几百条要几分钟；申请一点后台时间，切出去也别立刻断。
+        let background = UIApplication.shared.beginBackgroundTask(withName: "ShortVideoCache")
         worker = Task { [weak self] in
             for video in pending {
                 if Task.isCancelled { break }
@@ -87,6 +90,9 @@ final class ShortVideoMediaCache: ObservableObject {
             }
             self?.runningPlatform = nil
             self?.worker = nil
+            if background != .invalid {
+                UIApplication.shared.endBackgroundTask(background)
+            }
         }
     }
 

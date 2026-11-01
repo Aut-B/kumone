@@ -193,13 +193,28 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     /// 开始抓取。
     ///
-    /// 每次都重新加载一次收藏页：登录之后，旧页面还在用登录前的 cookie 拉数据，
-    /// 接口会一直失败——「点了开始抓取一直在请求失败」就是这么来的。
+    /// 已经在「我的 / 某个收藏夹」这一页上就直接开抓——不能重新加载，否则会把
+    /// 用户特意挑的那个收藏夹冲掉，退回默认的「收藏」tab。
     func startCollecting() {
         guard phase != .collecting else { return }
+        if isOnFavoritesPage {
+            beginCollecting()
+            return
+        }
         pendingCollect = true
         reloadPage()
         status = "正在打开收藏页，加载完自动开始抓取…"
+    }
+
+    private var isOnFavoritesPage: Bool {
+        guard let current = webView.url?.absoluteString else { return false }
+        switch platform {
+        case .douyin:
+            // 只要还在个人页就行（`/user/self` 下面挂着「收藏」和各个「收藏夹」）。
+            return current.contains("/user/self")
+        case .tiktok:
+            return current.contains("tiktok.com/@")
+        }
     }
 
     private func beginCollecting() {
@@ -293,7 +308,11 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             lastCount = videos.count
         }
         if idleRounds >= 10 {
-            stopCollecting(message: "抓取完成，共 \(videos.count) 条")
+            if videos.isEmpty {
+                stopCollecting(message: "一条都没抓到：确认网页里已登录，且停在「收藏」/「收藏夹」页")
+            } else {
+                stopCollecting(message: "抓取完成，共 \(videos.count) 条")
+            }
         }
     }
 
@@ -402,9 +421,16 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             return false;
           }
 
+          var posted = {};
+
           function post(url, text) {
             try {
               if (!interesting(text)) { return; }
+              // 同一段响应只回传一次；太大的（>3MB）跳过，别把主线程堵死。
+              var key = String(url) + '#' + text.length;
+              if (posted[key]) { return; }
+              posted[key] = true;
+              if (text.length > 3000000) { return; }
               send({ url: String(url), body: text });
             } catch (e) {}
           }

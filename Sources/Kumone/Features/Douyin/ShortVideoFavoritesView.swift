@@ -143,6 +143,12 @@ struct ShortVideoFavoritesView: View {
         }
     }
 
+    private var cachedSizeText: String {
+        let bytes = ShortVideoMediaCache.cachedBytes(platform)
+        guard bytes > 0 else { return "" }
+        return "（\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))）"
+    }
+
     private var legacyCount: Int {
         collector.videos.filter { ($0.videoID ?? "").isEmpty }.count
     }
@@ -272,7 +278,7 @@ struct ShortVideoFavoritesView: View {
                     .buttonStyle(.plain)
                 }
             } header: {
-                Text("\(collector.videos.count) 条 · 本地 \(ShortVideoMediaCache.cachedCount(platform)) · \(collector.status)")
+                Text("\(collector.videos.count) 条 · 本地 \(ShortVideoMediaCache.cachedCount(platform))\(cachedSizeText) · \(collector.status)")
             }
         }
         .listStyle(.plain)
