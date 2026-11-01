@@ -45,6 +45,9 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     private var hasLoadedPage = false
     private var pendingCollect = false
     private var hookInstalled = false
+    private var reloadingForCollect = false
+    /// 一共收到多少段被抄下来的响应（不等于视频条数）。
+    @Published private(set) var rawCount = 0
     private var popupController: ShortVideoPopupViewController?
     private var lastPopupSignature = ""
     private var lastPopupAt = Date.distantPast
@@ -129,6 +132,11 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             WKUserScript(source: Self.popupBridgeScript,
                          injectionTime: .atDocumentStart,
                          forMainFrameOnly: true)
+        )
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: Self.armedHookScript(for: platform),
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false)
         )
 
         let view = WKWebView(frame: .zero, configuration: configuration)
@@ -297,22 +305,23 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         startedAt = Date()
         lastError = nil
         lastScriptError = nil
-        status = "正在抓取…如果一直没动静，请先在网页里登录 \(platform.albumName)"
-        note("开始抓取")
+        status = "正在抓取…正在重新加载页面，让收藏接口重新请求一次"
+        note("开始抓取：置标记并重新加载")
+        rawCount = 0
 
-        if hookInstalled {
-            startDriver()
-            return
-        }
-        webView.evaluateJavaScript(Self.hookScript(for: platform)) { [weak self] _, error in
+        // 接口请求必须发生在监听装好**之后**。以前是在已经加载完的页面上
+        // 补装监听，页面早把收藏拉过了，于是永远收到 0 段数据——TikTok 的
+        // 收藏页是整页渲染，切 tab 也不会再发请求，就一条都抓不到。
+        let js = "try{localStorage.setItem('__kumoneArm','1');}catch(e){}"
+        webView.evaluateJavaScript(js) { [weak self] _, _ in
             guard let self else { return }
-            if let error {
-                self.note("注入失败：\(error.localizedDescription)")
+            self.hookInstalled = true
+            self.reloadingForCollect = true
+            if self.webView.url == nil {
+                self.reloadCurrentPage()
             } else {
-                self.hookInstalled = true
-                self.note("接口监听已装上")
+                self.webView.reload()
             }
-            self.startDriver()
         }
     }
 
@@ -338,7 +347,11 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     func stopCollecting(message: String? = nil) {
         driverTask?.cancel()
         driverTask = nil
-        webView.evaluateJavaScript("try{clearInterval(window.__kumoneDriver);window.__kumoneDriver=null;}catch(e){}")
+        reloadingForCollect = false
+        webView.evaluateJavaScript(
+            "try{clearInterval(window.__kumoneDriver);window.__kumoneDriver=null;"
+            + "localStorage.setItem('__kumoneArm','0');}catch(e){}"
+        )
         phase = .finished
         status = message ?? "已抓取 \(videos.count) 条"
         ShortVideoStore.save(videos, for: platform)
@@ -382,7 +395,10 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         }
         if idleRounds >= 10 {
             if videos.isEmpty {
-                stopCollecting(message: "一条都没抓到：确认网页里已登录，且停在「收藏」/「收藏夹」页")
+                let detail = rawCount == 0
+                    ? "一段接口数据都没收到（页面没发出请求，或不是收藏页）"
+                    : "收到 \(rawCount) 段数据但解析出 0 条（字段可能变了）"
+                stopCollecting(message: "一条都没抓到：\(detail)")
             } else {
                 stopCollecting(message: "抓取完成，共 \(videos.count) 条")
             }
@@ -390,8 +406,12 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     }
 
     private func ingest(_ body: String) {
+        rawCount += 1
         let parsed = ShortVideoParser.videos(fromResponseBody: body, platform: platform)
-        guard !parsed.isEmpty else { return }
+        guard !parsed.isEmpty else {
+            note("第 \(rawCount) 段数据没解析出条目（\(body.count) 字符）")
+            return
+        }
         var indexByID = Dictionary(
             videos.enumerated().map { ($1.id, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -446,6 +466,22 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     // MARK: - 注入脚本
 
+
+    /// 只有用户点了「开始抓取」才生效的监听脚本。
+    ///
+    /// 标记存在 `localStorage` 里，所以点抓取 → 置标记 → reload 之后，
+    /// 页面自己的请求从第一刻起就会被抄下来。登录、搜索阶段标记是 0，
+    /// 页面完全干净，不会被脚本影响。
+    static func armedHookScript(for platform: ShortVideoPlatform) -> String {
+        """
+        (function () {
+          var armed = false;
+          try { armed = window.localStorage.getItem('__kumoneArm') === '1'; } catch (e) {}
+          if (!armed) { return; }
+          \(hookScript(for: platform))
+        })();
+        """
+    }
 
     static func hookScript(for platform: ShortVideoPlatform) -> String {
         let markers = platform.payloadMarkers.map { "\"\($0)\"" }.joined(separator: ", ")
@@ -699,6 +735,12 @@ extension ShortVideoCollector: WKNavigationDelegate {
             if self.pendingCollect {
                 self.pendingCollect = false
                 self.beginCollecting()
+                return
+            }
+            if self.reloadingForCollect {
+                self.reloadingForCollect = false
+                self.note("重新加载完成，开始驱动页面")
+                self.startDriver()
                 return
             }
             if self.phase == .loading {
