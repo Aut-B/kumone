@@ -317,7 +317,8 @@ final class PluginManager: ObservableObject {
             let resolved = await ShortVideoResolver.resolve(
                 platform: shortVideo,
                 videoID: itemObject["vid"] as? String,
-                fallback: direct
+                fallback: direct,
+                capturedAt: (itemObject["updatedAt"] as? NSNumber)?.doubleValue ?? 0
             )
             return PluginMediaSource(url: resolved, headers: [
                 "User-Agent": shortVideo.userAgent,

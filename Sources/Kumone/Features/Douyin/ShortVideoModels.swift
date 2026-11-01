@@ -153,6 +153,7 @@ struct ShortVideo: Identifiable, Hashable, Codable {
             "duration": Double(durationMS) / 1000.0,
             "url": playURL,
             "vid": videoID ?? "",
+            "updatedAt": updatedAt ?? 0,
             "shareURL": shareURL,
         ]
         if let cover, !cover.isEmpty {

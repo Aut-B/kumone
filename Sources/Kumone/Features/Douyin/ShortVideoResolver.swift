@@ -38,10 +38,20 @@ enum ShortVideoResolver {
 
     private static let cache = Cache()
 
-    /// 优先返回长期有效的地址；探测失败时退回 `fallback`（签名直链）。
+    /// 刚抓下来的签名直链最稳、也没有探测延迟，30 分钟内直接用它；
+    /// 超过 30 分钟的（放久了 / 从别的手机同步过来的）才去要长期地址。
+    private static let freshWindow: TimeInterval = 30 * 60
+
     static func resolve(platform: ShortVideoPlatform,
                         videoID: String?,
-                        fallback: String) async -> URL? {
+                        fallback: String,
+                        capturedAt: Double) async -> URL? {
+        if capturedAt > 0 {
+            let age = Date().timeIntervalSince1970 - capturedAt
+            if age >= 0, age < freshWindow {
+                return URL(string: fallback)
+            }
+        }
         let trimmed = (videoID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             let key = "\(platform.rawValue):\(trimmed)"
@@ -88,11 +98,11 @@ enum ShortVideoResolver {
         request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
         request.setValue(platform.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(platform.referer, forHTTPHeaderField: "Referer")
-        request.timeoutInterval = 5
+        request.timeoutInterval = 4
 
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 5
-        configuration.timeoutIntervalForResource = 8
+        configuration.timeoutIntervalForRequest = 4
+        configuration.timeoutIntervalForResource = 7
         let session = URLSession(configuration: configuration)
         defer { session.finishTasksAndInvalidate() }
 
