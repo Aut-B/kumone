@@ -45,8 +45,36 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     private var hasLoadedPage = false
     private var pendingCollect = false
     private var hookInstalled = false
+    private var popupController: ShortVideoPopupViewController?
+    private var lastPopupSignature = ""
+    private var lastPopupAt = Date.distantPast
 
     static let handlerName = "shortvideo"
+
+    /// 常驻的极轻量脚本：只接管 `window.open`。
+    ///
+    /// 登录阶段是不注入抓取脚本的（注入会把抖音自己的登录面板弄坏），
+    /// 但 WKWebView 在「非用户手势」或弹窗被拦时**根本不会回调**
+    /// `createWebViewWith`——表现就是点「登录」一点反应都没有。
+    /// 这个桥先让原生弹窗打开，登录页才真能显示出来。
+    static let popupBridgeScript = """
+    (function () {
+      if (window.__kumonePopupBridge) { return; }
+      window.__kumonePopupBridge = true;
+      var realOpen = window.open;
+      window.open = function (url, name, features) {
+        var handle = null;
+        try { handle = realOpen.apply(window, arguments); } catch (e) { handle = null; }
+        try {
+          var target = url ? String(url) : '';
+          if (!handle && target && target !== 'about:blank') {
+            window.webkit.messageHandlers.shortvideo.postMessage({ popup: target });
+          }
+        } catch (e) {}
+        return handle;
+      };
+    })();
+    """
 
     var isCollecting: Bool { phase == .collecting }
 
@@ -97,6 +125,11 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         configuration.defaultWebpagePreferences.preferredContentMode = .desktop
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.userContentController.add(self, name: Self.handlerName)
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: Self.popupBridgeScript,
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: true)
+        )
 
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.customUserAgent = userAgent
@@ -187,6 +220,46 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         webView.customUserAgent = userAgent
         note("打开 \(urlString)")
         webView.load(request)
+    }
+
+    // MARK: - 弹窗
+
+    func presentPopup(_ request: URLRequest) {
+        guard let url = request.url else { return }
+        let scheme = (url.scheme ?? "").lowercased()
+        guard scheme == "http" || scheme == "https" else {
+            note("拦下非网页弹窗：\(scheme)://")
+            return
+        }
+        guard popupController == nil else {
+            note("已有弹窗，忽略重复请求")
+            return
+        }
+        // `window.open` 会被两条路同时报到（JS 桥 + WKUIDelegate），这里去重。
+        let signature = url.absoluteString
+        if signature == lastPopupSignature, Date().timeIntervalSince(lastPopupAt) < 3 {
+            return
+        }
+        lastPopupSignature = signature
+        lastPopupAt = Date()
+
+        guard let host = ShortVideoTopView.controller() else {
+            note("弹窗失败：找不到可用的窗口")
+            return
+        }
+        note("弹窗：\(url.absoluteString.prefix(70))")
+
+        let controller = ShortVideoPopupViewController(request: request, userAgent: userAgent) { [weak self] in
+            guard let self else { return }
+            self.note("关闭弹窗，刷新本页")
+            self.popupController = nil
+            self.refreshLoginState()
+            self.reloadCurrentPage()
+        }
+        popupController = controller
+        let navigation = UINavigationController(rootViewController: controller)
+        navigation.modalPresentationStyle = .fullScreen
+        host.present(navigation, animated: true)
     }
 
     // MARK: - 抓取
@@ -534,6 +607,7 @@ extension ShortVideoCollector: WKScriptMessageHandler {
               let payload = message.body as? [String: Any] else { return }
         let body = payload["body"] as? String
         let error = payload["error"] as? String
+        let popup = payload["popup"] as? String
         Task { @MainActor [weak self] in
             guard let self else { return }
             if let body { self.ingest(body) }
@@ -541,31 +615,29 @@ extension ShortVideoCollector: WKScriptMessageHandler {
                 self.lastScriptError = error
                 self.note("页面：\(error)")
             }
+            if let popup, let url = URL(string: popup) {
+                self.note("页面要开新窗口：\(popup.prefix(70))")
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 30
+                self.presentPopup(request)
+            }
         }
     }
 }
 
 extension ShortVideoCollector: WKUIDelegate {
-    /// `window.open` / `target=_blank` 一律在本页打开。
+    /// `window.open` 单独弹一层窗口。
     ///
-    /// 抖音的「登录」、搜索结果、视频详情全是新窗口链接；不实现这个回调，
-    /// 点了就什么都不发生——这正是「登录按钮点不动」的真正原因。
+    /// 抖音的二维码登录走 `window.open`。之前把它塞回本页加载，会把抖音自己的
+    /// SPA 冲掉——表现就是「二维码刚出来又闪回首页」。现在开一个真正的弹窗：
+    /// cookie 落在同一个域上，登录完关掉弹窗、本页刷新一下就是登录态。
     nonisolated func webView(_ webView: WKWebView,
                              createWebViewWith configuration: WKWebViewConfiguration,
                              for navigationAction: WKNavigationAction,
                              windowFeatures: WKWindowFeatures) -> WKWebView? {
-        let target = navigationAction.request.url
+        let request = navigationAction.request
         Task { @MainActor [weak self] in
-            guard let self, let target else { return }
-            let scheme = (target.scheme ?? "").lowercased()
-            if scheme == "http" || scheme == "https" || scheme == "about" {
-                self.note("新窗口转本页：\(target.absoluteString.prefix(80))")
-                var request = URLRequest(url: target)
-                request.timeoutInterval = 30
-                self.webView.load(request)
-            } else {
-                self.note("拦下非网页链接：\(target.absoluteString.prefix(80))")
-            }
+            self?.presentPopup(request)
         }
         return nil
     }
