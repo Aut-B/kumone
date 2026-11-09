@@ -84,7 +84,7 @@ public struct IOSMainWindow: View {
                             .transition(AnyTransition.move(edge: Edge.top).combined(with: .opacity))
                             .padding(.top, 8)
                     }
-                    if !player.hasCurrentTrack {
+                    if selectedTab != .search, !player.hasCurrentTrack {
                         PlaybackHandoffBanner()
                     }
                 }
@@ -174,7 +174,7 @@ public struct IOSMainWindow: View {
         // iPad now uses the same tab layout as iPhone.
         Group {
             tabInterface
-                .overlay {
+                .background {
                     if settings.showMainWindowAmbientBackground {
                         MainWindowAmbientBackground(
                             colors: artworkStore.colors,

@@ -75,13 +75,14 @@ struct SearchView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            #if os(iOS)
-            searchField
-            #endif
-            searchContent
-        }
+        searchContent
         #if os(iOS)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            searchField
+                .background(Color(.systemBackground))
+                .overlay(Divider(), alignment: .bottom)
+        }
+        .navigationBarTitleDisplayMode(.inline)
         .onChange(of: searchText) { newValue in
             model.setQuery(newValue)
             Task {
