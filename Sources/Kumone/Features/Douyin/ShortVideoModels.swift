@@ -106,6 +106,48 @@ enum ShortVideoPlatform: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// 抖音 / TikTok 收藏的「按需缓存」开关。
+///
+/// 收藏夹的网页直链带两小时签名，放久了就会过期；而 TikTok 没有可用
+/// 的 `video_id` 长期地址，所以保留本地文件才能保证跨设备也能一直播。
+/// 目的是：
+/// - 抖音：默认关闭（省本地空间，在线播也稳定，长期地址靠 video_id）；
+/// - TikTok：默认打开（没本地文件就迟早播不了）。
+/// 打开后这个平台就变成「抓过的、同步过来的、播过的」都留本地，需要下哪些再下哪些。
+enum ShortVideoCachePolicy: String {
+    /// 收藏夹的网页直链哪来哪去，播时现解现拉，不落盘到本地。
+    case onlineOnly = "onlineOnly"
+    /// 抓过的、同步过来的、播过的条目都留在本地，保证以后能按时播放。
+    case cacheOnDemand = "cacheOnDemand"
+
+    var isCachingEnabled: Bool { self == .cacheOnDemand }
+
+    /// 没有缓存相关时的存储类，放在这里供 iOS / macOS 共用。
+    /// 默认：抖音按需缓存关，TikTok 按需缓存开。
+    static func `default`(for platform: ShortVideoPlatform) -> ShortVideoCachePolicy {
+        switch platform {
+        case .douyin: return .onlineOnly
+        case .tiktok: return .cacheOnDemand
+        }
+    }
+
+    private static func storageKey(for platform: ShortVideoPlatform) -> String {
+        "shortVideoCachePolicy.\(platform.rawValue)"
+    }
+
+    static func load(for platform: ShortVideoPlatform) -> ShortVideoCachePolicy {
+        guard let raw = UserDefaults.standard.string(forKey: storageKey(for: platform)),
+              let policy = ShortVideoCachePolicy(rawValue: raw) else {
+            return `default`(for: platform)
+        }
+        return policy
+    }
+
+    func save(for platform: ShortVideoPlatform) {
+        UserDefaults.standard.set(rawValue, forKey: Self.storageKey(for: platform))
+    }
+}
+
 #if os(iOS)
 
 /// 一条短视频。字段名和 WebDAV 同步用的 JSON 一一对应，

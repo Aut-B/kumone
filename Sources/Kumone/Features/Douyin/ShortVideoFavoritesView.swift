@@ -17,6 +17,9 @@ struct ShortVideoFavoritesView: View {
     @State private var showLog = false
     @State private var syncMessage: String?
 
+    /// 这个平台的「按需缓存」开关：开=抓过/同步过/播过的都留本地；关=纯在线播。
+    @State private var cachePolicy: ShortVideoCachePolicy = .onlineOnly
+
     init(platform: ShortVideoPlatform) {
         self.platform = platform
         _collector = StateObject(wrappedValue: ShortVideoCollector(platform: platform))
@@ -113,6 +116,7 @@ struct ShortVideoFavoritesView: View {
                 }
             }
             .onAppear {
+                cachePolicy = ShortVideoCachePolicy.load(for: platform)
                 collector.loadFavoritesPageIfNeeded()
                 Task { await autoSync() }
                 // 直链两小时左右就失效，过期了自动重抓一遍（不用用户点）。
@@ -127,8 +131,11 @@ struct ShortVideoFavoritesView: View {
             .onChange(of: collector.phase) { phase in
                 guard phase == .finished else { return }
                 Task { await pushAfterCollect() }
-                // 抓完立刻下到本地：直链只有两小时签名，趁现在存下来才留得住。
-                cache.cacheAll(collector.videos, platform: platform)
+                // 抓完后是否立刻缓存到本地：看这个平台的按需缓存开关。
+                // 抖音默认关（在线播也稳，省空间）；TikTok 默认开（没本地文件迟早播不了）。
+                if ShortVideoCachePolicy.load(for: platform).isCachingEnabled {
+                    cache.cacheAll(collector.videos, platform: platform)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .shortVideoDidSync)) { _ in
                 collector.applyRemote(ShortVideoStore.load(platform))
@@ -266,8 +273,28 @@ struct ShortVideoFavoritesView: View {
 
     // MARK: - 列表
 
+
     private var listPane: some View {
         List {
+            Section {
+                Toggle(isOn: Binding(
+                    get: { cachePolicy.isCachingEnabled },
+                    set: { cachePolicy = $0 ? .cacheOnDemand : .onlineOnly }
+                )) {
+                    Label {
+                        Text("按需缓存到本地")
+                    } icon: {
+                        Image(systemName: "arrow.down.circle")
+                    }
+                }
+                .onChange(of: cachePolicy) { _ in cachePolicy.save(for: platform) }
+            } header: {
+                Text("缓存")
+            } footer: {
+                Text(platform == .tiktok
+                     ? "TikTok 没有不过期的播放地址，开着才能跨设备一直听；不想占空间就关掉，临时听仍在线播。"
+                     : "抖音有 video_id 长期地址，关掉也能稳定在线听，最省本地空间。")
+            }
             Section {
                 ForEach(collector.videos) { video in
                     Button {

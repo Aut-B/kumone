@@ -75,16 +75,13 @@ struct SearchView: View {
     }
 
     var body: some View {
-        searchContent
-        #if os(iOS)
-        // iPad enters SearchView from the sidebar, where the desktop window
-        // toolbar search field is unavailable. On macOS, MainWindow owns the
-        // only search field and navigates here with its submitted query.
-        .searchable(text: $searchText, prompt: "搜索歌曲、歌手、专辑、歌单")
-        .onSubmit(of: .search) {
-            model.setQuery(searchText)
-            Task { await model.load(tab: model.tab) }
+        VStack(spacing: 0) {
+            #if os(iOS)
+            searchField
+            #endif
+            searchContent
         }
+        #if os(iOS)
         .onChange(of: searchText) { newValue in
             model.setQuery(newValue)
             Task {
@@ -100,6 +97,43 @@ struct SearchView: View {
             await model.load(tab: model.tab)
         }
     }
+
+    #if os(iOS)
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+            TextField("搜索歌曲、歌手、专辑、歌单", text: $searchText)
+                .textFieldStyle(PlainTextFieldStyle())
+                .submitLabel(.search)
+                .disableAutocorrection(true)
+                .autocapitalization(.none)
+                .onSubmit {
+                    model.setQuery(searchText)
+                    Task { await model.load(tab: model.tab) }
+                }
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清空搜索")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .padding(.horizontal, Theme.Layout.contentInset)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+    #endif
 
     @ViewBuilder
     private var searchContent: some View {
