@@ -8,7 +8,7 @@ final class KumoneIOSUITests: XCTestCase {
     @MainActor
     func testSearchFieldIsVisibleFromLaunch() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["-kumone.search.tab"]
+        app.launchArguments = ["-kumone.search.tab", "-kumone.ui.test"]
         app.launch()
         assertSearchFieldVisible(in: app)
     }
@@ -16,6 +16,7 @@ final class KumoneIOSUITests: XCTestCase {
     @MainActor
     func testSearchTabShowsSearchField() throws {
         let app = XCUIApplication()
+        app.launchArguments = ["-kumone.ui.test"]
         app.launch()
 
         let searchTab = app.descendants(matching: .any)["kumone.tab.search"]
