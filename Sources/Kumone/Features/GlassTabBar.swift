@@ -86,6 +86,21 @@ struct GlassTabBar: View {
                          : AnyShapeStyle(Color.primary.opacity(0.8)))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(item.title))
+        .accessibilityIdentifier(accessibilityIdentifier(for: item.tab))
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private func accessibilityIdentifier(for tab: IOSTab) -> String {
+        switch tab {
+        case .home: return "kumone.tab.home"
+        case .explore: return "kumone.tab.explore"
+        case .fm: return "kumone.tab.fm"
+        case .search: return "kumone.tab.search"
+        case .library: return "kumone.tab.library"
+        case .plugins: return "kumone.tab.plugins"
+        }
     }
 
     /// The sliding indicator — a bar-height capsule with Telegram's faint tint.

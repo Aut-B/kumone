@@ -75,13 +75,15 @@ struct SearchView: View {
     }
 
     var body: some View {
-        searchContent
-        #if os(iOS)
-        .safeAreaInset(edge: .top, spacing: 0) {
+        VStack(spacing: 0) {
+            #if os(iOS)
             searchField
                 .background(Color(.systemBackground))
                 .overlay(Divider(), alignment: .bottom)
+            #endif
+            searchContent
         }
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: searchText) { newValue in
             model.setQuery(newValue)
@@ -109,6 +111,7 @@ struct SearchView: View {
                 .submitLabel(.search)
                 .disableAutocorrection(true)
                 .autocapitalization(.none)
+                .accessibilityIdentifier("kumone.search.field")
                 .onSubmit {
                     model.setQuery(searchText)
                     Task { await model.load(tab: model.tab) }
@@ -126,6 +129,7 @@ struct SearchView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+        .frame(minHeight: 44)
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(.secondarySystemBackground))

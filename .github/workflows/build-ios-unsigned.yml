@@ -11,15 +11,49 @@ permissions:
 jobs:
   build-ios:
     runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEPLOY_TARGET: ${{ endsWith(github.ref_name, '-ios15') && '15.0' || '16.0' }}
+      BUILD_NUM: ${{ contains(github.ref_name, 'douyin') && '194' || (endsWith(github.ref_name, '-ios15') && (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '174' || '164') || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '173' || '163')) }}
+      MARKETING: ${{ contains(github.ref_name, 'douyin') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.21') && '0.3.21' || '0.3.20')) }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify iOS search UI invariants
+        run: python3 Scripts/verify-ios-search-ui.py
+
+      - name: Test iOS search UI
+        run: |
+          set -euo pipefail
+          SIM_UDID=$(xcrun simctl list devices available -j | python3 -c '
+import json, re, sys
+data = json.load(sys.stdin)
+candidates = []
+for runtime, devices in data["devices"].items():
+    version_match = re.search(r"(\d+)-(\d+)", runtime)
+    version = tuple(map(int, version_match.groups())) if version_match else (0, 0)
+    for device in devices:
+        name = device.get("name", "")
+        if device.get("isAvailable") and "iPhone" in name:
+            score = (1 if "Pro Max" in name else 0, version, name)
+            candidates.append((score, device["udid"], name))
+if not candidates:
+    sys.exit("No available iPhone simulator")
+score, sim_udid, sim_name = max(candidates, key=lambda item: item[0])
+print(sim_udid)
+')
+          echo "Using iPhone simulator: $SIM_UDID"
+          xcrun simctl boot "$SIM_UDID" || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          xcodebuild -workspace ios/KumoneIOS.xcworkspace -scheme KumoneIOS \
+            -configuration Debug -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/search-ui-dd" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            MARKETING_VERSION="$MARKETING" CURRENT_PROJECT_VERSION="$BUILD_NUM" \
+            IPHONEOS_DEPLOYMENT_TARGET="$DEPLOY_TARGET" \
+            test
+
       - name: Build iOS app (unsigned)
-        env:
-          # The iOS 15 lane exists for older phones; every other lane targets 16.
-          DEPLOY_TARGET: ${{ endsWith(github.ref_name, '-ios15') && '15.0' || '16.0' }}
-          BUILD_NUM: ${{ contains(github.ref_name, 'douyin') && '193' || (endsWith(github.ref_name, '-ios15') && (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '174' || '164') || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '173' || '163')) }}
-          MARKETING: ${{ contains(github.ref_name, 'douyin') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.21') && '0.3.21' || '0.3.20')) }}
         run: |
           xcodebuild -workspace ios/KumoneIOS.xcworkspace -scheme KumoneIOS \
             -configuration Release -destination 'generic/platform=iOS' \

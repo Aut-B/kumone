@@ -18,7 +18,11 @@ public struct IOSMainWindow: View {
         settings.appearance.colorScheme ?? systemColorScheme
     }
 
-    @State private var selectedTab: IOSTab = .home
+    @State private var selectedTab: IOSTab = Self.initialSelectedTab()
+
+    private static func initialSelectedTab() -> IOSTab {
+        CommandLine.arguments.contains("-kumone.search.tab") ? .search : .home
+    }
 
     /// Returning from the lock screen every few minutes must not rescan
 
