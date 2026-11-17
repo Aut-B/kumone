@@ -24,7 +24,9 @@ public struct IOSMainWindow: View {
         CommandLine.arguments.contains("-kumone.search.tab") ? .search : .home
     }
 
-    @State private var selectedTab: IOSTab = .home
+    private static var isUITest: Bool {
+        CommandLine.arguments.contains("-kumone.ui.test")
+    }
 
     /// Returning from the lock screen every few minutes must not rescan
 
@@ -66,7 +68,7 @@ public struct IOSMainWindow: View {
             .task {
                 await DownloadManager.shared.start()
                 await account.bootstrap()
-                if settings.autoCheckUpdates, DistributionChannel.current.allowsSelfUpdate {
+                if settings.autoCheckUpdates, DistributionChannel.current.allowsSelfUpdate, !Self.isUITest {
                     IOSUpdater.shared.check(interactive: false)
                 }
             }
