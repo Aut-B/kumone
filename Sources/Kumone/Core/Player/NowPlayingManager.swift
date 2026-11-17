@@ -20,6 +20,7 @@ final class NowPlayingManager {
     /// API for it (macOS has no equivalent). This is the client-side
     /// hardening for #124/#40 — the launch itself is still controlled by the
     /// system and the installed app's signing identity.
+    @available(iOS 16.0, *)
     private var session: MPNowPlayingSession?
     #endif
 
@@ -27,7 +28,7 @@ final class NowPlayingManager {
     /// own center — the default center is not associated with it.
     private var infoCenter: MPNowPlayingInfoCenter {
         #if os(iOS)
-        if let session { return session.nowPlayingInfoCenter }
+        if #available(iOS 16.0, *), let session { return session.nowPlayingInfoCenter }
         #endif
         return .default()
     }
@@ -37,7 +38,7 @@ final class NowPlayingManager {
     /// outside the session.
     private var commandCenter: MPRemoteCommandCenter {
         #if os(iOS)
-        if let session { return session.remoteCommandCenter }
+        if #available(iOS 16.0, *), let session { return session.remoteCommandCenter }
         #endif
         return .shared()
     }
@@ -56,6 +57,7 @@ final class NowPlayingManager {
     /// a refusal means this install cannot activate a session at all, which
     /// happens with some re-signed builds; the shared centers then take over
     /// so the lock screen and Control Center keep their controls.
+    @available(iOS 16.0, *)
     private func reclaimSessionIfNeeded(whilePlaying playing: Bool) {
         guard let session, !session.isActive, !activationAttemptInFlight,
               Date().timeIntervalSince(lastActivationAttempt) >= Self.activationRetryInterval
@@ -73,6 +75,7 @@ final class NowPlayingManager {
 
     /// Gives up the session: commands move to `MPRemoteCommandCenter.shared()`
     /// and the current metadata is republished on the default info center.
+    @available(iOS 16.0, *)
     private func fallBackToSharedCenters() {
         guard session != nil, let player else { return }
         session = nil
@@ -90,7 +93,7 @@ final class NowPlayingManager {
     func attach(to player: PlayerService, avPlayer: AVPlayer? = nil) {
         self.player = player
         #if os(iOS)
-        if let avPlayer {
+        if #available(iOS 16.0, *), let avPlayer {
             let session = MPNowPlayingSession(players: [avPlayer])
             // We publish the full dictionary ourselves (elapsed time, queue
             // count, artwork), which the automatic publisher would omit.
@@ -225,7 +228,7 @@ final class NowPlayingManager {
         // A session can lose its active slot while playback was stopped;
         // claim it again as soon as a new track is put up. The player may not
         // be audible yet, so a refusal here is not held against the session.
-        reclaimSessionIfNeeded(whilePlaying: false)
+        if #available(iOS 16.0, *) { reclaimSessionIfNeeded(whilePlaying: false) }
         #endif
         info = [
             MPMediaItemPropertyTitle: track.name,
@@ -262,7 +265,7 @@ final class NowPlayingManager {
     func updateElapsed(_ elapsed: TimeInterval, rate: Double) {
         #if os(iOS)
         // Resuming the same track publishes through here, not updateMetadata.
-        if rate > 0 { reclaimSessionIfNeeded(whilePlaying: true) }
+        if #available(iOS 16.0, *), rate > 0 { reclaimSessionIfNeeded(whilePlaying: true) }
         #endif
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         info[MPNowPlayingInfoPropertyPlaybackRate] = rate

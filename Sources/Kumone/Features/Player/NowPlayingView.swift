@@ -2661,6 +2661,15 @@ private struct MinimalLyricCentersKey: PreferenceKey {
 
 // MARK: - Minimal track info row
 
+private enum MoreSheet: Identifiable {
+    case neteasePlaylist
+    case pluginPlaylist
+    case localPlaylist
+    case share
+
+    var id: Int { hashValue }
+}
+
 private struct MinimalTrackInfoRow: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore

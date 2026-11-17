@@ -1,6 +1,19 @@
 import Foundation
 import os
 
+private final class LockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+
+    init(_ initial: Value) { value = initial }
+
+    func withLock<T>(_ body: (inout Value) -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
+    }
+}
+
 /// Request endpoints, configured on first launch (``UpstreamSetupView``).
 enum Upstream {
 
@@ -72,7 +85,7 @@ enum Upstream {
     }
 
     private static let defaultsKey = "upstream.hosts"
-    private static let state = OSAllocatedUnfairLock<Hosts?>(initialState: load())
+    private static let state = LockedBox<Hosts?>(load())
 
     private static func load() -> Hosts? {
         guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return nil }

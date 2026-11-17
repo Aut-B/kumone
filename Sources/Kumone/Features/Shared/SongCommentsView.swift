@@ -29,7 +29,7 @@ struct SongCommentsView: View {
     @ObservedObject private var toasts = ToastCenter.shared
     @Environment(\.dismiss) private var dismiss
     #if os(iOS)
-    @State private var detent: PresentationDetent = .medium
+    @State private var detentIndex = 0
     #endif
 
     init(track: Track) {
@@ -47,8 +47,7 @@ struct SongCommentsView: View {
         #if os(macOS)
         .frame(minWidth: 420, idealWidth: 520, maxWidth: 760, minHeight: 420, idealHeight: 640, maxHeight: 960)
         #else
-        .presentationDetents([.medium, .large], selection: $detent)
-        .presentationDragIndicator(.visible)
+        .modifier(CommentsSheetPresentation(detentIndex: $detentIndex))
         #endif
         // A sheet covers the window's own toast overlay (#182); errors from a
         // like must still be seen here.
@@ -418,3 +417,27 @@ private extension View {
         #endif
     }
 }
+
+#if os(iOS)
+private struct CommentsSheetPresentation: ViewModifier {
+    @Binding var detentIndex: Int
+
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content
+                .presentationDetents([.medium, .large], selection: detentBinding)
+                .presentationDragIndicator(.visible)
+        } else {
+            content
+        }
+    }
+
+    @available(iOS 16.0, *)
+    private var detentBinding: Binding<PresentationDetent> {
+        Binding(
+            get: { detentIndex == 0 ? .medium : .large },
+            set: { detentIndex = $0 == .medium ? 0 : 1 }
+        )
+    }
+}
+#endif

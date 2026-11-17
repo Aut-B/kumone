@@ -437,15 +437,22 @@ final class MarqueeTextView: PlatformView {
         let hugsText: Bool
 
         #if os(macOS)
+        @available(macOS 13.0, *)
         func sizeThatFits(_ proposal: ProposedViewSize, nsView: MarqueeTextView, context: Context) -> CGSize? {
             hugging(proposal)
         }
         #else
+        @available(iOS 16.0, *)
         func sizeThatFits(_ proposal: ProposedViewSize, uiView: MarqueeTextView, context: Context) -> CGSize? {
             hugging(proposal)
         }
         #endif
 
+        #if os(macOS)
+        @available(macOS 13.0, *)
+        #else
+        @available(iOS 16.0, *)
+        #endif
         private func hugging(_ proposal: ProposedViewSize) -> CGSize? {
             guard hugsText else { return nil }
             let needed = MarqueeTextView.textWidth(text, fontSize: fontSize, weight: weight)

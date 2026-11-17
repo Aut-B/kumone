@@ -563,11 +563,11 @@ enum MusicAPI {
     /// 无法播放 while a second try a moment later worked (#210). Reading a
     /// playback URL changes nothing, so asking twice is safe.
     static func songURLRetrying(ids: [Int], level: String, using client: MusicClient = .shared,
-                                retryDelay: Duration = .milliseconds(400)) async throws -> [SongURLData] {
+                                retryDelay: TimeInterval = 0.4) async throws -> [SongURLData] {
         do {
             return try await songURL(ids: ids, level: level, using: client)
         } catch where TransientRequestFailure.matches(error) {
-            try await Task.sleep(for: retryDelay)
+            try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
             return try await songURL(ids: ids, level: level, using: client)
         }
     }
