@@ -111,7 +111,27 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settingsSoundEffectsButton")
                 #endif
                 Toggle("灰色歌曲解锁", isOn: $settings.enableUnblock)
-                Text("无版权或下架歌曲将从已启用音源中匹配播放")
+                Text("无版权 / 下架歌曲按网易云原始 ID 从 pyncmd 精确匹配播放")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("允许酷狗 / 酷我兜底", isOn: $settings.enableUnblockFallback)
+                    .disabled(!settings.enableUnblock)
+                Text("默认关闭。开启后仅当 pyncmd 查无此曲时才回退到下面勾选的音源——它们按歌名和时长匹配，可能匹配成翻唱或别的歌")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                NavigationLink("播放器设置") {
+                    PlayerSettingsSheet()
+                }
+                Text("进度条样式、背景光晕、DJ 灯效、封面样式与歌词显示（灵感来自 Beans）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("插件音源") {
+                NavigationLink("插件调试日志") {
+                    PluginLogView()
+                }
+                Text("插件请求记录，排查音源问题时使用")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -219,9 +239,28 @@ struct SettingsView: View {
             }
 
             Section("存储") {
+                #if os(macOS)
                 NavigationLink(value: SettingsPage.storage) {
                     Label("存储空间", systemImage: "internaldrive")
                 }
+                #else
+                if #available(iOS 16.0, *) {
+                    NavigationLink(value: SettingsPage.storage) {
+                        Label("存储空间", systemImage: "internaldrive")
+                    }
+                } else {
+                    // iOS 15 has no value-based links: the link carries its own
+                    // destination instead of pushing onto a path.
+                    NavigationLink {
+                        StorageSpaceView {
+                            dismiss()
+                            openDestination(.downloaded)
+                        }
+                    } label: {
+                        Label("存储空间", systemImage: "internaldrive")
+                    }
+                }
+                #endif
             }
 
             #if os(macOS)
@@ -237,7 +276,7 @@ struct SettingsView: View {
 
             Section("账号") {
                 if let profile = account.profile {
-                    LabeledContent("当前账号", value: profile.nickname)
+                    HStack { Text("当前账号"); Spacer(); Text(profile.nickname).foregroundStyle(.secondary) }
                     Button("退出登录", role: .destructive) {
                         Task {
                             do { try await AccountStore.shared.logout() }
@@ -326,8 +365,14 @@ struct SettingsView: View {
         #endif
     }
 
+    /// Version AND build number. Several 0.3.19 builds exist side by side, so
+    /// the short version alone cannot tell which one is actually installed —
+    /// which is exactly what made a newer build look like "nothing changed".
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "dev"
+        guard let build = info?["CFBundleVersion"] as? String, !build.isEmpty else { return version }
+        return "\(version) (\(build))"
     }
 
     private var appBuild: String? {

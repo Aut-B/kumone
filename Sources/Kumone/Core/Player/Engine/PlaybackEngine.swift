@@ -140,7 +140,7 @@ final class PlaybackEngine: @unchecked Sendable {
                 faderMirror.withLock { $0 = newValue }
             }
         }
-        private let faderMirror = OSAllocatedUnfairLock<Float>(initialState: 1)
+        private let faderMirror = CompatUnfairLock<Float>(initialState: 1)
         let timePitch = AVAudioUnitTimePitch()
         /// Band layout — fixed at init, see `EQBand`.
         let eq = AVAudioUnitEQ(numberOfBands: DeckChain.bandCount)

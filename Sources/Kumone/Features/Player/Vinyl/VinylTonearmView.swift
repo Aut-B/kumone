@@ -437,7 +437,7 @@ private struct EngagingTonearm<Content: View>: PlatformViewRepresentable {
         host.motion.setWobbling(wobbling)
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: TonearmHost<Content>, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: CGSize, uiView: TonearmHost<Content>, context: Context) -> CGSize? {
         CGSize(width: width, height: height)
     }
 }

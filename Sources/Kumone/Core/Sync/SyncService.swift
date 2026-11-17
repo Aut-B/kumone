@@ -69,7 +69,7 @@ final class SyncService: ObservableObject {
             (PlayerService.shared.playbackSession, AccountStore.shared.authenticatedAccountID)
         },
         periodicRefreshSleep: @escaping @Sendable () async throws -> Void = {
-            try await Task.sleep(for: .seconds(20))
+            try await Task.sleep(nanoseconds: 20_000_000_000)
         },
         loginKeyStore: LoginKeyStore = .keychain
     ) {
@@ -365,7 +365,7 @@ final class SyncService: ObservableObject {
         let scheduledConnectionID = connectionID
         // A bounded window coalesces bursts without starving continuous changes.
         coalescingTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+            do { try await Task.sleep(nanoseconds: 600_000_000) } catch { return }
             guard let self, self.connectionID == scheduledConnectionID else { return }
             self.coalescingTask = nil
             self.ensureSyncTask()

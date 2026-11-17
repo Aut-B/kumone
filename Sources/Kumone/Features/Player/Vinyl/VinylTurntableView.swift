@@ -104,7 +104,7 @@ public struct VinylTurntableView: View {
                     onNextTrack?()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
                         dragOffset = discSize * 1.25
-                        withAnimation(.spring(response: 0.38, dampingFraction: 0.80)) {
+                        withAnimation(.compatSpring(response: 0.38, dampingFraction: 0.80)) {
                             dragOffset = 0
                             isDragging = false
                         }
@@ -117,14 +117,14 @@ public struct VinylTurntableView: View {
                     onPreviousTrack?()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
                         dragOffset = -discSize * 1.25
-                        withAnimation(.spring(response: 0.38, dampingFraction: 0.80)) {
+                        withAnimation(.compatSpring(response: 0.38, dampingFraction: 0.80)) {
                             dragOffset = 0
                             isDragging = false
                         }
                     }
                 } else {
                     // Reset back to center
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.76)) {
+                    withAnimation(.compatSpring(response: 0.32, dampingFraction: 0.76)) {
                         dragOffset = 0
                         isDragging = false
                     }
@@ -226,7 +226,7 @@ private struct SpinningVinylDisc: PlatformViewRepresentable {
         host.spin.setSpinning(spinning)
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: VinylDiscHost, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: CGSize, uiView: VinylDiscHost, context: Context) -> CGSize? {
         CGSize(width: discSize + 6, height: discSize + 6)
     }
 }

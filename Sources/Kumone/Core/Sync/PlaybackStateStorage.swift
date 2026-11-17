@@ -10,7 +10,7 @@ enum PlaybackStateStorage {
         var snapshots: [URL: () throws -> Data] = [:]
         var scheduled = false
     }
-    private static let pending = OSAllocatedUnfairLock(initialState: Pending())
+    private static let pending = CompatUnfairLock(initialState: Pending())
 
     static func save<T: Encodable>(_ state: T, to url: URL) {
         let schedule = pending.withLock {

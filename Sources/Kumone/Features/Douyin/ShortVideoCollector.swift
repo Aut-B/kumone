@@ -1,0 +1,801 @@
+#if os(iOS)
+import Foundation
+import WebKit
+
+/// 在真实的 `WKWebView` 里抓收藏夹。
+///
+/// 抖音和 TikTok 的网页接口都要签名（抖音是 `a_bogus` + UIFID，缺了就
+/// `403 Blocked by ArgusSecurityPlugin`），自己做签名不现实。让真实页面跑起来、
+/// 由站点自己的 JS 去签，我们只在旁边把返回的 JSON 抄一份——里面本来就带着
+/// 可以直接播的地址。
+///
+/// 关键点：**登录、搜索这些交互阶段完全不注入任何脚本**。之前为了抓接口在
+/// documentStart 就换掉 `fetch` / `XMLHttpRequest`，站点一旦察觉被改过，
+/// 「登录」按钮和搜索就会静默失效。现在脚本只在点「开始抓取」时才注入，
+/// 页面加载和登录全程是原样的。
+@MainActor
+final class ShortVideoCollector: NSObject, ObservableObject {
+    enum Phase: Equatable {
+        case idle
+        case loading
+        case collecting
+        case finished
+        case failed(String)
+    }
+
+    let platform: ShortVideoPlatform
+
+    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var videos: [ShortVideo] = []
+    @Published private(set) var status = ""
+    @Published private(set) var loggedIn = false
+    @Published private(set) var lastError: String?
+    @Published private(set) var lastScriptError: String?
+    @Published private(set) var logLines: [String] = []
+    @Published private(set) var useMobileUserAgent: Bool
+    @Published private(set) var canGoBack = false
+    @Published private(set) var canGoForward = false
+
+    private(set) var webView: WKWebView!
+
+    private var driverTask: Task<Void, Never>?
+    private var idleRounds = 0
+    private var lastCount = 0
+    private var startedAt = Date()
+    private var hasLoadedPage = false
+    private var pendingCollect = false
+    private var hookInstalled = false
+    private var reloadingForCollect = false
+    /// 一共收到多少段被抄下来的响应（不等于视频条数）。
+    @Published private(set) var rawCount = 0
+    private var popupController: ShortVideoPopupViewController?
+    private var lastPopupSignature = ""
+    private var lastPopupAt = Date.distantPast
+
+    static let handlerName = "shortvideo"
+
+    /// 常驻的极轻量脚本：只接管 `window.open`。
+    ///
+    /// 登录阶段是不注入抓取脚本的（注入会把抖音自己的登录面板弄坏），
+    /// 但 WKWebView 在「非用户手势」或弹窗被拦时**根本不会回调**
+    /// `createWebViewWith`——表现就是点「登录」一点反应都没有。
+    /// 这个桥先让原生弹窗打开，登录页才真能显示出来。
+    static let popupBridgeScript = """
+    (function () {
+      if (window.__kumonePopupBridge) { return; }
+      window.__kumonePopupBridge = true;
+      var realOpen = window.open;
+      window.open = function (url, name, features) {
+        var handle = null;
+        try { handle = realOpen.apply(window, arguments); } catch (e) { handle = null; }
+        try {
+          var target = url ? String(url) : '';
+          if (!handle && target && target !== 'about:blank') {
+            window.webkit.messageHandlers.shortvideo.postMessage({ popup: target });
+          }
+        } catch (e) {}
+        return handle;
+      };
+    })();
+    """
+
+    var isCollecting: Bool { phase == .collecting }
+
+    /// 桌面 UA 是主力；某些账号在桌面版登录面板上点不动时，切成手机 UA 用
+    /// 短信验证码登录，cookie 落在同一个域上，切回桌面版照样有效。
+    var userAgent: String {
+        useMobileUserAgent ? platform.mobileUserAgent : platform.userAgent
+    }
+
+    private static func lastRefreshKey(_ platform: ShortVideoPlatform) -> String {
+        "shortVideoLastRefresh.\(platform.rawValue)"
+    }
+
+    private static func mobileUAKey(_ platform: ShortVideoPlatform) -> String {
+        "shortVideoMobileUA.\(platform.rawValue)"
+    }
+
+    var lastRefreshAt: Date? {
+        let stamp = UserDefaults.standard.double(forKey: Self.lastRefreshKey(platform))
+        return stamp > 0 ? Date(timeIntervalSince1970: stamp) : nil
+    }
+
+    /// 直链是签名过的，两小时左右就开始失效；过期前重抓一次。
+    var isStale: Bool {
+        guard !videos.isEmpty else { return false }
+        guard let last = lastRefreshAt else { return true }
+        return Date().timeIntervalSince(last) > 2 * 3600
+    }
+
+    /// 老数据没有 `videoID`，只能用会过期的签名直链——提示重抓一次。
+    var missingStableID: Bool {
+        guard !videos.isEmpty else { return false }
+        return videos.contains { ($0.videoID ?? "").isEmpty }
+    }
+
+    init(platform: ShortVideoPlatform) {
+        self.platform = platform
+        self.useMobileUserAgent = UserDefaults.standard.bool(forKey: Self.mobileUAKey(platform))
+        super.init()
+        videos = ShortVideoStore.load(platform)
+        status = videos.isEmpty
+            ? "在下面的网页里登录 \(platform.albumName)，然后点「开始抓取」。"
+            : "已加载上次抓取的 \(videos.count) 条，可重新抓取"
+
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.defaultWebpagePreferences.preferredContentMode = .desktop
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        configuration.userContentController.add(self, name: Self.handlerName)
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: Self.popupBridgeScript,
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: true)
+        )
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: Self.armedHookScript(for: platform),
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false)
+        )
+
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.customUserAgent = userAgent
+        view.navigationDelegate = self
+        view.uiDelegate = self
+        view.allowsBackForwardNavigationGestures = true
+        webView = view
+        note("已就绪（\(useMobileUserAgent ? "手机 UA" : "桌面 UA")）")
+    }
+
+    deinit {
+        driverTask?.cancel()
+    }
+
+    // MARK: - 日志
+
+    func note(_ line: String) {
+        let stamp = DateFormatter.shortClock.string(from: Date())
+        logLines.append("\(stamp) \(line)")
+        if logLines.count > 60 { logLines.removeFirst(logLines.count - 60) }
+    }
+
+    // MARK: - 导航
+
+    func loadFavoritesPageIfNeeded() {
+        guard !hasLoadedPage else { return }
+        hasLoadedPage = true
+        openHomePage()
+    }
+
+    /// 打开收藏页。
+    func reloadPage() {
+        hasLoadedPage = true
+        phase = .loading
+        lastError = nil
+        status = "正在打开 \(platform.albumName) 收藏页…"
+        load(platform.favoritesURLString)
+    }
+
+    /// 打开站点首页：登录面板一般在首页触发，收藏页被拦时可以退回去登录。
+    func openHomePage() {
+        hasLoadedPage = true
+        phase = .loading
+        lastError = nil
+        status = "正在打开 \(platform.albumName) 首页…"
+        load(platform.homeURLString)
+    }
+
+    /// 直接打开站点登录页（抖音是 sso.douyin.com）。
+    func openLoginPage() {
+        hasLoadedPage = true
+        phase = .loading
+        lastError = nil
+        status = "登录页：登录完成后点「收藏页」回去抓取"
+        load(platform.loginURLString)
+    }
+
+    func reloadCurrentPage() {
+        lastError = nil
+        phase = .loading
+        status = "重新加载…"
+        webView.reload()
+    }
+
+    func goBack() {
+        guard webView.canGoBack else { return }
+        webView.goBack()
+    }
+
+    func goForward() {
+        guard webView.canGoForward else { return }
+        webView.goForward()
+    }
+
+    func toggleUserAgent() {
+        useMobileUserAgent.toggle()
+        UserDefaults.standard.set(useMobileUserAgent, forKey: Self.mobileUAKey(platform))
+        webView.customUserAgent = userAgent
+        note("切换为\(useMobileUserAgent ? "手机 UA" : "桌面 UA")")
+        status = "已切换为\(useMobileUserAgent ? "手机" : "桌面")版，正在重新加载…"
+        reloadCurrentPage()
+    }
+
+    private func load(_ urlString: String) {
+        guard let url = URL(string: urlString) else { return }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        webView.customUserAgent = userAgent
+        note("打开 \(urlString)")
+        webView.load(request)
+    }
+
+    // MARK: - 弹窗
+
+    func presentPopup(_ request: URLRequest) {
+        guard let url = request.url else { return }
+        let scheme = (url.scheme ?? "").lowercased()
+        guard scheme == "http" || scheme == "https" else {
+            note("拦下非网页弹窗：\(scheme)://")
+            return
+        }
+        guard popupController == nil else {
+            note("已有弹窗，忽略重复请求")
+            return
+        }
+        // `window.open` 会被两条路同时报到（JS 桥 + WKUIDelegate），这里去重。
+        let signature = url.absoluteString
+        if signature == lastPopupSignature, Date().timeIntervalSince(lastPopupAt) < 3 {
+            return
+        }
+        lastPopupSignature = signature
+        lastPopupAt = Date()
+
+        guard let host = ShortVideoTopView.controller() else {
+            note("弹窗失败：找不到可用的窗口")
+            return
+        }
+        note("弹窗：\(url.absoluteString.prefix(70))")
+
+        let controller = ShortVideoPopupViewController(request: request, userAgent: userAgent) { [weak self] in
+            guard let self else { return }
+            self.note("关闭弹窗，刷新本页")
+            self.popupController = nil
+            self.refreshLoginState()
+            self.reloadCurrentPage()
+        }
+        popupController = controller
+        let navigation = UINavigationController(rootViewController: controller)
+        navigation.modalPresentationStyle = .fullScreen
+        host.present(navigation, animated: true)
+    }
+
+    // MARK: - 抓取
+
+    /// 开始抓取。
+    ///
+    /// 已经在「我的 / 某个收藏夹」这一页上就直接开抓——不能重新加载，否则会把
+    /// 用户特意挑的那个收藏夹冲掉，退回默认的「收藏」tab。
+    func startCollecting() {
+        guard phase != .collecting else { return }
+        if isOnFavoritesPage {
+            beginCollecting()
+            return
+        }
+        pendingCollect = true
+        reloadPage()
+        status = "正在打开收藏页，加载完自动开始抓取…"
+    }
+
+    private var isOnFavoritesPage: Bool {
+        guard let current = webView.url?.absoluteString else { return false }
+        switch platform {
+        case .douyin:
+            // 只要还在个人页就行（`/user/self` 下面挂着「收藏」和各个「收藏夹」）。
+            return current.contains("/user/self")
+        case .tiktok:
+            return current.contains("tiktok.com/@")
+        }
+    }
+
+    private func beginCollecting() {
+        phase = .collecting
+        idleRounds = 0
+        lastCount = videos.count
+        startedAt = Date()
+        lastError = nil
+        lastScriptError = nil
+        status = "正在抓取…正在重新加载页面，让收藏接口重新请求一次"
+        note("开始抓取：置标记并重新加载")
+        rawCount = 0
+
+        // 接口请求必须发生在监听装好**之后**。以前是在已经加载完的页面上
+        // 补装监听，页面早把收藏拉过了，于是永远收到 0 段数据——TikTok 的
+        // 收藏页是整页渲染，切 tab 也不会再发请求，就一条都抓不到。
+        let js = "try{localStorage.setItem('__kumoneArm','1');}catch(e){}"
+        webView.evaluateJavaScript(js) { [weak self] _, _ in
+            guard let self else { return }
+            self.hookInstalled = true
+            self.reloadingForCollect = true
+            if self.webView.url == nil {
+                self.reloadCurrentPage()
+            } else {
+                self.webView.reload()
+            }
+        }
+    }
+
+    private func startDriver() {
+        webView.evaluateJavaScript(Self.driverScript(for: platform)) { [weak self] _, error in
+            guard let self, let error else { return }
+            self.note("驱动脚本失败：\(error.localizedDescription)")
+        }
+        startTicking()
+    }
+
+    private func startTicking() {
+        driverTask?.cancel()
+        driverTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self, !Task.isCancelled else { return }
+                self.tick()
+            }
+        }
+    }
+
+    func stopCollecting(message: String? = nil) {
+        driverTask?.cancel()
+        driverTask = nil
+        reloadingForCollect = false
+        webView.evaluateJavaScript(
+            "try{clearInterval(window.__kumoneDriver);window.__kumoneDriver=null;"
+            + "localStorage.setItem('__kumoneArm','0');}catch(e){}"
+        )
+        phase = .finished
+        status = message ?? "已抓取 \(videos.count) 条"
+        ShortVideoStore.save(videos, for: platform)
+        if !videos.isEmpty {
+            UserDefaults.standard.set(Date().timeIntervalSince1970,
+                                      forKey: Self.lastRefreshKey(platform))
+        }
+        note("停止抓取：\(videos.count) 条")
+    }
+
+    func clear() {
+        videos = []
+        ShortVideoStore.save(videos, for: platform)
+        status = "已清空，可重新抓取"
+        phase = .idle
+    }
+
+    /// 把远端列表并进本地（WebDAV 同步回来时调用）。
+    func applyRemote(_ remote: [ShortVideo]) {
+        guard !remote.isEmpty else { return }
+        let merged = ShortVideoMerge.merge(videos, remote)
+        guard merged != videos else { return }
+        videos = merged
+        ShortVideoStore.save(videos, for: platform)
+        status = "已同步 \(videos.count) 条"
+    }
+
+    private func tick() {
+        guard phase == .collecting else { return }
+        webView.evaluateJavaScript("window.scrollTo(0, document.body.scrollHeight);")
+
+        if Date().timeIntervalSince(startedAt) > 300 {
+            stopCollecting(message: "抓取超时，已保留 \(videos.count) 条")
+            return
+        }
+        if videos.count == lastCount {
+            idleRounds += 1
+        } else {
+            idleRounds = 0
+            lastCount = videos.count
+        }
+        if idleRounds >= 10 {
+            if videos.isEmpty {
+                let detail = rawCount == 0
+                    ? "一段接口数据都没收到（页面没发出请求，或不是收藏页）"
+                    : "收到 \(rawCount) 段数据但解析出 0 条（字段可能变了）"
+                stopCollecting(message: "一条都没抓到：\(detail)")
+            } else {
+                stopCollecting(message: "抓取完成，共 \(videos.count) 条")
+            }
+        }
+    }
+
+    private func ingest(_ body: String) {
+        rawCount += 1
+        let parsed = ShortVideoParser.videos(fromResponseBody: body, platform: platform)
+        guard !parsed.isEmpty else {
+            note("第 \(rawCount) 段数据没解析出条目（\(body.count) 字符）")
+            return
+        }
+        var indexByID = Dictionary(
+            videos.enumerated().map { ($1.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var changed = 0
+        for video in parsed {
+            if let index = indexByID[video.id] {
+                // 直链是签名过的，会过期；重抓时用新的覆盖旧的。
+                if videos[index].playURL != video.playURL
+                    || videos[index].videoID != video.videoID {
+                    var updated = video
+                    if (updated.videoID ?? "").isEmpty {
+                        updated.videoID = videos[index].videoID
+                    }
+                    videos[index] = updated
+                    changed += 1
+                }
+            } else {
+                videos.append(video)
+                indexByID[video.id] = videos.count - 1
+                changed += 1
+            }
+        }
+        guard changed > 0 else { return }
+        status = "已抓取 \(videos.count) 条…"
+        ShortVideoStore.save(videos, for: platform)
+    }
+
+    // MARK: - 登录状态
+
+    func refreshLoginState() {
+        let needle = platform.cookieDomainNeedle
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+            var names: Set<String> = []
+            for cookie in cookies where cookie.domain.lowercased().contains(needle) {
+                names.insert(cookie.name)
+            }
+            let loggedIn = names.contains("sessionid")
+                || names.contains("sessionid_ss")
+                || names.contains("sid_guard")
+                || names.contains("sid_tt")
+                || names.contains("uid_tt")
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.loggedIn != loggedIn {
+                    self.loggedIn = loggedIn
+                    self.note(loggedIn ? "检测到登录态" : "检测到未登录")
+                }
+            }
+        }
+    }
+
+    // MARK: - 注入脚本
+
+
+    /// 只有用户点了「开始抓取」才生效的监听脚本。
+    ///
+    /// 标记存在 `localStorage` 里，所以点抓取 → 置标记 → reload 之后，
+    /// 页面自己的请求从第一刻起就会被抄下来。登录、搜索阶段标记是 0，
+    /// 页面完全干净，不会被脚本影响。
+    static func armedHookScript(for platform: ShortVideoPlatform) -> String {
+        """
+        (function () {
+          var armed = false;
+          try { armed = window.localStorage.getItem('__kumoneArm') === '1'; } catch (e) {}
+          if (!armed) { return; }
+          \(hookScript(for: platform))
+        })();
+        """
+    }
+
+    static func hookScript(for platform: ShortVideoPlatform) -> String {
+        let markers = platform.payloadMarkers.map { "\"\($0)\"" }.joined(separator: ", ")
+        return """
+        (function () {
+          if (window.__kumoneShortVideoHook) { return; }
+          window.__kumoneShortVideoHook = true;
+
+          var MARKERS = [\(markers)];
+          var HANDLER = "\(handlerName)";
+          var reported = {};
+
+          function send(payload) {
+            try { window.webkit.messageHandlers[HANDLER].postMessage(payload); } catch (e) {}
+          }
+
+          function note(text) {
+            try {
+              var key = String(text).slice(0, 120);
+              if (reported[key]) { return; }
+              reported[key] = true;
+              send({ error: key });
+            } catch (e) {}
+          }
+
+          window.addEventListener('error', function (event) {
+            var target = event && event.target;
+            if (target && target !== window && (target.src || target.href)) {
+              note('资源加载失败: ' + (target.src || target.href));
+              return;
+            }
+            note('JS 错误: ' + (event && event.message ? event.message : 'unknown'));
+          }, true);
+
+          window.addEventListener('unhandledrejection', function (event) {
+            var reason = event && event.reason;
+            var text = (reason && (reason.message || reason.errMsg)) || reason;
+            note('JS 异常: ' + String(text));
+          });
+
+          function interesting(text) {
+            if (!text || text.length < 40) { return false; }
+            for (var i = 0; i < MARKERS.length; i++) {
+              if (text.indexOf(MARKERS[i]) >= 0) { return true; }
+            }
+            return false;
+          }
+
+          var posted = {};
+
+          function post(url, text) {
+            try {
+              if (!interesting(text)) { return; }
+              // 同一段响应只回传一次；太大的（>3MB）跳过，别把主线程堵死。
+              var key = String(url) + '#' + text.length;
+              if (posted[key]) { return; }
+              posted[key] = true;
+              if (text.length > 3000000) { return; }
+              send({ url: String(url), body: text });
+            } catch (e) {}
+          }
+
+          var originalFetch = window.fetch;
+          if (originalFetch) {
+            window.fetch = function () {
+              var args = arguments;
+              var url = '';
+              try { url = (args[0] && args[0].url) ? args[0].url : args[0]; } catch (e) {}
+              var promise = originalFetch.apply(this, args);
+              try {
+                promise.then(function (response) {
+                  try {
+                    if (response && response.status >= 400) {
+                      note('接口 ' + response.status + ': ' + String(url).slice(0, 90));
+                    }
+                    response.clone().text().then(function (text) { post(url, text); }).catch(function () {});
+                  } catch (e) {}
+                }).catch(function (error) {
+                  note('请求失败: ' + String(url).slice(0, 90) + ' ' + (error && error.message ? error.message : ''));
+                });
+              } catch (e) {}
+              return promise;
+            };
+          }
+
+          var open = XMLHttpRequest.prototype.open;
+          var send2 = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.open = function (method, url) {
+            this.__kumoneURL = url;
+            return open.apply(this, arguments);
+          };
+          XMLHttpRequest.prototype.send = function () {
+            var xhr = this;
+            try {
+              xhr.addEventListener('load', function () {
+                try {
+                  if (xhr.status >= 400) {
+                    note('接口 ' + xhr.status + ': ' + String(xhr.__kumoneURL).slice(0, 90));
+                  }
+                  post(xhr.__kumoneURL, xhr.responseText);
+                } catch (e) {}
+              });
+              xhr.addEventListener('error', function () {
+                note('请求失败: ' + String(xhr.__kumoneURL).slice(0, 90));
+              });
+            } catch (e) {}
+            return send2.apply(this, arguments);
+          };
+
+          // 别让站点一眼看出 fetch / XHR 被换过（抖音的 Argus 会做完整性检查）。
+          try {
+            var originalToString = Function.prototype.toString;
+            var wrapped = [window.fetch, XMLHttpRequest.prototype.open, XMLHttpRequest.prototype.send];
+            Function.prototype.toString = function () {
+              for (var i = 0; i < wrapped.length; i++) {
+                if (this === wrapped[i]) { return 'function ' + (wrapped[i].name || '') + '() { [native code] }'; }
+              }
+              return originalToString.call(this);
+            };
+          } catch (e) {}
+        })();
+        """
+    }
+
+    /// 自动点开「收藏」tab，并持续滚到底，让列表继续分页。
+    static func driverScript(for platform: ShortVideoPlatform) -> String {
+        let titles = platform.tabTitles.map { "\"\($0)\"" }.joined(separator: ", ")
+        return """
+        (function () {
+          if (window.__kumoneDriver) { return; }
+          var TITLES = [\(titles)];
+          window.__kumoneDriver = setInterval(function () {
+            try {
+              if (!window.__kumoneClickedTab) {
+                var nodes = document.querySelectorAll('div,span,a,li,button');
+                for (var i = 0; i < nodes.length; i++) {
+                  var text = (nodes[i].textContent || '').trim();
+                  for (var t = 0; t < TITLES.length; t++) {
+                    if (text === TITLES[t]) {
+                      nodes[i].click();
+                      window.__kumoneClickedTab = true;
+                      return;
+                    }
+                  }
+                }
+              }
+              window.scrollTo(0, document.body.scrollHeight);
+            } catch (e) {}
+          }, 1200);
+        })();
+        """
+    }
+}
+
+extension ShortVideoCollector: WKScriptMessageHandler {
+    nonisolated func userContentController(_ userContentController: WKUserContentController,
+                                           didReceive message: WKScriptMessage) {
+        guard message.name == ShortVideoCollector.handlerName,
+              let payload = message.body as? [String: Any] else { return }
+        let body = payload["body"] as? String
+        let error = payload["error"] as? String
+        let popup = payload["popup"] as? String
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let body { self.ingest(body) }
+            if let error {
+                self.lastScriptError = error
+                self.note("页面：\(error)")
+            }
+            if let popup, let url = URL(string: popup) {
+                self.note("页面要开新窗口：\(popup.prefix(70))")
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 30
+                self.presentPopup(request)
+            }
+        }
+    }
+}
+
+extension ShortVideoCollector: WKUIDelegate {
+    /// `window.open` 单独弹一层窗口。
+    ///
+    /// 抖音的二维码登录走 `window.open`。之前把它塞回本页加载，会把抖音自己的
+    /// SPA 冲掉——表现就是「二维码刚出来又闪回首页」。现在开一个真正的弹窗：
+    /// cookie 落在同一个域上，登录完关掉弹窗、本页刷新一下就是登录态。
+    nonisolated func webView(_ webView: WKWebView,
+                             createWebViewWith configuration: WKWebViewConfiguration,
+                             for navigationAction: WKNavigationAction,
+                             windowFeatures: WKWindowFeatures) -> WKWebView? {
+        let request = navigationAction.request
+        Task { @MainActor [weak self] in
+            self?.presentPopup(request)
+        }
+        return nil
+    }
+
+    nonisolated func webView(_ webView: WKWebView,
+                             runJavaScriptAlertPanelWithMessage message: String,
+                             initiatedByFrame frame: WKFrameInfo,
+                             completionHandler: @escaping () -> Void) {
+        completionHandler()
+    }
+
+    nonisolated func webView(_ webView: WKWebView,
+                             runJavaScriptConfirmPanelWithMessage message: String,
+                             initiatedByFrame frame: WKFrameInfo,
+                             completionHandler: @escaping (Bool) -> Void) {
+        completionHandler(true)
+    }
+}
+
+extension ShortVideoCollector: WKNavigationDelegate {
+    nonisolated func webView(_ webView: WKWebView,
+                             decidePolicyFor navigationAction: WKNavigationAction,
+                             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        let url = navigationAction.request.url
+        let scheme = (url?.scheme ?? "").lowercased()
+        if !scheme.isEmpty, scheme != "http", scheme != "https", scheme != "about",
+           scheme != "file", scheme != "data", scheme != "blob" {
+            Task { @MainActor [weak self] in
+                self?.note("拦下 App 跳转：\(scheme)://")
+            }
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.hookInstalled = false
+            self.syncNavigationState()
+        }
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.status = "页面已响应：\(self.webView.url?.absoluteString.prefix(60) ?? "")"
+            self.syncNavigationState()
+        }
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.refreshLoginState()
+            self.syncNavigationState()
+            self.note("加载完成：\(self.webView.url?.absoluteString.prefix(70) ?? "")")
+            if self.pendingCollect {
+                self.pendingCollect = false
+                self.beginCollecting()
+                return
+            }
+            if self.reloadingForCollect {
+                self.reloadingForCollect = false
+                self.note("重新加载完成，开始驱动页面")
+                self.startDriver()
+                return
+            }
+            if self.phase == .loading {
+                self.status = "页面已加载：登录后点「开始抓取」"
+            }
+        }
+    }
+
+    nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        Task { @MainActor [weak self] in
+            self?.report(error)
+        }
+    }
+
+    nonisolated func webView(_ webView: WKWebView,
+                             didFailProvisionalNavigation navigation: WKNavigation!,
+                             withError error: Error) {
+        Task { @MainActor [weak self] in
+            self?.report(error)
+        }
+    }
+
+    nonisolated func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        Task { @MainActor [weak self] in
+            self?.lastError = "网页进程被系统回收，请重新加载"
+            self?.status = "网页进程被系统回收，请点「重新加载」"
+            self?.note("网页进程被回收")
+        }
+    }
+}
+
+private extension ShortVideoCollector {
+    func syncNavigationState() {
+        canGoBack = webView.canGoBack
+        canGoForward = webView.canGoForward
+    }
+
+    func report(_ error: Error) {
+        let ns = error as NSError
+        // 用户主动取消的跳转不算错误。
+        if ns.domain == NSURLErrorDomain, ns.code == NSURLErrorCancelled { return }
+        lastError = error.localizedDescription
+        if phase == .loading || phase == .collecting {
+            phase = .failed(error.localizedDescription)
+        }
+        status = "网页加载失败：\(error.localizedDescription)"
+        note("加载失败：\(ns.code) \(error.localizedDescription)")
+    }
+}
+
+private extension DateFormatter {
+    static let shortClock: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+}
+#endif

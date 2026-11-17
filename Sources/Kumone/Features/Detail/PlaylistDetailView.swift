@@ -11,8 +11,15 @@ struct PlaylistDetailView: View {
     // This page only sends playback commands; individual rows observe playback.
     private let player = PlayerService.shared
     @EnvironmentObject private var account: AccountStore
+    @ObservedObject private var layout = PlaylistLayoutStore.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showFullDescription = false
+    @State private var multiSelectMode = false
+    @State private var selectedIDs: Set<Int> = []
+    @State private var sorting = false
+    @State private var showCollect = false
+    @State private var showDeleteConfirm = false
+    @State private var isDeleting = false
     #if os(iOS)
     @State private var showSearch = false
     @State private var searchFocused = false
@@ -76,6 +83,10 @@ struct PlaylistDetailView: View {
         #endif
     }
 
+    private var activeQuery: String {
+        model.filter.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             onlineContent
@@ -83,8 +94,8 @@ struct PlaylistDetailView: View {
                     await loadPlaylist()
                 }
                 .toolbar {
-                    if model.errorMessage != nil, downloads.network.connected, model.detail != nil {
-                        ToolbarItem(placement: .primaryAction) {
+                    ToolbarItem(placement: .primaryAction) {
+                        if model.errorMessage != nil, downloads.network.connected, model.detail != nil {
                             Button { Task { await loadPlaylist() } } label: { Image(systemName: "arrow.clockwise") }
                                 .accessibilityLabel("重试")
                                 .help("重试")
@@ -99,19 +110,40 @@ struct PlaylistDetailView: View {
                                 } label: {
                                     Label("在歌单内查找", systemImage: "magnifyingglass")
                                 }
-                                Menu {
-                                    Picker("排序方式", selection: $model.sortOrder) {
-                                        ForEach(PlaylistTrackSort.allCases, id: \.self) { order in
-                                            Text(LocalizedStringKey(order.rawValue)).tag(order)
-                                        }
-                                    }
-                                } label: {
-                                    Label("排序方式", systemImage: "arrow.up.arrow.down")
+                            }
+                            Button {
+                                toggleMultiSelect()
+                            } label: {
+                                Label(multiSelectMode ? "退出多选" : "多选", systemImage: "checklist")
+                            }
+                            Button {
+                                sorting.toggle()
+                                if sorting {
+                                    multiSelectMode = false
+                                    selectedIDs.removeAll()
                                 }
                             } label: {
-                                Label("更多", systemImage: "ellipsis")
+                                Label(sorting ? "完成排序" : "调整歌曲顺序",
+                                      systemImage: sorting ? "checkmark" : "arrow.up.arrow.down")
                             }
-                            .accessibilityIdentifier("likedSongsMenu")
+                            .disabled(model.tracks.count < 2)
+                            Menu {
+                                Picker("排序方式", selection: $model.sortOrder) {
+                                    ForEach(PlaylistTrackSort.allCases, id: \.self) { order in
+                                        Text(LocalizedStringKey(order.rawValue)).tag(order)
+                                    }
+                                }
+                            } label: {
+                                Label("排序方式", systemImage: "arrow.up.arrow.down")
+                            }
+                            Button {
+                                layout.clearTrackOrder(playlistID: playlistID)
+                            } label: {
+                                Label("恢复默认顺序", systemImage: "arrow.uturn.left")
+                            }
+                            .disabled(!layout.hasCustomTrackOrder(playlistID: playlistID))
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
                         }
                     } else if supportsPlaylistSearch && !isSearchActive {
                         ToolbarItem(placement: .navigationBarTrailing) {
@@ -124,6 +156,19 @@ struct PlaylistDetailView: View {
                         }
                     }
                     #endif
+                }
+                .sheet(isPresented: $showCollect) {
+                    AddTracksToPlaylistSheet(tracks: selectedTracks)
+                }
+                .confirmationDialog(
+                    "从歌单移除 \(selectedIDs.count) 首？",
+                    isPresented: $showDeleteConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("移除", role: .destructive) {
+                        Task { await deleteSelected() }
+                    }
+                    Button("取消", role: .cancel) {}
                 }
         }
     }
@@ -162,28 +207,58 @@ struct PlaylistDetailView: View {
         .clipped()
         .navigationTitle(model.detail?.name ?? String(localized: "歌单"))
         #else
-        ScrollView {
-            VStack(alignment: .leading, spacing: isCompact ? 16 : 20) {
-                playlistContents
-            }
-            .id("playlistTop")
-            #if os(iOS)
-            .background {
-                if supportsPlaylistSearch {
-                    PlaylistSearchScrollGesture(isSearchActive: showSearch, onPullDown: {
-                        withAnimation(AppAnimation.standard) { showSearch = true }
-                        searchFocused = true
-                    }, onScrollUp: {
-                        searchFocused = false
-                        withAnimation(AppAnimation.standard) { showSearch = false }
-                    })
+        Group {
+            if sorting {
+                reorderList
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: isCompact ? 16 : 20) {
+                        playlistContents
+                    }
+                    .id("playlistTop")
+                    #if os(iOS)
+                    .background {
+                        if supportsPlaylistSearch {
+                            PlaylistSearchScrollGesture(isSearchActive: showSearch, onPullDown: {
+                                withAnimation(AppAnimation.standard) { showSearch = true }
+                                searchFocused = true
+                            }, onScrollUp: {
+                                searchFocused = false
+                                withAnimation(AppAnimation.standard) { showSearch = false }
+                            })
+                        }
+                    }
+                    #endif
+                }
+                .safeAreaInset(edge: .top) {
+                    // Pinned under the navigation bar, not at the bottom: the
+                    // floating mini player would otherwise cover it.
+                    if multiSelectMode {
+                        VStack(spacing: 0) {
+                            PlaylistSelectionSummaryBar(
+                                selectedCount: selectedIDs.count,
+                                totalCount: visibleTracks.count,
+                                onToggleAll: toggleSelectAll
+                            )
+                            Divider().opacity(0.4)
+                            PlaylistSelectionActionBar(
+                                selectedCount: selectedIDs.count,
+                                canDelete: isOwnPlaylist,
+                                onPlayNext: playSelectedNext,
+                                onQueueEnd: queueSelectedAtEnd,
+                                onCollect: { showCollect = true },
+                                onDelete: { showDeleteConfirm = true }
+                            )
+                            Divider().opacity(0.4)
+                        }
+                        .background(.bar)
+                    }
                 }
             }
-            #endif
         }
         .navigationTitle(isSearchActive ? String(localized: "搜索歌单内歌曲") : "")
         .navigationBarTitleDisplayMode(.inline)
-        .scrollDismissesKeyboard(.interactively)
+        .compatScrollDismissesKeyboardInteractively()
         #endif
     }
 
@@ -251,8 +326,17 @@ struct PlaylistDetailView: View {
             }
             #endif
 
-            trackList(filteredTracks)
+            if multiSelectMode {
+                LazyVStack(spacing: 1) {
+                    ForEach(visibleTracks) { track in
+                        selectableRow(track)
+                    }
+                }
                 .padding(.horizontal, isCompact ? 6 : Theme.Layout.contentInset - 10)
+            } else {
+                trackList(visibleTracks)
+                    .padding(.horizontal, isCompact ? 6 : Theme.Layout.contentInset - 10)
+            }
 
             playlistStatus(detail)
         } else if model.isLoading {
@@ -315,6 +399,129 @@ struct PlaylistDetailView: View {
         #endif
     }
 
+    // MARK: - Multi-select
+
+    /// The list as shown: filtered, then re-ordered by the local layout.
+    private var visibleTracks: [Track] {
+        layout.orderedTracks(model.filteredTracks, playlistID: playlistID)
+    }
+
+    private var selectedTracks: [Track] {
+        visibleTracks.filter { selectedIDs.contains($0.id) }
+    }
+
+    /// A plain row while selecting — tapping toggles the checkbox instead of
+    /// starting playback, and the title is explicitly `.primary` so it isn't
+    /// painted in the accent colour.
+    private func selectableRow(_ track: Track) -> some View {
+        HStack(spacing: 10) {
+            SelectionCheckmark(isSelected: selectedIDs.contains(track.id))
+            CachedAsyncImage(url: track.album.picUrl?.resizedImageURL(160), animated: false) {
+                Rectangle().fill(Color.secondary.opacity(0.12))
+            }
+            .frame(width: 42, height: 42)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(track.artistNames)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { toggle(track) }
+    }
+
+    private func toggle(_ track: Track) {
+        if selectedIDs.contains(track.id) {
+            selectedIDs.remove(track.id)
+        } else {
+            selectedIDs.insert(track.id)
+        }
+    }
+
+    private func toggleSelectAll() {
+        let ids = Set(visibleTracks.map(\.id))
+        if !ids.isEmpty && selectedIDs == ids {
+            selectedIDs.removeAll()
+        } else {
+            selectedIDs = ids
+        }
+    }
+
+    private func toggleMultiSelect() {
+        multiSelectMode.toggle()
+        selectedIDs.removeAll()
+    }
+
+    private func playSelectedNext() {
+        let tracks = selectedTracks
+        guard !tracks.isEmpty else { return }
+        player.addToPlayNext(tracks)
+        selectedIDs.removeAll()
+        multiSelectMode = false
+    }
+
+    /// "Play these after whatever I am listening to right now" — the Beans
+    /// behaviour, as opposed to cutting in after the current song.
+    private func queueSelectedAtEnd() {
+        let tracks = selectedTracks
+        guard !tracks.isEmpty else { return }
+        player.addToQueueEnd(tracks)
+        selectedIDs.removeAll()
+        multiSelectMode = false
+    }
+
+    private func deleteSelected() async {
+        let ids = selectedIDs
+        guard !ids.isEmpty, isOwnPlaylist else { return }
+        isDeleting = true
+        defer { isDeleting = false }
+        do {
+            try await NeteaseAPI.playlistTracks(op: "del", playlistID: playlistID, trackIDs: ids.sorted())
+            await model.remove(ids: ids)
+            selectedIDs.removeAll()
+            multiSelectMode = false
+            ToastCenter.shared.show(String(localized: "已从歌单中移除 \(ids.count) 首"))
+        } catch {
+            ToastCenter.shared.show(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Reordering
+
+    /// NetEase offers no API to reorder a playlist's tracks, so this writes a
+    /// local view order: it changes what you see and play here, not the server.
+    private var reorderList: some View {
+        List {
+            ForEach(visibleTracks) { track in
+                HStack(spacing: 10) {
+                    Image(systemName: "line.3.horizontal")
+                        .foregroundStyle(.secondary)
+                    Text(track.name)
+                        .lineLimit(1)
+                    Spacer()
+                    Text(track.artistNames)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .onMove { offsets, destination in
+                var list = visibleTracks
+                list.move(fromOffsets: offsets, toOffset: destination)
+                layout.setTrackOrder(list, playlistID: playlistID)
+            }
+        }
+        .listStyle(.plain)
+        .environment(\.editMode, .constant(.active))
+    }
+
     // MARK: - Compact (Mobile) Header
 
     private func compactHeader(_ detail: PlaylistDetail) -> some View {
@@ -364,7 +571,7 @@ struct PlaylistDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .sheet(isPresented: $showFullDescription) {
-                    NavigationStack {
+                    AppNavStack {
                         ScrollView {
                             Text(description)
                                 .font(.system(size: 14))
@@ -549,13 +756,11 @@ struct PlaylistDetailView: View {
     }
 
     private var playable: [Track] {
+        // 同 TrackList.playableTracks：备份里的原始 fee/privilege 与账号无关，
+        // 按版权过滤会砍短播放队列，改为全量入队。
         let tracks = model.orderedTracks
         if SettingsManager.shared.canResolveUnblockedTracks { return tracks }
-        return tracks.filter { track in
-            downloads.offlineTracksByID[track.id] != nil || track.playability(privilege: model.privileges[track.id],
-                           isLoggedIn: account.isLoggedIn,
-                           vipType: account.vipType) == .playable
-        }
+        return tracks
     }
 
     private func startHeartbeat() {

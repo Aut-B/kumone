@@ -315,9 +315,9 @@ extension Audition {
                                        config: queueConfig, plannerConfig: plannerConfig)
         }
         func milliseconds(_ body: () -> Void) -> Double {
-            let start = ContinuousClock.now
+            let start = CompatClock.now
             body()
-            return (ContinuousClock.now - start).milliseconds
+            return (CompatClock.now - start).milliseconds
         }
 
         // One rank: the whole pool scored against one outgoing track.

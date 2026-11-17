@@ -399,7 +399,7 @@ struct LoginSheet: View {
                 cooldownTask?.cancel()
                 cooldownTask = Task {
                     while smsCooldown > 0, !Task.isCancelled {
-                        try? await Task.sleep(for: .seconds(1))
+                        try? await Task.sleep(nanoseconds: UInt64(1 * 1_000_000_000))
                         smsCooldown -= 1
                     }
                 }

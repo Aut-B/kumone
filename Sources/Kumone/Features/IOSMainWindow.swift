@@ -18,6 +18,12 @@ public struct IOSMainWindow: View {
         settings.appearance.colorScheme ?? systemColorScheme
     }
 
+    @State private var selectedTab: IOSTab = Self.initialSelectedTab()
+
+    private static func initialSelectedTab() -> IOSTab {
+        CommandLine.arguments.contains("-kumone.search.tab") ? .search : .home
+    }
+
     @State private var selectedTab: IOSTab = .home
 
     /// Returning from the lock screen every few minutes must not rescan
@@ -107,9 +113,10 @@ public struct IOSMainWindow: View {
                 VStack(spacing: 8) {
                     if let toast = toasts.current {
                         ToastView(toast: toast)
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .transition(AnyTransition.move(edge: Edge.top).combined(with: .opacity))
+                            .padding(.top, 8)
                     }
-                    if !player.hasCurrentTrack {
+                    if selectedTab != .search, !player.hasCurrentTrack {
                         PlaybackHandoffBanner()
                     }
                 }
@@ -181,7 +188,7 @@ public struct IOSMainWindow: View {
             MainWindow(path: $iPadPath)
         } else {
             tabInterface
-                .overlay {
+                .background {
                     if settings.showMainWindowAmbientBackground {
                         MainWindowAmbientBackground(
                             colors: artworkStore.colors,
@@ -223,11 +230,10 @@ public struct IOSMainWindow: View {
 
     @ViewBuilder
     private var tabInterface: some View {
-        if #available(iOS 26.0, *) {
-            iOS26TabInterface
-        } else {
-            customTabInterface
-        }
+        // iOS 26's search-role tab owns the search field and can replace the
+        // page with an empty system search experience. The hand-built bar keeps
+        // SearchView's explicit in-page field visible on every supported device.
+        customTabInterface
     }
 
     /// Attach the bottom mini-player accessory only when something is playing.
@@ -269,6 +275,10 @@ public struct IOSMainWindow: View {
 
             Tab("我的", systemImage: "person.crop.circle", value: .library) {
                 tabStack(.library) { IOSLibraryView(showLogin: $showLogin) }
+            }
+
+            Tab("插件", systemImage: "puzzlepiece.extension", value: .plugins) {
+                tabStack(.plugins) { PluginsRootView() }
             }
 
             Tab(value: .search, role: .search) {

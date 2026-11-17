@@ -67,11 +67,11 @@ struct DownloadButtonIcon: View {
             guard isComplete else { completionVisible = false; return }
             guard !completionVisible else { return }
             if !reduceMotion {
-                do { try await Task.sleep(for: .milliseconds(180)) }
+                do { try await Task.sleep(nanoseconds: 180_000_000) }
                 catch { return }
             }
             guard !Task.isCancelled else { return }
-            withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1)) {
+            withAnimation(reduceMotion ? nil : .compatSpring(response: 0.3, dampingFraction: 1)) {
                 completionVisible = true
             }
         }

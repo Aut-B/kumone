@@ -36,7 +36,7 @@ actor SyncRepository {
         let schemaVersion: Int
     }
 
-    init(now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) {
+    init(now: @escaping @Sendable () -> CompatClock.Instant = { CompatClock.now }) {
         playbackStore = PlaybackSyncStore(now: now)
     }
 

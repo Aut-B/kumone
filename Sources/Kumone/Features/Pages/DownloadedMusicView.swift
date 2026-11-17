@@ -124,16 +124,18 @@ struct DownloadedMusicView: View {
     }
 
     private func header(tracks: [Track]) -> some View {
-        ViewThatFits(in: .horizontal) {
+        CompatViewThatFits {
             HStack(spacing: 10) {
                 songCount(tracks: tracks)
                 Spacer(minLength: 12)
                 actionRow(tracks: tracks)
             }
+        } narrow: {
             VStack(alignment: .leading, spacing: 12) {
                 songCount(tracks: tracks)
-                ViewThatFits(in: .horizontal) {
+                CompatViewThatFits {
                     actionRow(tracks: tracks)
+                } narrow: {
                     VStack(alignment: .leading, spacing: 8) {
                         downloadQueueButton
                         playAllButton(tracks: tracks)

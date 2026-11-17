@@ -129,6 +129,8 @@ final class SettingsManager: ObservableObject {
         static let volume = "settings.volume"
         static let fmMode = "settings.fmMode"
         static let unblock = "settings.enableUnblock"
+        /// Keep in sync with `UnblockService.fallbackDefaultsKey`.
+        static let unblockFallback = "settings.enableUnblockFallback"
         static let unblockSources = "settings.enabledUnblockSources"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
@@ -246,6 +248,14 @@ final class SettingsManager: ObservableObject {
     /// Resolve gray tracks from third-party sources (unblock-style).
     @Published var enableUnblock: Bool {
         didSet { UserDefaults.standard.set(enableUnblock, forKey: Keys.unblock) }
+    }
+
+    /// Allow the fuzzy 酷狗 / 酷我 fallback when pyncmd has no copy of a track.
+    /// Off by default: pyncmd resolves by the original NetEase id, while those two
+    /// match on name + duration and can return the wrong recording.
+    /// Acts as the master switch: when off, only pyncmd is ever asked.
+    @Published var enableUnblockFallback: Bool {
+        didSet { UserDefaults.standard.set(enableUnblockFallback, forKey: Keys.unblockFallback) }
     }
 
     /// Built-in third-party sources eligible for gray-track resolution.
@@ -448,6 +458,7 @@ final class SettingsManager: ObservableObject {
             ?? (defaults.bool(forKey: Keys.showRomaji) ? .romaji : .off)
         verbatimLyrics = defaults.object(forKey: Keys.verbatimLyrics) as? Bool ?? true
         enableUnblock = defaults.object(forKey: Keys.unblock) as? Bool ?? true
+        enableUnblockFallback = defaults.object(forKey: Keys.unblockFallback) as? Bool ?? false
         if let rawSourceIDs = defaults.stringArray(forKey: Keys.unblockSources) {
             enabledAudioSourceIDs = Set(rawSourceIDs.compactMap(AudioSourceID.init))
         } else {

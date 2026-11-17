@@ -35,7 +35,7 @@ enum CDNHost {
         var answeredAt: TimeInterval?
     }
 
-    private static let hosts = OSAllocatedUnfairLock(initialState: [String: HostState]())
+    private static let hosts = CompatUnfairLock(initialState: [String: HostState]())
 
     /// `url` on the twin CDN host (`m801` <-> `m801c`), or nil when `url` is not
     /// an audio CDN URL.

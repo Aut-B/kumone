@@ -1,0 +1,524 @@
+#if os(iOS)
+import Combine
+import SwiftUI
+import WebKit
+
+/// 抖音 / TikTok 收藏夹：在网页里登录一次，抓下来，然后用普通的播放队列听
+/// （后台、锁屏都走 Kumone 原有的音频通道）。
+struct ShortVideoFavoritesView: View {
+    let platform: ShortVideoPlatform
+
+    @StateObject private var collector: ShortVideoCollector
+    @ObservedObject private var cache = ShortVideoMediaCache.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var showWeb = false
+    @State private var showClearConfirm = false
+    @State private var showSyncSettings = false
+    @State private var showLog = false
+    @State private var syncMessage: String?
+
+    /// 这个平台的「按需缓存」开关：开=抓过/同步过/播过的都留本地；关=纯在线播。
+    @State private var cachePolicy: ShortVideoCachePolicy = .onlineOnly
+
+    init(platform: ShortVideoPlatform) {
+        self.platform = platform
+        _collector = StateObject(wrappedValue: ShortVideoCollector(platform: platform))
+    }
+
+    var body: some View {
+        AppNavStack {
+            Group {
+                if showWeb || collector.videos.isEmpty {
+                    webPane
+                } else {
+                    listPane
+                }
+            }
+            .navigationTitle(platform.displayName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        showSyncSettings = true
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                    }
+                    .accessibilityLabel("收藏同步")
+
+                    Menu {
+                        Button {
+                            collector.toggleUserAgent()
+                        } label: {
+                            Label(collector.useMobileUserAgent ? "改用桌面版" : "改用手机版",
+                                  systemImage: "iphone")
+                        }
+                        Button {
+                            collector.openHomePage()
+                        } label: {
+                            Label("打开首页", systemImage: "house")
+                        }
+                        Button {
+                            collector.openLoginPage()
+                        } label: {
+                            Label("打开登录页", systemImage: "person.crop.circle")
+                        }
+                        Button {
+                            collector.reloadPage()
+                        } label: {
+                            Label("打开收藏页", systemImage: "heart")
+                        }
+                        Divider()
+                        Button {
+                            collector.goBack()
+                        } label: {
+                            Label("后退", systemImage: "chevron.backward")
+                        }
+                        .disabled(!collector.canGoBack)
+                        Button {
+                            collector.goForward()
+                        } label: {
+                            Label("前进", systemImage: "chevron.forward")
+                        }
+                        .disabled(!collector.canGoForward)
+                        Divider()
+                        Button {
+                            showLog = true
+                        } label: {
+                            Label("诊断日志", systemImage: "doc.text.magnifyingglass")
+                        }
+                        Button(role: .destructive) {
+                            cache.clear(platform)
+                        } label: {
+                            Label("清空本地缓存", systemImage: "trash.slash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("更多")
+
+                    Button {
+                        showWeb.toggle()
+                    } label: {
+                        Image(systemName: showWeb ? "list.bullet" : "safari")
+                    }
+                    .accessibilityLabel(showWeb ? "收藏列表" : "打开网页")
+
+                    Button {
+                        playAll()
+                    } label: {
+                        Image(systemName: "play.fill")
+                    }
+                    .disabled(collector.videos.isEmpty)
+                    .accessibilityLabel("全部播放")
+                }
+            }
+            .onAppear {
+                cachePolicy = ShortVideoCachePolicy.load(for: platform)
+                collector.loadFavoritesPageIfNeeded()
+                Task { await autoSync() }
+                // 直链两小时左右就失效，过期了自动重抓一遍（不用用户点）。
+                if collector.isStale {
+                    showWeb = true
+                    collector.startCollecting()
+                }
+            }
+            .onDisappear {
+                if collector.isCollecting { collector.stopCollecting() }
+            }
+            .onChange(of: collector.phase) { phase in
+                guard phase == .finished else { return }
+                Task { await pushAfterCollect() }
+                // 抓完后是否立刻缓存到本地：看这个平台的按需缓存开关。
+                // 抖音默认关（在线播也稳，省空间）；TikTok 默认开（没本地文件迟早播不了）。
+                if ShortVideoCachePolicy.load(for: platform).isCachingEnabled {
+                    cache.cacheAll(collector.videos, platform: platform)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .shortVideoDidSync)) { _ in
+                collector.applyRemote(ShortVideoStore.load(platform))
+            }
+            .confirmationDialog("清空已抓取的收藏？", isPresented: $showClearConfirm, titleVisibility: .visible) {
+                Button("清空", role: .destructive) { collector.clear() }
+                Button("取消", role: .cancel) {}
+            }
+            .sheet(isPresented: $showSyncSettings) {
+                ShortVideoSyncSettingsView()
+            }
+        }
+    }
+
+    private var cachedSizeText: String {
+        let bytes = ShortVideoMediaCache.cachedBytes(platform)
+        guard bytes > 0 else { return "" }
+        return "（\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))）"
+    }
+
+    private var legacyCount: Int {
+        collector.videos.filter { ($0.videoID ?? "").isEmpty }.count
+    }
+
+    // MARK: - 网页
+
+    private var webPane: some View {
+        VStack(spacing: 0) {
+            ShortVideoWebView(webView: collector.webView)
+                .overlay(alignment: .top) {
+                    if collector.isCollecting {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("正在抓取 \(collector.videos.count) 条")
+                                .font(.footnote)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.thinMaterial, in: Capsule())
+                        .padding(.top, 10)
+                    }
+                }
+
+            VStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: collector.loggedIn ? "checkmark.circle.fill" : "person.crop.circle.badge.exclamationmark")
+                        .font(.footnote)
+                        .foregroundStyle(collector.loggedIn ? Color.green : Color.secondary)
+                    Text(collector.loggedIn ? "已登录 \(platform.albumName)" : "未登录：在网页里点「登录」")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
+                Text(collector.status)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if collector.missingStableID {
+                    Text("有 \(legacyCount) 条是旧数据，重新抓取一次才能长期播放")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if let scriptError = collector.lastScriptError {
+                    Text("页面报错：\(scriptError)")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                HStack(spacing: 10) {
+                    if collector.isCollecting {
+                        Button {
+                            collector.stopCollecting()
+                        } label: {
+                            Label("停止抓取", systemImage: "stop.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        Button {
+                            collector.startCollecting()
+                        } label: {
+                            Label("开始抓取", systemImage: "arrow.down.circle")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+
+                    Button {
+                        collector.openHomePage()
+                    } label: {
+                        Image(systemName: "house")
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("打开首页登录")
+
+                    Button {
+                        collector.openLoginPage()
+                    } label: {
+                        Image(systemName: "person.crop.circle.badge.checkmark")
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("打开登录页")
+
+                    Button {
+                        collector.reloadPage()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("重新加载收藏页")
+
+                    if !collector.videos.isEmpty {
+                        Button {
+                            showWeb = false
+                        } label: {
+                            Image(systemName: "list.bullet")
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("收藏列表")
+                    }
+                }
+            }
+            .padding(12)
+            .background(.bar)
+        }
+        .sheet(isPresented: $showLog) {
+            ShortVideoLogView(lines: collector.logLines)
+        }
+    }
+
+    // MARK: - 列表
+
+
+    private var listPane: some View {
+        List {
+            Section {
+                Toggle(isOn: Binding(
+                    get: { cachePolicy.isCachingEnabled },
+                    set: { cachePolicy = $0 ? .cacheOnDemand : .onlineOnly }
+                )) {
+                    Label {
+                        Text("按需缓存到本地")
+                    } icon: {
+                        Image(systemName: "arrow.down.circle")
+                    }
+                }
+                .onChange(of: cachePolicy) { _ in cachePolicy.save(for: platform) }
+            } header: {
+                Text("缓存")
+            } footer: {
+                Text(platform == .tiktok
+                     ? "TikTok 没有不过期的播放地址，开着才能跨设备一直听；不想占空间就关掉，临时听仍在线播。"
+                     : "抖音有 video_id 长期地址，关掉也能稳定在线听，最省本地空间。")
+            }
+            Section {
+                ForEach(collector.videos) { video in
+                    Button {
+                        play(video)
+                    } label: {
+                        row(video)
+                    }
+                    .buttonStyle(.plain)
+                }
+            } header: {
+                Text("\(collector.videos.count) 条 · 本地 \(ShortVideoMediaCache.cachedCount(platform))\(cachedSizeText) · \(collector.status)")
+            }
+        }
+        .listStyle(.plain)
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 8) {
+                if let syncMessage {
+                    Text(syncMessage)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                cacheRow
+                HStack(spacing: 12) {
+                    Button {
+                        saveAsPlaylist()
+                    } label: {
+                        Label("存为歌单", systemImage: "text.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        showClearConfirm = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(12)
+            .background(.bar)
+        }
+        .sheet(isPresented: $showLog) {
+            ShortVideoLogView(lines: collector.logLines)
+        }
+    }
+
+    @ViewBuilder
+    private var cacheRow: some View {
+        if cache.isRunning, cache.runningPlatform == platform {
+            HStack(spacing: 8) {
+                ProgressView(value: cache.total > 0
+                             ? Double(cache.completed) / Double(cache.total)
+                             : 0)
+                Text("正在缓存 \(cache.completed)/\(cache.total)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("停止") { cache.cancel() }
+                    .font(.caption2)
+            }
+        } else {
+            HStack(spacing: 8) {
+                Text("本地已缓存 \(ShortVideoMediaCache.cachedCount(platform))/\(collector.videos.count)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button {
+                    cache.cacheAll(collector.videos, platform: platform)
+                } label: {
+                    Label("缓存到本地", systemImage: "arrow.down.to.line")
+                        .font(.caption2)
+                }
+                .disabled(collector.videos.isEmpty || cache.isRunning)
+            }
+        }
+    }
+
+    private func row(_ video: ShortVideo) -> some View {
+        HStack(spacing: 12) {
+            AsyncImage(url: video.cover.flatMap(URL.init(string:))) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                Color.secondary.opacity(0.15)
+            }
+            .frame(width: 54, height: 72)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(video.title)
+                    .font(.subheadline)
+                    .lineLimit(2)
+                Text(video.author.isEmpty ? platform.albumName : video.author)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(durationText(video.durationMS))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer(minLength: 0)
+
+            if ShortVideoMediaCache.localURL(platform: platform, id: video.id) != nil {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Image(systemName: "play.circle.fill")
+                .font(.title3)
+                .foregroundStyle(.tint)
+        }
+        .contentShape(Rectangle())
+    }
+
+    // MARK: - 操作
+
+    private func play(_ video: ShortVideo) {
+        guard let item = video.pluginItem else { return }
+        let track = Track(pluginItem: item)
+        PlayerService.shared.repeatMode = .one
+        PlayerService.shared.play(
+            tracks: [track],
+            source: .plugins,
+            context: .plugins(name: platform.displayName)
+        )
+    }
+
+    private func playAll() {
+        let tracks = collector.videos.compactMap { $0.pluginItem }.map { Track(pluginItem: $0) }
+        guard !tracks.isEmpty else { return }
+        PlayerService.shared.repeatMode = .all
+        PlayerService.shared.play(
+            tracks: tracks,
+            source: .plugins,
+            context: .plugins(name: platform.displayName)
+        )
+    }
+
+    private func saveAsPlaylist() {
+        let items = collector.videos.compactMap { $0.pluginItem }
+        guard !items.isEmpty else { return }
+        do {
+            try ImportedPlaylistStore.shared.importItems(
+                items,
+                name: platform.displayName,
+                source: platform.albumName
+            )
+            ToastCenter.shared.show("已保存到本地歌单「\(platform.displayName)」")
+        } catch {
+            ToastCenter.shared.show("保存失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func durationText(_ milliseconds: Int) -> String {
+        guard milliseconds > 0 else { return "--:--" }
+        let total = milliseconds / 1000
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    // MARK: - 同步
+
+    private func autoSync() async {
+        let config = ShortVideoSyncConfig.load()
+        guard config.isValid else { return }
+        do {
+            try await ShortVideoSyncService.synchronize(config)
+            collector.applyRemote(ShortVideoStore.load(platform))
+            syncMessage = "已与 WebDAV 同步（\(collector.videos.count) 条）"
+        } catch {
+            syncMessage = "同步失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func pushAfterCollect() async {
+        let config = ShortVideoSyncConfig.load()
+        guard config.isValid else { return }
+        do {
+            try await ShortVideoSyncService.synchronize(config)
+            syncMessage = "已同步到 WebDAV"
+        } catch {
+            syncMessage = "同步失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private struct ShortVideoLogView: View {
+    let lines: [String]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    if lines.isEmpty {
+                        Text("还没有日志")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(lines.indices, id: \.self) { index in
+                        Text(lines[index])
+                            .font(.system(.caption2, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(12)
+            }
+            .navigationTitle("诊断日志")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct ShortVideoWebView: UIViewRepresentable {
+    let webView: WKWebView
+
+    func makeUIView(context: Context) -> WKWebView { webView }
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+#endif

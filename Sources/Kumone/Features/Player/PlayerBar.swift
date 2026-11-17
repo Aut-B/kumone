@@ -4,6 +4,7 @@ struct PlayerBar: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
     @EnvironmentObject private var settings: SettingsManager
+    @State private var showPlayerSettings = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -193,7 +194,7 @@ struct PlayerBar: View {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 12.5, weight: .bold))
                         .foregroundStyle(.white)
-                        .contentTransition(.opacity)
+                        .compatContentTransitionOpacity()
                 }
             }
         }
@@ -425,7 +426,7 @@ struct ScrubberLane: View {
         .onHover { hovering in
             withAnimation(AppAnimation.quick) { isHovering = hovering }
         }
-        .animation(.spring(response: 0.24, dampingFraction: 0.72), value: isDragging)
+        .animation(.compatSpring(response: 0.24, dampingFraction: 0.72), value: isDragging)
     }
 
     private var thumbDiameter: CGFloat {

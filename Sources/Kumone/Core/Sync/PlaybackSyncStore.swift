@@ -15,11 +15,11 @@ struct PlaybackSyncStore {
         let previousRevision: UUID?
     }
     private var publishedQueues: [UUID: PublishedQueue] = [:]
-    private var lastQueueCleanup: [UUID: ContinuousClock.Instant] = [:]
-    private let now: @Sendable () -> ContinuousClock.Instant
+    private var lastQueueCleanup: [UUID: CompatClock.Instant] = [:]
+    private let now: @Sendable () -> CompatClock.Instant
     private var selectedQueue: URL?
 
-    init(now: @escaping @Sendable () -> ContinuousClock.Instant) {
+    init(now: @escaping @Sendable () -> CompatClock.Instant) {
         self.now = now
     }
 
@@ -126,7 +126,7 @@ struct PlaybackSyncStore {
             repository.invalidateCache(at: file)
         }
         let instant = now()
-        if lastQueueCleanup[record.id].map({ $0.duration(to: instant) >= .seconds(24 * 60 * 60) }) ?? true {
+        if lastQueueCleanup[record.id].map({ $0.duration(to: instant) >= Double(24 * 60 * 60) }) ?? true {
             do {
                 if try removeExpiredQueues(for: record.id, directory: directory, repository: repository) {
                     // Update only on success so the next publication retries failures.

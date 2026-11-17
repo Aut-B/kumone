@@ -7,7 +7,7 @@ struct IOSPlaybackQueueView: View {
     @EnvironmentObject private var toasts: ToastCenter
 
     var body: some View {
-        NavigationStack {
+        AppNavStack {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     PlaybackHandoffList()
@@ -17,14 +17,34 @@ struct IOSPlaybackQueueView: View {
                         PlaybackQueueSectionLabel("正在播放")
                         PlaybackQueueRow(track: current, isCurrent: true)
 
-                        if !player.upcomingTracks.isEmpty {
+                        if !player.queueSections.inserted.isEmpty {
+                            PlaybackQueueSectionLabel("插播")
+                                .padding(.top, 10)
+                            ForEach(
+                                Array(player.queueSections.inserted.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { _, track in
+                                PlaybackQueueRow(track: track, isCurrent: false)
+                            }
+                        }
+                        if !player.queueSections.upcoming.isEmpty {
                             PlaybackQueueSectionLabel("即将播放")
                                 .padding(.top, 10)
                             ForEach(
-                                Array(player.upcomingTracks.prefix(100).enumerated()),
+                                Array(player.queueSections.upcoming.prefix(100).enumerated()),
                                 id: \.offset
                             ) { index, track in
                                 PlaybackQueueRow(track: track, isCurrent: false, upcomingIndex: index)
+                            }
+                        }
+                        if !player.queueSections.pending.isEmpty {
+                            PlaybackQueueSectionLabel("稍后播放")
+                                .padding(.top, 10)
+                            ForEach(
+                                Array(player.queueSections.pending.prefix(100).enumerated()),
+                                id: \.offset
+                            ) { _, track in
+                                PlaybackQueueRow(track: track, isCurrent: false)
                             }
                         }
                     } else {

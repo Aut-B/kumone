@@ -1,0 +1,134 @@
+#if os(iOS)
+import Foundation
+
+/// 把「抓到的签名直链」换成「不会过期的地址」。
+///
+/// 抖音 / TikTok 网页里拿到的 `play_addr.url_list` 带 `expire` 签名，两小时左右
+/// 就失效——放着不动的收藏会一条条变成「不能听」，同步到另一台手机更是全都不能听。
+///
+/// 站点自己还有一个只用 `video_id` 的老播放接口，它会 302 到一个新鲜的 CDN 地址，
+/// 不带过期签名。我们先探一下它通不通：通就用它（长期有效、跨设备有效），
+/// 不通再退回签名直链（至少当下能播）。
+enum ShortVideoResolver {
+    private final class Cache: @unchecked Sendable {
+        private struct Entry {
+            /// 空字符串表示「探过、不通」，别再试。
+            let url: String
+            let at: Date
+        }
+
+        private let lock = NSLock()
+        private var entries: [String: Entry] = [:]
+
+        func get(_ key: String) -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let entry = entries[key] else { return nil }
+            let ttl: TimeInterval = entry.url.isEmpty ? 600 : 1800
+            guard Date().timeIntervalSince(entry.at) < ttl else { return nil }
+            return entry.url
+        }
+
+        func set(_ key: String, _ url: String) {
+            lock.lock()
+            entries[key] = Entry(url: url, at: Date())
+            lock.unlock()
+        }
+    }
+
+    private static let cache = Cache()
+
+    /// 刚抓下来的签名直链最稳、也没有探测延迟，30 分钟内直接用它；
+    /// 超过 30 分钟的（放久了 / 从别的手机同步过来的）才去要长期地址。
+    private static let freshWindow: TimeInterval = 30 * 60
+
+    static func resolve(platform: ShortVideoPlatform,
+                        videoID: String?,
+                        fallback: String,
+                        capturedAt: Double) async -> URL? {
+        if capturedAt > 0 {
+            let age = Date().timeIntervalSince1970 - capturedAt
+            if age >= 0, age < freshWindow {
+                return URL(string: fallback)
+            }
+        }
+        let trimmed = (videoID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            let key = "\(platform.rawValue):\(trimmed)"
+            if let cached = cache.get(key) {
+                // 探过且不通：直接走直链，别再等一遍。
+                return cached.isEmpty ? URL(string: fallback) : URL(string: cached)
+            }
+            for candidate in stableURLs(platform: platform, videoID: trimmed) {
+                if await probe(candidate, platform: platform) {
+                    cache.set(key, candidate.absoluteString)
+                    return candidate
+                }
+            }
+            cache.set(key, "")
+        }
+        return URL(string: fallback)
+    }
+
+    /// TikTok 的 `aweme/v1/play/` 只认 App 的 UA，桌面 Safari 的 UA 会被直接拒掉，
+    /// 探出来全是 403——以前同步过来的 TikTok 一条都播不了就是这个原因。
+    static let tiktokAppUserAgent =
+        "com.zhiliaoapp.musically/2022803040 (Linux; U; Android 12; en; "
+        + "Pixel 6; Build/SQ3A.220705.004;tt-ok/3.12.13.4-tiktok) "
+        + "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 "
+        + "Chrome/99.0.4844.88 Mobile Safari/537.36"
+
+    /// 老播放接口，多个域名各试一次。
+    static func stableURLs(platform: ShortVideoPlatform, videoID: String) -> [URL] {
+        let encoded = videoID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? videoID
+        let hosts: [String]
+        switch platform {
+        case .douyin:
+            hosts = [
+                "https://www.iesdouyin.com/aweme/v1/play/",
+                "https://aweme.snssdk.com/aweme/v1/play/",
+            ]
+        case .tiktok:
+            hosts = [
+                "https://api16-normal-c-useast1a.tiktokv.com/aweme/v1/play/",
+                "https://api19-normal-c-useast1a.tiktokv.com/aweme/v1/play/",
+                "https://api22-normal-c-useast1a.tiktokv.com/aweme/v1/play/",
+                "https://api-h2.tiktokv.com/aweme/v1/play/",
+                "https://api.tiktokv.com/aweme/v1/play/",
+            ]
+        }
+        return hosts.compactMap {
+            URL(string: $0 + "?video_id=\(encoded)&ratio=720p&line=0")
+        }
+    }
+
+    /// 只取两个字节确认能播，别把整段视频拉下来。
+    private static func probe(_ url: URL, platform: ShortVideoPlatform) async -> Bool {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        request.setValue(
+            platform == .tiktok ? tiktokAppUserAgent : platform.userAgent,
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue(platform.referer, forHTTPHeaderField: "Referer")
+        request.timeoutInterval = 6
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 4
+        configuration.timeoutIntervalForResource = 7
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            guard http.statusCode == 200 || http.statusCode == 206 else { return false }
+            let type = (http.mimeType ?? "").lowercased()
+            return type.isEmpty || type.contains("video") || type.contains("octet-stream")
+        } catch {
+            return false
+        }
+    }
+}
+#endif

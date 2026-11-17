@@ -74,10 +74,10 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
+        .compatHiddenScrollContentBackground()
 #if os(macOS)
         // Unlike .hidden, .never also applies when a mouse is connected.
-        .scrollIndicators(.never)
+        .compatScrollIndicatorsNever()
 #endif
         .safeAreaInset(edge: .bottom, spacing: 0) {
             accountFooter

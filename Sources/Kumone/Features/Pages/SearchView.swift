@@ -117,6 +117,8 @@ struct SearchView: View {
             model.setQuery(searchText)
             Task { await model.load(tab: model.tab) }
         }
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
         .onChange(of: searchText) { newValue in
             model.setQuery(newValue)
             Task {
@@ -132,6 +134,45 @@ struct SearchView: View {
             await model.load(tab: model.tab)
         }
     }
+
+    #if os(iOS)
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+            TextField("搜索歌曲、歌手、专辑、歌单", text: $searchText)
+                .textFieldStyle(PlainTextFieldStyle())
+                .submitLabel(.search)
+                .disableAutocorrection(true)
+                .autocapitalization(.none)
+                .accessibilityIdentifier("kumone.search.field")
+                .onSubmit {
+                    model.setQuery(searchText)
+                    Task { await model.load(tab: model.tab) }
+                }
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清空搜索")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(minHeight: 44)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .padding(.horizontal, Theme.Layout.contentInset)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+    #endif
 
     @ViewBuilder
     private var searchContent: some View {

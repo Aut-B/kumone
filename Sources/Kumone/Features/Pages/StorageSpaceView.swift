@@ -15,12 +15,13 @@ struct StorageSpaceView: View {
             Section {
                 VStack(alignment: .leading, spacing: 12) {
                     if let capacity = model.snapshot?.device {
-                        ViewThatFits(in: .horizontal) {
+                        CompatViewThatFits {
                             HStack(alignment: .firstTextBaseline) {
                                 Text(deviceName).font(.headline)
                                 Spacer()
                                 capacityText(capacity)
                             }
+                        } narrow: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(deviceName).font(.headline)
                                 capacityText(capacity)
@@ -37,7 +38,11 @@ struct StorageSpaceView: View {
             }
 
             Section {
-                LabeledContent(model.snapshot?.partial == true ? String(localized: "已统计的 Kumone 占用") : String(localized: "Kumone 占用")) {
+                // `LabeledContent` is iOS 16+; iOS 15 gets the same two-part
+                // row built by hand.
+                HStack {
+                    Text(model.snapshot?.partial == true ? String(localized: "已统计的 Kumone 占用") : String(localized: "Kumone 占用"))
+                    Spacer(minLength: 12)
                     Text(model.snapshot.map { format($0.appBytes) } ?? "—")
                         .font(.body.weight(.semibold)).monospacedDigit()
                 }
@@ -131,7 +136,7 @@ struct StorageSpaceView: View {
                 Section { Text(message).font(.footnote).foregroundStyle(.secondary).accessibilityAddTraits(.updatesFrequently) }
             }
         }
-        .formStyle(.grouped)
+        .compatFormGrouped()
         .navigationTitle("存储空间")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -194,8 +199,10 @@ struct StorageSpaceView: View {
             .font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
     }
     private func usageRow(_ title: LocalizedStringKey, icon: String, category: StorageCategory) -> some View {
-        LabeledContent {
+        HStack {
+            Label(title, systemImage: icon)
+            Spacer(minLength: 12)
             Text(size(category)).monospacedDigit().foregroundStyle(.secondary)
-        } label: { Label(title, systemImage: icon) }
+        }
     }
 }

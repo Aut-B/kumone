@@ -2,25 +2,43 @@ import XCTest
 
 final class KumoneIOSUITests: XCTestCase {
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testSearchFieldIsVisibleFromLaunch() throws {
         let app = XCUIApplication()
+        app.launchArguments = ["-kumone.search.tab", "-kumone.ui.test"]
+        app.launch()
+        assertSearchFieldVisible(in: app)
+    }
+
+    @MainActor
+    func testSearchTabShowsSearchField() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-kumone.ui.test"]
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        XCTAssertTrue(true)
+        let searchTab = app.descendants(matching: .any)["kumone.tab.search"]
+        XCTAssertTrue(searchTab.waitForExistence(timeout: 20), "Search tab did not appear")
+        searchTab.tap()
+
+        assertSearchFieldVisible(in: app)
+    }
+
+    @MainActor
+    private func assertSearchFieldVisible(in app: XCUIApplication) {
+        let searchField = app.textFields["kumone.search.field"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 20), "Search field did not appear")
+
+        let deadline = Date().addingTimeInterval(10)
+        while !searchField.isHittable && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+
+        XCTAssertTrue(searchField.isHittable, "Search field is not hittable")
+        XCTAssertGreaterThan(searchField.frame.width, 100, "Search field is too narrow")
+        XCTAssertGreaterThan(searchField.frame.height, 20, "Search field is too short")
+        XCTAssertLessThan(searchField.frame.minY, app.frame.height / 2, "Search field is outside the visible top half")
     }
 }

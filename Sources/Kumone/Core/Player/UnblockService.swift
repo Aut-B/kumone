@@ -11,6 +11,11 @@ enum UnblockService {
         KuwoAudioSourceProvider(),
     ]
 
+    /// Must stay identical to `SettingsManager.Keys.unblockFallback`.
+    /// Read straight from UserDefaults because `SettingsManager` is @MainActor
+    /// while this helper is not.
+    static let fallbackDefaultsKey = "settings.enableUnblockFallback"
+
     struct Resolution {
         let source: ResolvedAudioSource?
         let attemptedSources: Set<AudioSourceID>
@@ -34,6 +39,14 @@ enum UnblockService {
                 if Task.isCancelled { return Resolution(source: nil, attemptedSources: newlyAttemptedSources) }
                 logFailure(source: .pyncmd, operation: "resolve", error: error)
             }
+        }
+
+        // The fuzzy providers stay behind the user's fallback switch: even with a
+        // strict matcher they can hand back a live take, a cover or a promo clip
+        // instead of the real recording. pyncmd above resolves by the original
+        // NetEase id and is always an exact match.
+        guard UserDefaults.standard.bool(forKey: fallbackDefaultsKey) else {
+            return Resolution(source: nil, attemptedSources: newlyAttemptedSources)
         }
 
         for provider in fallbackProviders where enabledSources.contains(provider.id)
@@ -62,16 +75,7 @@ enum UnblockService {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AudioSourceProviderError.invalidResponse
         }
-        guard let bitrate = object["br"] as? Int, bitrate > 0 else {
-            throw AudioSourceProviderError.missingBitrate
-        }
-        guard let urlValue = object["url"] as? String else {
-            throw AudioSourceProviderError.missingStreamURL
-        }
-        guard let url = URL(string: urlValue.replacingOccurrences(of: "http://", with: "https://")) else {
-            throw AudioSourceProviderError.invalidURL
-        }
-        return ResolvedAudioSource(id: .pyncmd, displayName: AudioSourceID.pyncmd.displayName, url: url)
+        throw lastError
     }
 
     private static func logFailure(source: AudioSourceID, operation: String, error: Error) {
