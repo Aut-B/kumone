@@ -13,3 +13,4 @@ ios/Config/CarPlay.local.xcconfig
 ios/Config/Generated/
 # Per-machine TestFlight signing (team ID); see ios/Config/TestFlight.xcconfig
 ios/Config/TestFlight.local.xcconfig
+.dot/
