@@ -133,6 +133,19 @@ final class SettingsManager: ObservableObject {
         static let unblockFallback = "settings.enableUnblockFallback"
         static let unblockSources = "settings.enabledUnblockSources"
         static let mixWithOthers = "settings.mixWithOthers"
+        static let progressBarStyle = "settings.progressBarStyle"   // 0流光 1辉光 2极光 3波浪
+        static let playerBreath = "settings.playerBreath"           // 0...1 呼吸光晕强度
+        static let djVisual = "settings.djVisual"                   // DJ 节奏脉冲
+        static let djIntensity = "settings.djIntensity"             // 0...1
+        static let progressAccentHex = "settings.progressAccentHex" // "" = follow accent
+        static let lyricFontSize = "settings.lyricFontSize"         // 12...28
+        static let lyricSpacing = "settings.lyricSpacing"           // 14...40
+        static let lyricBlurAmount = "settings.lyricBlurAmount"     // 0...10
+        static let lyricTiltX = "settings.lyricTiltX"               // -30...30
+        static let lyricTiltY = "settings.lyricTiltY"               // -20...20
+        static let lyricGlow = "settings.lyricGlow"                 // 0...5
+        static let circularCover = "settings.circularCover"
+        static let circularCoverSpin = "settings.circularCoverSpin"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
         #if os(macOS)
@@ -373,6 +386,63 @@ final class SettingsManager: ObservableObject {
         }
     }
 
+    // MARK: - Player & lyrics cosmetics (ported from the 0.3.24 release lane)
+
+    @Published var progressBarStyle: Int {
+        didSet { UserDefaults.standard.set(progressBarStyle, forKey: Keys.progressBarStyle) }
+    }
+
+    /// Breathing ambient glow behind the player, 0 (off) ... 1 (full).
+    @Published var playerBreath: Double {
+        didSet { UserDefaults.standard.set(playerBreath, forKey: Keys.playerBreath) }
+    }
+
+    /// DJ-style beat pulse rings (time-driven, decorative).
+    @Published var djVisual: Bool {
+        didSet { UserDefaults.standard.set(djVisual, forKey: Keys.djVisual) }
+    }
+
+    @Published var djIntensity: Double {
+        didSet { UserDefaults.standard.set(djIntensity, forKey: Keys.djIntensity) }
+    }
+
+    /// Custom progress-bar color (hex RRGGBB); empty follows the theme accent.
+    @Published var progressAccentHex: String {
+        didSet { UserDefaults.standard.set(progressAccentHex, forKey: Keys.progressAccentHex) }
+    }
+
+    @Published var lyricFontSize: Double {
+        didSet { UserDefaults.standard.set(lyricFontSize, forKey: Keys.lyricFontSize) }
+    }
+
+    @Published var lyricSpacing: Double {
+        didSet { UserDefaults.standard.set(lyricSpacing, forKey: Keys.lyricSpacing) }
+    }
+
+    @Published var lyricBlurAmount: Double {
+        didSet { UserDefaults.standard.set(lyricBlurAmount, forKey: Keys.lyricBlurAmount) }
+    }
+
+    @Published var lyricTiltX: Double {
+        didSet { UserDefaults.standard.set(lyricTiltX, forKey: Keys.lyricTiltX) }
+    }
+
+    @Published var lyricTiltY: Double {
+        didSet { UserDefaults.standard.set(lyricTiltY, forKey: Keys.lyricTiltY) }
+    }
+
+    @Published var lyricGlow: Double {
+        didSet { UserDefaults.standard.set(lyricGlow, forKey: Keys.lyricGlow) }
+    }
+
+    @Published var circularCover: Bool {
+        didSet { UserDefaults.standard.set(circularCover, forKey: Keys.circularCover) }
+    }
+
+    @Published var circularCoverSpin: Bool {
+        didSet { UserDefaults.standard.set(circularCoverSpin, forKey: Keys.circularCoverSpin) }
+    }
+
     /// Multiplier applied to the main interface's artwork tint.
     @Published var mainWindowAmbientBackgroundIntensity: Double {
         didSet {
@@ -501,6 +571,19 @@ final class SettingsManager: ObservableObject {
             Self.mainWindowAmbientBackgroundIntensityRange.upperBound
         )
         mixWithOthers = defaults.object(forKey: Keys.mixWithOthers) as? Bool ?? false
+        progressBarStyle = defaults.object(forKey: Keys.progressBarStyle) as? Int ?? 0
+        playerBreath = defaults.object(forKey: Keys.playerBreath) as? Double ?? 0.6
+        djVisual = defaults.object(forKey: Keys.djVisual) as? Bool ?? false
+        djIntensity = defaults.object(forKey: Keys.djIntensity) as? Double ?? 0.5
+        progressAccentHex = defaults.string(forKey: Keys.progressAccentHex) ?? ""
+        lyricFontSize = defaults.object(forKey: Keys.lyricFontSize) as? Double ?? 20
+        lyricSpacing = defaults.object(forKey: Keys.lyricSpacing) as? Double ?? 24
+        lyricBlurAmount = defaults.object(forKey: Keys.lyricBlurAmount) as? Double ?? 4
+        lyricTiltX = defaults.object(forKey: Keys.lyricTiltX) as? Double ?? 8
+        lyricTiltY = defaults.object(forKey: Keys.lyricTiltY) as? Double ?? 0
+        lyricGlow = defaults.object(forKey: Keys.lyricGlow) as? Double ?? 2.5
+        circularCover = defaults.object(forKey: Keys.circularCover) as? Bool ?? false
+        circularCoverSpin = defaults.object(forKey: Keys.circularCoverSpin) as? Bool ?? false
         #if os(iOS)
         soundEffectPreset = SoundEffectPreferences.preset(
             from: defaults, key: Keys.soundEffectPreset)

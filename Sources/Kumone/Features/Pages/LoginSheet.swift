@@ -245,7 +245,8 @@ struct LoginSheet: View {
 
                 var consecutiveErrors = 0
                 while !Task.isCancelled {
-                    try await Task.sleep(for: .seconds(1.2))
+                    // Task.sleep(for:) is iOS 16+; nanoseconds works everywhere.
+                    try await Task.sleep(nanoseconds: 1_200_000_000)
                     let check: MusicAPI.QRCheckResponse
                     do {
                         check = try await MusicAPI.qrCheck(unikey: key)
