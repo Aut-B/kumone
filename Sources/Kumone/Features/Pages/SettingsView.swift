@@ -115,50 +115,215 @@ struct SettingsView: View {
         #endif
     }
 
-    private var settingsForm: some View {
-        Form {
-            Section("播放") {
-                Picker("音质", selection: $settings.audioQuality) {
-                    ForEach(AudioQuality.allCases) { quality in
-                        Text(quality.displayName).tag(quality)
-                    }
+    // The form is split into extracted sections: a single Form expression this
+    // large exceeds the type-checker's budget ("unable to type-check in
+    // reasonable time" / bogus cascade errors on the trailing closure).
+
+    @ViewBuilder
+    private var playbackSection: some View {
+        Section("播放") {
+            Picker("音质", selection: $settings.audioQuality) {
+                ForEach(AudioQuality.allCases) { quality in
+                    Text(quality.displayName).tag(quality)
                 }
-                Text("无损与 Hi-Res 需要黑胶 VIP，未开通时自动回落到可用音质")
+            }
+            Text("无损与 Hi-Res 需要黑胶 VIP，未开通时自动回落到可用音质")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            #if os(iOS)
+            if #available(iOS 16.0, *) {
+                NavigationLink(value: SettingsPage.soundEffects) {
+                    soundEffectsRowLabel
+                }
+            } else {
+                // iOS 15 has no value-based links: the link carries its own
+                // destination instead of pushing onto the sheet's path.
+                NavigationLink {
+                    SoundEffectsPage()
+                } label: {
+                    soundEffectsRowLabel
+                }
+            }
+            .accessibilityValue(settings.soundEffectPreset.displayName)
+            .accessibilityIdentifier("settingsSoundEffectsButton")
+            #endif
+            Toggle("灰色歌曲解锁", isOn: $settings.enableUnblock)
+            Text("无版权 / 下架歌曲按网易云原始 ID 从 pyncmd 精确匹配播放")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle("允许酷狗 / 酷我兜底", isOn: $settings.enableUnblockFallback)
+                .disabled(!settings.enableUnblock)
+            Text("默认关闭。开启后仅当 pyncmd 查无此曲时才回退到下面勾选的音源——它们按歌名和时长匹配，可能匹配成翻唱或别的歌")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            NavigationLink("播放器设置") {
+                PlayerSettingsSheet()
+            }
+            Text("进度条样式、背景光晕、DJ 灯效、封面样式与歌词显示（灵感来自 Beans）")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var audioSourceSection: some View {
+        if settings.enableUnblock {
+            Section {
+                ForEach(AudioSourceID.allCases, id: \.self) { source in
+                    Toggle(source.displayName, isOn: Binding(
+                        get: { settings.enabledAudioSourceIDs.contains(source) },
+                        set: { isEnabled in
+                            if isEnabled {
+                                settings.enabledAudioSourceIDs.insert(source)
+                            } else {
+                                settings.enabledAudioSourceIDs.remove(source)
+                            }
+                        }
+                    ))
+                }
+            } header: {
+                Text("音源")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var appearanceSection: some View {
+        Section("外观") {
+            Picker("主题", selection: $settings.appearance) {
+                ForEach(AppAppearance.allCases) { appearance in
+                    Text(appearance.displayName).tag(appearance)
+                }
+            }
+            #if os(macOS)
+            // macOS only renders two now-playing layouts — 黑胶 and the
+            // regular page; the iOS 沉浸/简洁 options all fall back to the
+            // regular page here, so offering four was misleading (#105).
+            // Map any non-vinyl value onto 经典模式 so a stored default (e.g.
+            // 沉浸模式) still shows a valid selection.
+            Picker("播放页模式", selection: Binding(
+                get: { settings.nowPlayingMode == .vinyl ? .vinyl : .classic },
+                set: { settings.nowPlayingMode = $0 }
+            )) {
+                Text(NowPlayingMode.vinyl.displayName).tag(NowPlayingMode.vinyl)
+                Text(NowPlayingMode.classic.displayName).tag(NowPlayingMode.classic)
+            }
+            #else
+            Picker("播放页模式", selection: $settings.nowPlayingMode) {
+                ForEach(NowPlayingMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            Picker("横屏播放页样式", selection: $settings.landscapeNowPlayingStyle) {
+                ForEach(LandscapeNowPlayingStyle.allCases) { style in
+                    Text(style.displayName).tag(style)
+                }
+            }
+            Text("iPhone 横放或 iPad 打开播放页时使用；竖屏仍按上面的「播放页模式」")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            #endif
+            Toggle("点击封面打开专辑", isOn: $settings.openAlbumOnArtworkClick)
+            Toggle("显示歌词翻译", isOn: $settings.showLyricsTranslation)
+            Toggle("逐字歌词（卡拉OK）", isOn: $settings.verbatimLyrics)
+            Picker("日文歌词读音", selection: $settings.lyricsAnnotation) {
+                ForEach(LyricsAnnotation.allCases) { annotation in
+                    Text(annotation.displayName).tag(annotation)
+                }
+            }
+            Text("罗马音在歌词上方另起一行，汉字读音把假名标在汉字正上方；缺少官方罗马音时自动生成读音")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle("主界面环境色", isOn: $settings.showMainWindowAmbientBackground)
+            if settings.showMainWindowAmbientBackground {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("背景色强度")
+                        Spacer()
+                        Text("\(Int(settings.mainWindowAmbientBackgroundIntensity * 100))%")
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(
+                        value: $settings.mainWindowAmbientBackgroundIntensity,
+                        in: SettingsManager.mainWindowAmbientBackgroundIntensityRange,
+                        step: 0.1
+                    )
+                    HStack {
+                        Text("50%")
+                        Spacer()
+                        Text("150%")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            #if os(macOS)
+            Toggle("桌面歌词", isOn: $settings.showDesktopLyrics)
+            if settings.showDesktopLyrics {
+                Toggle("桌面歌词水平居中", isOn: $settings.desktopLyricsCentered)
+            }
+            Text("在屏幕上悬浮显示当前歌词，可拖动调整位置")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            #endif
+        }
+    }
+
+    @ViewBuilder
+    private var storageSection: some View {
+        Section("存储") {
+            #if os(macOS)
+            NavigationLink(value: SettingsPage.storage) {
+                Label("存储空间", systemImage: "internaldrive")
+            }
+            #else
+            if #available(iOS 16.0, *) {
+                NavigationLink(value: SettingsPage.storage) {
+                    Label("存储空间", systemImage: "internaldrive")
+                }
+            } else {
+                // iOS 15 has no value-based links: the link carries its own
+                // destination instead of pushing onto a path.
+                NavigationLink {
+                    StorageSpaceView {
+                        dismiss()
+                        openDestination(.downloaded)
+                    }
+                } label: {
+                    Label("存储空间", systemImage: "internaldrive")
+                }
+            }
+            #endif
+        }
+    }
+
+    @ViewBuilder
+    private var updateSection: some View {
+        if showsUpdateControls {
+            Section("更新") {
+                Toggle("启动时自动检查更新", isOn: $settings.autoCheckUpdates)
+                Text("关闭后启动不再自动弹出更新提示，仍可手动检查更新")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 #if os(iOS)
-                if #available(iOS 16.0, *) {
-                    NavigationLink(value: SettingsPage.soundEffects) {
-                        soundEffectsRowLabel
-                    }
-                } else {
-                    // iOS 15 has no value-based links: the link carries its own
-                    // destination instead of pushing onto the sheet's path.
-                    NavigationLink {
-                        SoundEffectsPage()
+                if DistributionChannel.current == .sideload {
+                    Button {
+                        IOSUpdater.shared.check(interactive: true)
                     } label: {
-                        soundEffectsRowLabel
+                        Label("检查更新", systemImage: "arrow.triangle.2.circlepath")
                     }
+                    Text("装有 TrollStore（巨魔）可在应用内一键自动安装；否则可下载 IPA 用侧载工具重装（登录状态与设置保留）")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .accessibilityValue(settings.soundEffectPreset.displayName)
-                .accessibilityIdentifier("settingsSoundEffectsButton")
                 #endif
-                Toggle("灰色歌曲解锁", isOn: $settings.enableUnblock)
-                Text("无版权 / 下架歌曲按网易云原始 ID 从 pyncmd 精确匹配播放")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("允许酷狗 / 酷我兜底", isOn: $settings.enableUnblockFallback)
-                    .disabled(!settings.enableUnblock)
-                Text("默认关闭。开启后仅当 pyncmd 查无此曲时才回退到下面勾选的音源——它们按歌名和时长匹配，可能匹配成翻唱或别的歌")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                NavigationLink("播放器设置") {
-                    PlayerSettingsSheet()
-                }
-                Text("进度条样式、背景光晕、DJ 灯效、封面样式与歌词显示（灵感来自 Beans）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var settingsForm: some View {
+        Form {
+            playbackSection
 
             Section("插件音源") {
                 NavigationLink("插件调试日志") {
@@ -173,128 +338,11 @@ struct SettingsView: View {
             AutoMixSettingsSection()
             #endif
 
-            if settings.enableUnblock {
-                Section {
-                    ForEach(AudioSourceID.allCases, id: \.self) { source in
-                        Toggle(source.displayName, isOn: Binding(
-                            get: { settings.enabledAudioSourceIDs.contains(source) },
-                            set: { isEnabled in
-                                if isEnabled {
-                                    settings.enabledAudioSourceIDs.insert(source)
-                                } else {
-                                    settings.enabledAudioSourceIDs.remove(source)
-                                }
-                            }
-                        ))
-                    }
-                } header: {
-                    Text("音源")
-                }
-            }
+            audioSourceSection
 
-            Section("外观") {
-                Picker("主题", selection: $settings.appearance) {
-                    ForEach(AppAppearance.allCases) { appearance in
-                        Text(appearance.displayName).tag(appearance)
-                    }
-                }
-                #if os(macOS)
-                // macOS only renders two now-playing layouts — 黑胶 and the
-                // regular page; the iOS 沉浸/简洁 options all fall back to the
-                // regular page here, so offering four was misleading (#105).
-                // Map any non-vinyl value onto 经典模式 so a stored default (e.g.
-                // 沉浸模式) still shows a valid selection.
-                Picker("播放页模式", selection: Binding(
-                    get: { settings.nowPlayingMode == .vinyl ? .vinyl : .classic },
-                    set: { settings.nowPlayingMode = $0 }
-                )) {
-                    Text(NowPlayingMode.vinyl.displayName).tag(NowPlayingMode.vinyl)
-                    Text(NowPlayingMode.classic.displayName).tag(NowPlayingMode.classic)
-                }
-                #else
-                Picker("播放页模式", selection: $settings.nowPlayingMode) {
-                    ForEach(NowPlayingMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-                Picker("横屏播放页样式", selection: $settings.landscapeNowPlayingStyle) {
-                    ForEach(LandscapeNowPlayingStyle.allCases) { style in
-                        Text(style.displayName).tag(style)
-                    }
-                }
-                Text("iPhone 横放或 iPad 打开播放页时使用；竖屏仍按上面的「播放页模式」")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                #endif
-                Toggle("点击封面打开专辑", isOn: $settings.openAlbumOnArtworkClick)
-                Toggle("显示歌词翻译", isOn: $settings.showLyricsTranslation)
-                Toggle("逐字歌词（卡拉OK）", isOn: $settings.verbatimLyrics)
-                Picker("日文歌词读音", selection: $settings.lyricsAnnotation) {
-                    ForEach(LyricsAnnotation.allCases) { annotation in
-                        Text(annotation.displayName).tag(annotation)
-                    }
-                }
-                Text("罗马音在歌词上方另起一行，汉字读音把假名标在汉字正上方；缺少官方罗马音时自动生成读音")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("主界面环境色", isOn: $settings.showMainWindowAmbientBackground)
-                if settings.showMainWindowAmbientBackground {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("背景色强度")
-                            Spacer()
-                            Text("\(Int(settings.mainWindowAmbientBackgroundIntensity * 100))%")
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(
-                            value: $settings.mainWindowAmbientBackgroundIntensity,
-                            in: SettingsManager.mainWindowAmbientBackgroundIntensityRange,
-                            step: 0.1
-                        )
-                        HStack {
-                            Text("50%")
-                            Spacer()
-                            Text("150%")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                }
-                #if os(macOS)
-                Toggle("桌面歌词", isOn: $settings.showDesktopLyrics)
-                if settings.showDesktopLyrics {
-                    Toggle("桌面歌词水平居中", isOn: $settings.desktopLyricsCentered)
-                }
-                Text("在屏幕上悬浮显示当前歌词，可拖动调整位置")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                #endif
-            }
+            appearanceSection
 
-            Section("存储") {
-                #if os(macOS)
-                NavigationLink(value: SettingsPage.storage) {
-                    Label("存储空间", systemImage: "internaldrive")
-                }
-                #else
-                if #available(iOS 16.0, *) {
-                    NavigationLink(value: SettingsPage.storage) {
-                        Label("存储空间", systemImage: "internaldrive")
-                    }
-                } else {
-                    // iOS 15 has no value-based links: the link carries its own
-                    // destination instead of pushing onto a path.
-                    NavigationLink {
-                        StorageSpaceView {
-                            dismiss()
-                            openDestination(.downloaded)
-                        }
-                    } label: {
-                        Label("存储空间", systemImage: "internaldrive")
-                    }
-                }
-                #endif
-            }
+            storageSection
 
             #if os(macOS)
             Section("通用") {
@@ -322,26 +370,7 @@ struct SettingsView: View {
                 }
             }
 
-            if showsUpdateControls {
-                Section("更新") {
-                    Toggle("启动时自动检查更新", isOn: $settings.autoCheckUpdates)
-                    Text("关闭后启动不再自动弹出更新提示，仍可手动检查更新")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    #if os(iOS)
-                    if DistributionChannel.current == .sideload {
-                        Button {
-                            IOSUpdater.shared.check(interactive: true)
-                        } label: {
-                            Label("检查更新", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                        Text("装有 TrollStore（巨魔）可在应用内一键自动安装；否则可下载 IPA 用侧载工具重装（登录状态与设置保留）")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    #endif
-                }
-            }
+            updateSection
 
             Section {
                 VStack(spacing: 2) {

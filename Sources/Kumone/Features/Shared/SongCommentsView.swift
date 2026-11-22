@@ -68,7 +68,9 @@ struct SongCommentsView: View {
     /// On a medium-height iPhone sheet the window's toast is still in view above it.
     private var showsToastHere: Bool {
         #if os(iOS)
-        return detent == .large
+        // The sheet's detents are [medium, large]; index 1 is the large detent
+        // (see CommentsSheetPresentation.detentBinding).
+        return detentIndex == 1
         #else
         return true
         #endif

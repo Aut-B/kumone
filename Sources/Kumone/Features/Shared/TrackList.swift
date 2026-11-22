@@ -29,6 +29,9 @@ struct TrackRow: View {
     var removableFromPlaylistID: Int?
     var onRemoved: (() -> Void)?
     var onRecommendationReplaced: ((Track) -> Void)?
+    /// Small chip before the duration telling the two kinds apart inside a
+    /// mixed playlist ("网易云" / a plugin's platform name).
+    var sourceTag: String?
     let onPlay: () -> Void
 
     @EnvironmentObject private var player: PlayerService
@@ -65,7 +68,8 @@ struct TrackRow: View {
 
     init(track: Track, index: Int, style: TrackRowStyle = .full, playability: TrackPlayability = .playable,
          trailingText: String? = nil, removableFromPlaylistID: Int? = nil, onRemoved: (() -> Void)? = nil,
-         onRecommendationReplaced: ((Track) -> Void)? = nil, onPlay: @escaping () -> Void) {
+         onRecommendationReplaced: ((Track) -> Void)? = nil, sourceTag: String? = nil,
+         onPlay: @escaping () -> Void) {
         self.track = track
         self.index = index
         self.style = style
@@ -74,6 +78,7 @@ struct TrackRow: View {
         self.removableFromPlaylistID = removableFromPlaylistID
         self.onRemoved = onRemoved
         self.onRecommendationReplaced = onRecommendationReplaced
+        self.sourceTag = sourceTag
         self.onPlay = onPlay
         _downloadState = ObservedObject(wrappedValue: DownloadManager.shared.trackState(for: track.id))
     }

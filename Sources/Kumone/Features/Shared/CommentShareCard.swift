@@ -221,7 +221,13 @@ struct CommentShareSheet: View {
         #endif
         .tint(Theme.accent)
         .accessibilityIdentifier("commentShareSheet")
-        .task { await render() }
+        .task {
+            // ImageRenderer is iOS 16+; on iOS 15 the image stays nil and the
+            // sheet shows the card with only the save button.
+            if #available(iOS 16.0, *) {
+                await render()
+            }
+        }
     }
 
     private var header: some View {
@@ -252,16 +258,9 @@ struct CommentShareSheet: View {
             let shared = Image(platformImage: image)
             VStack(spacing: 8) {
                 HStack(spacing: 12) {
-                    ShareLink(
-                        item: shared,
-                        preview: SharePreview(Text("\(track.name) 的评论"), image: shared)
-                    ) {
-                        Label("分享", systemImage: "square.and.arrow.up")
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
+                    if #available(iOS 16.0, *) {
+                        shareLink(for: shared)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
 
                     saveButton(image)
                         .buttonStyle(.bordered)
@@ -281,6 +280,22 @@ struct CommentShareSheet: View {
     }
 
     @ViewBuilder
+    /// The iOS 16 system share link for the rendered card image (ShareLink /
+    /// SharePreview are iOS 16+ types; iOS 15 offers only the save button).
+    @available(iOS 16.0, *)
+    private func shareLink(for shared: Image) -> some View {
+        ShareLink(
+            item: shared,
+            preview: SharePreview(Text("\(track.name) 的评论"), image: shared)
+        ) {
+            Label("分享", systemImage: "square.and.arrow.up")
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+    }
+
     private func saveButton(_ image: PlatformImage) -> some View {
         #if os(iOS)
         Button {
@@ -332,6 +347,9 @@ struct CommentShareSheet: View {
 
     /// The artwork and avatar are fetched first: the renderer draws what it
     /// is given and does not wait for images to load.
+    /// Renders the card to an image. ImageRenderer is iOS 16+ — callers gate
+    /// this with `#available(iOS 16.0, *)`.
+    @available(iOS 16.0, *)
     private func render() async {
         let artworkURL = track.album.picUrl?.resizedImageURL(300)
         let avatarURL = comment.avatarURL?.resizedImageURL(120)
