@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-ios:
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 90
     env:
       DEPLOY_TARGET: ${{ (contains(github.ref_name, 'ios15') || contains(github.ref_name, 'douyin')) && '15.0' || '16.0' }}
