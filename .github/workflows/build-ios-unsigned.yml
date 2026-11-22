@@ -28,13 +28,21 @@ jobs:
 
       - name: Build iOS app (unsigned)
         run: |
+          set -o pipefail
           xcodebuild -workspace ios/KumoneIOS.xcworkspace -scheme KumoneIOS \
             -configuration Release -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/ios-dd" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             MARKETING_VERSION="$MARKETING" CURRENT_PROJECT_VERSION="$BUILD_NUM" \
             IPHONEOS_DEPLOYMENT_TARGET="$DEPLOY_TARGET" \
-            build
+            build 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Expose compile errors as annotations
+        if: failure()
+        run: |
+          grep -E "(error|fatal error):" "$RUNNER_TEMP/build.log" | head -40 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
 
       - name: Package IPA
         run: |
