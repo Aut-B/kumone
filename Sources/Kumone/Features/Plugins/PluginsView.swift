@@ -84,7 +84,7 @@ struct PluginsRootView: View {
     /// modifiers: on iOS 15 a view keeps only the last presentation of a
     /// modifier chain, so every earlier one silently does nothing (the menu
     /// buttons fired, but no sheet ever appeared).
-    private enum PluginsSheet: Identifiable {
+    private enum PluginsSheet: Hashable, Identifiable {
         case manager
         case webdavImport
         case reorder
