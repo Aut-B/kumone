@@ -131,17 +131,19 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             #if os(iOS)
-            if #available(iOS 16.0, *) {
-                NavigationLink(value: SettingsPage.soundEffects) {
-                    soundEffectsRowLabel
-                }
-            } else {
-                // iOS 15 has no value-based links: the link carries its own
-                // destination instead of pushing onto the sheet's path.
-                NavigationLink {
-                    SoundEffectsPage()
-                } label: {
-                    soundEffectsRowLabel
+            Group {
+                if #available(iOS 16.0, *) {
+                    NavigationLink(value: SettingsPage.soundEffects) {
+                        soundEffectsRowLabel
+                    }
+                } else {
+                    // iOS 15 has no value-based links: the link carries its own
+                    // destination instead of pushing onto the sheet's path.
+                    NavigationLink {
+                        SoundEffectsPage()
+                    } label: {
+                        soundEffectsRowLabel
+                    }
                 }
             }
             .accessibilityValue(settings.soundEffectPreset.displayName)
