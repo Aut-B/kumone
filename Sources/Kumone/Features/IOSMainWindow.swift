@@ -40,7 +40,7 @@ public struct IOSMainWindow: View {
     @State private var fmPath: [Destination] = []
     @State private var searchPath: [Destination] = []
     @State private var libraryPath: [Destination] = []
-    @State private var iPadPath: [Destination] = []
+    @State private var pluginsPath: [Destination] = []
 
     public init() {}
 
@@ -184,22 +184,20 @@ public struct IOSMainWindow: View {
         }
     }
 
-    @ViewBuilder
     private var appContent: some View {
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            MainWindow(path: $iPadPath)
-        } else {
-            tabInterface
-                .background {
-                    if settings.showMainWindowAmbientBackground {
-                        MainWindowAmbientBackground(
-                            colors: artworkStore.colors,
-                            intensity: settings.mainWindowAmbientBackgroundIntensity
-                        )
-                        .ignoresSafeArea()
-                    }
+        // The iPad split view (MainWindow) needs NavigationSplitView, which is
+        // iOS 16+; on the iOS 15 lane every idiom uses the tab interface, the
+        // same fallback the proven 0.3.24 release line ships.
+        tabInterface
+            .background {
+                if settings.showMainWindowAmbientBackground {
+                    MainWindowAmbientBackground(
+                        colors: artworkStore.colors,
+                        intensity: settings.mainWindowAmbientBackgroundIntensity
+                    )
+                    .ignoresSafeArea()
                 }
-        }
+            }
     }
 
     private func nowPlayingPresentation(usesSystemInteractiveDismissal: Bool) -> some View {
@@ -298,6 +296,7 @@ public struct IOSMainWindow: View {
                 page(.explore) { tabStack(.explore) { ExploreView() } }
                 page(.fm) { tabStack(.fm) { FMView() } }
                 page(.search) { tabStack(.search) { SearchView(query: "") } }
+                page(.plugins) { tabStack(.plugins) { PluginsRootView() } }
                 page(.library) { tabStack(.library) { IOSLibraryView(showLogin: $showLogin) } }
             }
 
@@ -325,16 +324,12 @@ public struct IOSMainWindow: View {
         case .fm: fmPath = []
         case .search: searchPath = []
         case .library: libraryPath = []
+        case .plugins: pluginsPath = []
         }
     }
 
     private func openDestination(_ destination: Destination) {
         player.showNowPlaying = false
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            iPadPath.appendIfNotCurrent(destination)
-            return
-        }
-
         let path = binding(for: selectedTab)
         var destinations = path.wrappedValue
         destinations.appendIfNotCurrent(destination)
@@ -370,12 +365,13 @@ public struct IOSMainWindow: View {
         case .fm: return $fmPath
         case .search: return $searchPath
         case .library: return $libraryPath
+        case .plugins: return $pluginsPath
         }
     }
 }
 
 enum IOSTab: Hashable {
-    case home, explore, fm, search, library
+    case home, explore, fm, search, library, plugins
 }
 
 extension IOSMainWindow {
@@ -384,6 +380,7 @@ extension IOSMainWindow {
         .init(tab: .explore, title: "精选", icon: "square.grid.2x2"),
         .init(tab: .fm, title: "漫游", icon: "dot.radiowaves.left.and.right"),
         .init(tab: .search, title: "搜索", icon: "magnifyingglass"),
+        .init(tab: .plugins, title: "插件", icon: "puzzlepiece.extension"),
         .init(tab: .library, title: "我的", icon: "person.crop.circle"),
     ]
 }

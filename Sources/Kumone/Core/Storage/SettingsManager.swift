@@ -132,6 +132,7 @@ final class SettingsManager: ObservableObject {
         /// Keep in sync with `UnblockService.fallbackDefaultsKey`.
         static let unblockFallback = "settings.enableUnblockFallback"
         static let unblockSources = "settings.enabledUnblockSources"
+        static let mixWithOthers = "settings.mixWithOthers"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
         #if os(macOS)
@@ -362,6 +363,16 @@ final class SettingsManager: ObservableObject {
         }
     }
 
+    /// Keep playing while other apps play audio (iOS audio session mixing).
+    @Published var mixWithOthers: Bool {
+        didSet {
+            UserDefaults.standard.set(mixWithOthers, forKey: Keys.mixWithOthers)
+            #if os(iOS)
+            PlayerService.shared.applyAudioMixPreference()
+            #endif
+        }
+    }
+
     /// Multiplier applied to the main interface's artwork tint.
     @Published var mainWindowAmbientBackgroundIntensity: Double {
         didSet {
@@ -489,6 +500,7 @@ final class SettingsManager: ObservableObject {
             max(storedAmbientBackgroundIntensity, Self.mainWindowAmbientBackgroundIntensityRange.lowerBound),
             Self.mainWindowAmbientBackgroundIntensityRange.upperBound
         )
+        mixWithOthers = defaults.object(forKey: Keys.mixWithOthers) as? Bool ?? false
         #if os(iOS)
         soundEffectPreset = SoundEffectPreferences.preset(
             from: defaults, key: Keys.soundEffectPreset)

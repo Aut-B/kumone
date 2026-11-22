@@ -20,7 +20,10 @@ final class NowPlayingManager {
     /// API for it (macOS has no equivalent). This is the client-side
     /// hardening for #124/#40 — the launch itself is still controlled by the
     /// system and the installed app's signing identity.
-    @available(iOS 16.0, *)
+    /// MPNowPlayingSession is the iOS 16+ API; the type exists in the SDK and
+    /// every use is runtime-guarded with `#available`, so the stored property
+    /// needs no availability attribute (Swift forbids it on stored properties
+    /// below the deployment target).
     private var session: MPNowPlayingSession?
     #endif
 

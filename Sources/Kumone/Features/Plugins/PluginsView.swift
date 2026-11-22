@@ -1316,7 +1316,7 @@ struct WebDAVImportView: View {
     /// Every sheet the backup should carry, local ones first.
     ///
     /// 本地歌单之外还必须带上网易云歌单：主界面那条「新建歌单」建在网易云服务器
-    /// 上（`NeteaseAPI.createPlaylist`），从来不在 `ImportedPlaylistStore` 里，
+    /// 上（`MusicAPI.createPlaylist`），从来不在 `ImportedPlaylistStore` 里，
     /// 老代码只导本地存储，于是用户自建的歌单（比如「八月循环」）整份消失。
     private func backupSheets() async -> [[String: Any]] {
         var sheets: [[String: Any]] = ImportedPlaylistStore.shared.playlists.map { playlist in
@@ -1372,7 +1372,7 @@ struct WebDAVImportView: View {
         let total = min(playlists.count, 50)
         for playlist in playlists.prefix(50) {
             exportStatus = String(localized: "正在读取歌单「\(playlist.name)」（\(sheets.count + 1)/\(total)）")
-            guard let detail = try? await NeteaseAPI.playlistDetail(id: playlist.id) else {
+            guard let detail = try? await MusicAPI.playlistDetail(id: playlist.id) else {
                 failed += 1
                 continue
             }
@@ -1419,7 +1419,7 @@ struct WebDAVImportView: View {
             let end = cursor + 500 < missing.endIndex ? cursor + 500 : missing.endIndex
             let chunk = Array(missing[cursor..<end])
             cursor = end
-            if let songs = try? await NeteaseAPI.songDetails(ids: chunk) {
+            if let songs = try? await MusicAPI.songDetails(ids: chunk) {
                 for track in songs.songs { byID[track.id] = track }
             }
         }

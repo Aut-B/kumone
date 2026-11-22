@@ -239,7 +239,7 @@ struct AddTracksToPlaylistSheet: View {
         Task {
             defer { working = false }
             do {
-                try await NeteaseAPI.playlistTracks(op: "add", playlistID: playlist.id, trackIDs: neteaseIDs)
+                try await MusicAPI.playlistTracks(op: "add", playlistID: playlist.id, trackIDs: neteaseIDs)
                 ToastCenter.shared.show(String(localized: "已添加 \(neteaseIDs.count) 首到「\(playlist.name)」"))
                 await account.refreshLibrary()
                 dismiss()

@@ -46,12 +46,21 @@ private struct WindowHorizontalInsetsPublisher: ViewModifier {
     @State private var insets = WindowHorizontalInsets()
 
     func body(content: Content) -> some View {
-        content
-            .environment(\.windowHorizontalInsets, insets)
-            .onGeometryChange(for: WindowHorizontalInsets.self) { proxy in
-                WindowHorizontalInsets(leading: proxy.safeAreaInsets.leading,
-                                       trailing: proxy.safeAreaInsets.trailing)
-            } action: { insets = $0 }
+        if #available(iOS 16.0, *) {
+            content
+                .environment(\.windowHorizontalInsets, insets)
+                .onGeometryChange(for: WindowHorizontalInsets.self) { proxy in
+                    WindowHorizontalInsets(leading: proxy.safeAreaInsets.leading,
+                                           trailing: proxy.safeAreaInsets.trailing)
+                } action: { insets = $0 }
+        } else {
+            // iOS 15 has no geometry-change callback; the insets stay at their
+            // zero default, so shelves simply span the whole window (the
+            // pre-Duo layout). The inset column only exists on iOS 16+ devices
+            // (iPhone Duo, notched landscape), so nothing is lost here.
+            content
+                .environment(\.windowHorizontalInsets, insets)
+        }
     }
 }
 

@@ -87,6 +87,62 @@ struct PlaylistDetailView: View {
         model.filter.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// The "…" toolbar menu on a liked-songs playlist (multi-select, sorting).
+    private func likedSongsMenu(_ proxy: ScrollViewProxy) -> some View {
+        Menu {
+            Button {
+                revealSearch(proxy)
+            } label: {
+                Label("在歌单内查找", systemImage: "magnifyingglass")
+            }
+            Button {
+                toggleMultiSelect()
+            } label: {
+                Label(multiSelectMode ? "退出多选" : "多选", systemImage: "checklist")
+            }
+            Button {
+                sorting.toggle()
+                if sorting {
+                    multiSelectMode = false
+                    selectedIDs.removeAll()
+                }
+            } label: {
+                Label(sorting ? "完成排序" : "调整歌曲顺序",
+                      systemImage: sorting ? "checkmark" : "arrow.up.arrow.down")
+            }
+            .disabled(model.tracks.count < 2)
+            Menu {
+                Picker("排序方式", selection: $model.sortOrder) {
+                    ForEach(PlaylistTrackSort.allCases, id: \.self) { order in
+                        Text(LocalizedStringKey(order.rawValue)).tag(order)
+                    }
+                }
+            } label: {
+                Label("排序方式", systemImage: "arrow.up.arrow.down")
+            }
+            Button {
+                layout.clearTrackOrder(playlistID: playlistID)
+            } label: {
+                Label("恢复默认顺序", systemImage: "arrow.uturn.left")
+            }
+            .disabled(!layout.hasCustomTrackOrder(playlistID: playlistID))
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .accessibilityLabel("更多")
+        .disabled(model.detail == nil)
+    }
+
+    /// The plain search entry on other playlists.
+    private func searchToolbarButton(_ proxy: ScrollViewProxy) -> some View {
+        Button {
+            revealSearch(proxy)
+        } label: {
+            Label("在歌单内查找", systemImage: "magnifyingglass")
+        }
+        .accessibilityIdentifier("playlistSearchButton")
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             onlineContent
@@ -102,57 +158,14 @@ struct PlaylistDetailView: View {
                         }
                     }
                     #if os(iOS)
-                    if isOwnLikedSongs && supportsPlaylistSearch && !isSearchActive {
-                        ToolbarItem(placement: .navigationBarTrailing) {
-                            Menu {
-                                Button {
-                                    revealSearch(proxy)
-                                } label: {
-                                    Label("在歌单内查找", systemImage: "magnifyingglass")
-                                }
-                            }
-                            Button {
-                                toggleMultiSelect()
-                            } label: {
-                                Label(multiSelectMode ? "退出多选" : "多选", systemImage: "checklist")
-                            }
-                            Button {
-                                sorting.toggle()
-                                if sorting {
-                                    multiSelectMode = false
-                                    selectedIDs.removeAll()
-                                }
-                            } label: {
-                                Label(sorting ? "完成排序" : "调整歌曲顺序",
-                                      systemImage: sorting ? "checkmark" : "arrow.up.arrow.down")
-                            }
-                            .disabled(model.tracks.count < 2)
-                            Menu {
-                                Picker("排序方式", selection: $model.sortOrder) {
-                                    ForEach(PlaylistTrackSort.allCases, id: \.self) { order in
-                                        Text(LocalizedStringKey(order.rawValue)).tag(order)
-                                    }
-                                }
-                            } label: {
-                                Label("排序方式", systemImage: "arrow.up.arrow.down")
-                            }
-                            Button {
-                                layout.clearTrackOrder(playlistID: playlistID)
-                            } label: {
-                                Label("恢复默认顺序", systemImage: "arrow.uturn.left")
-                            }
-                            .disabled(!layout.hasCustomTrackOrder(playlistID: playlistID))
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-                    } else if supportsPlaylistSearch && !isSearchActive {
-                        ToolbarItem(placement: .navigationBarTrailing) {
-                            Button {
-                                revealSearch(proxy)
-                            } label: {
-                                Label("在歌单内查找", systemImage: "magnifyingglass")
-                            }
-                            .accessibilityIdentifier("playlistSearchButton")
+                    // iOS 15's ToolbarContentBuilder cannot hold top-level
+                    // conditionals, so the branch lives inside the item's
+                    // ViewBuilder instead.
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        if isOwnLikedSongs && supportsPlaylistSearch && !isSearchActive {
+                            likedSongsMenu(proxy)
+                        } else if supportsPlaylistSearch && !isSearchActive {
+                            searchToolbarButton(proxy)
                         }
                     }
                     #endif
@@ -483,7 +496,7 @@ struct PlaylistDetailView: View {
         isDeleting = true
         defer { isDeleting = false }
         do {
-            try await NeteaseAPI.playlistTracks(op: "del", playlistID: playlistID, trackIDs: ids.sorted())
+            try await MusicAPI.playlistTracks(op: "del", playlistID: playlistID, trackIDs: ids.sorted())
             await model.remove(ids: ids)
             selectedIDs.removeAll()
             multiSelectMode = false

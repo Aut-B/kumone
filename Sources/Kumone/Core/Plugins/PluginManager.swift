@@ -383,9 +383,9 @@ final class PluginManager: ObservableObject {
     private static func nativeNeteaseURL(itemObject: [String: Any], title: String, artist: String) async -> URL? {
         guard let songID = Int(itemObject["id"] as? String ?? "") else { return nil }
         let level = SettingsManager.shared.audioQuality.rawValue
-        var data = try? await NeteaseAPI.songURL(ids: [songID], level: level).first
+        var data = try? await MusicAPI.songURL(ids: [songID], level: level).first
         if data?.url == nil {
-            data = try? await NeteaseAPI.songURL(ids: [songID], level: "standard").first
+            data = try? await MusicAPI.songURL(ids: [songID], level: "standard").first
         }
         if let urlString = data?.url, !urlString.isEmpty {
             return URL(string: urlString.replacingOccurrences(of: "http://", with: "https://"))

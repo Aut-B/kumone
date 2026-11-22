@@ -75,7 +75,16 @@ enum UnblockService {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AudioSourceProviderError.invalidResponse
         }
-        throw lastError
+        guard let bitrate = object["br"] as? Int, bitrate > 0 else {
+            throw AudioSourceProviderError.missingBitrate
+        }
+        guard let urlValue = object["url"] as? String else {
+            throw AudioSourceProviderError.missingStreamURL
+        }
+        guard let url = URL(string: urlValue.replacingOccurrences(of: "http://", with: "https://")) else {
+            throw AudioSourceProviderError.invalidURL
+        }
+        return ResolvedAudioSource(id: .pyncmd, displayName: AudioSourceID.pyncmd.displayName, url: url)
     }
 
     private static func logFailure(source: AudioSourceID, operation: String, error: Error) {
