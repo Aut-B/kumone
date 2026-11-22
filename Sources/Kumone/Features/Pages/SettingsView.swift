@@ -19,27 +19,42 @@ struct SettingsSheet: View {
     @State private var path: [SettingsView.SettingsPage] = []
 
     var body: some View {
-        NavigationStack(path: $path) {
-            SettingsView()
-                .navigationTitle("设置")
-                .navigationBarTitleDisplayMode(titleDisplayMode)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("完成") { dismiss() }
-                    }
-                }
-                .navigationDestination(for: SettingsView.SettingsPage.self) { page in
-                    switch page {
-                    case .storage:
-                        StorageSpaceView {
-                            dismiss()
-                            openDestination(.downloaded)
+        if #available(iOS 16.0, *) {
+            NavigationStack(path: $path) {
+                settingsRoot
+                    .navigationDestination(for: SettingsView.SettingsPage.self) { page in
+                        switch page {
+                        case .storage:
+                            StorageSpaceView {
+                                dismiss()
+                                openDestination(.downloaded)
+                            }
+                        case .soundEffects:
+                            SoundEffectsPage()
                         }
-                    case .soundEffects:
-                        SoundEffectsPage()
                     }
-                }
+            }
+        } else {
+            // iOS 15 has no NavigationStack or navigationDestination: pushed
+            // links carry their own destinations instead (see the sound-effects
+            // row in SettingsView).
+            NavigationView {
+                settingsRoot
+            }
+            .navigationViewStyle(.stack)
         }
+    }
+
+    /// The form every variant of the sheet hosts.
+    private var settingsRoot: some View {
+        SettingsView()
+            .navigationTitle("设置")
+            .navigationBarTitleDisplayMode(titleDisplayMode)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
     }
 }
 #endif
@@ -52,6 +67,16 @@ struct SettingsView: View {
     @AppStorage(SettingsManager.Keys.menuBarPlayer) private var showMenuBarPlayer = false
     @State private var navigationPath: [SettingsPage] = []
     #endif
+
+    /// Label of the sound-effects row, shared by the iOS 16 and iOS 15 links.
+    private var soundEffectsRowLabel: some View {
+        HStack {
+            Text("音效")
+            Spacer()
+            Text(settings.soundEffectPreset.displayName)
+                .foregroundStyle(.secondary)
+        }
+    }
 
     fileprivate enum SettingsPage: Hashable {
         case storage
@@ -99,12 +124,17 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 #if os(iOS)
-                NavigationLink(value: SettingsPage.soundEffects) {
-                    HStack {
-                        Text("音效")
-                        Spacer()
-                        Text(settings.soundEffectPreset.displayName)
-                            .foregroundStyle(.secondary)
+                if #available(iOS 16.0, *) {
+                    NavigationLink(value: SettingsPage.soundEffects) {
+                        soundEffectsRowLabel
+                    }
+                } else {
+                    // iOS 15 has no value-based links: the link carries its own
+                    // destination instead of pushing onto the sheet's path.
+                    NavigationLink {
+                        SoundEffectsPage()
+                    } label: {
+                        soundEffectsRowLabel
                     }
                 }
                 .accessibilityValue(settings.soundEffectPreset.displayName)

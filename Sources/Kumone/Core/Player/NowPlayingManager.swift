@@ -20,18 +20,17 @@ final class NowPlayingManager {
     /// API for it (macOS has no equivalent). This is the client-side
     /// hardening for #124/#40 — the launch itself is still controlled by the
     /// system and the installed app's signing identity.
-    /// MPNowPlayingSession is the iOS 16+ API; the type exists in the SDK and
-    /// every use is runtime-guarded with `#available`, so the stored property
-    /// needs no availability attribute (Swift forbids it on stored properties
-    /// below the deployment target).
-    private var session: MPNowPlayingSession?
+    /// Typed as `AnyObject` because a stored property cannot reference an
+    /// iOS 16-only type when the deployment target is 15. Every access casts
+    /// back inside an `#available(iOS 16.0, *)` block.
+    private var session: AnyObject?
     #endif
 
     /// Where metadata is published. With a session this must be the session's
     /// own center — the default center is not associated with it.
     private var infoCenter: MPNowPlayingInfoCenter {
         #if os(iOS)
-        if #available(iOS 16.0, *), let session { return session.nowPlayingInfoCenter }
+        if #available(iOS 16.0, *), let session, let session = session as? MPNowPlayingSession { return session.nowPlayingInfoCenter }
         #endif
         return .default()
     }
@@ -41,7 +40,7 @@ final class NowPlayingManager {
     /// outside the session.
     private var commandCenter: MPRemoteCommandCenter {
         #if os(iOS)
-        if #available(iOS 16.0, *), let session { return session.remoteCommandCenter }
+        if #available(iOS 16.0, *), let session, let session = session as? MPNowPlayingSession { return session.remoteCommandCenter }
         #endif
         return .shared()
     }
@@ -62,7 +61,8 @@ final class NowPlayingManager {
     /// so the lock screen and Control Center keep their controls.
     @available(iOS 16.0, *)
     private func reclaimSessionIfNeeded(whilePlaying playing: Bool) {
-        guard let session, !session.isActive, !activationAttemptInFlight,
+        guard let session, let session = session as? MPNowPlayingSession, !session.isActive,
+              !activationAttemptInFlight,
               Date().timeIntervalSince(lastActivationAttempt) >= Self.activationRetryInterval
         else { return }
         activationAttemptInFlight = true

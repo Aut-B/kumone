@@ -64,7 +64,7 @@ private struct SoundEffectsPresentationModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content.sheet(isPresented: $isPresented) {
-            NavigationStack {
+            NavigationView {
                 SoundEffectsPage(initialSection: .equalizer)
                     .environmentObject(settings)
                     .toolbar {
@@ -74,6 +74,7 @@ private struct SoundEffectsPresentationModifier: ViewModifier {
                         }
                     }
             }
+            .navigationViewStyle(.stack)
         }
     }
 }

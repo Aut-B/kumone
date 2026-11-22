@@ -162,10 +162,12 @@ struct CloudView: View {
             list
                 .navigationTitle(isSearchActive ? String(localized: "搜索云盘歌曲") : String(localized: "音乐云盘"))
                 #if os(iOS)
-                .scrollDismissesKeyboard(.interactively)
+                .compatScrollDismissesKeyboardInteractively()
                 .toolbar {
-                    if !isSearchActive && !model.items.isEmpty {
-                        ToolbarItem(placement: .navigationBarTrailing) {
+                    // iOS 15's ToolbarContentBuilder cannot hold top-level
+                    // conditionals; the branch lives in the item's ViewBuilder.
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        if !isSearchActive && !model.items.isEmpty {
                             Button {
                                 withAnimation(AppAnimation.standard) {
                                     showSearch = true

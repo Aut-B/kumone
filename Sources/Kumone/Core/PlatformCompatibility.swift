@@ -159,6 +159,24 @@ extension View {
         return AnyView(self)
     }
 
+    /// `.presentationDetents([.large])` is iOS 16+; on iOS 15 a plain sheet is
+    /// large already, so the modifier is simply dropped.
+    func compatPresentationDetentsLarge() -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.presentationDetents([.large]))
+        }
+        return AnyView(self)
+    }
+
+    /// `.presentationDragIndicator(.visible)` is iOS 16+ here for consistency
+    /// with the detents helpers; iOS 15 sheets keep the system default chrome.
+    func compatPresentationDragIndicatorVisible() -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.presentationDragIndicator(.visible))
+        }
+        return AnyView(self)
+    }
+
     ///  is iOS 16+; iOS 15 forms are grouped anyway.
     func compatFormGrouped() -> AnyView {
         if #available(iOS 16.0, macOS 13.0, *) {

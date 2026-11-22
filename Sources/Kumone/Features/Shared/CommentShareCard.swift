@@ -216,8 +216,8 @@ struct CommentShareSheet: View {
         #if os(macOS)
         .frame(minWidth: 440, idealWidth: 460, minHeight: 620, idealHeight: 720)
         #else
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
+        .compatPresentationDetentsLarge()
+        .compatPresentationDragIndicatorVisible()
         #endif
         .tint(Theme.accent)
         .accessibilityIdentifier("commentShareSheet")
