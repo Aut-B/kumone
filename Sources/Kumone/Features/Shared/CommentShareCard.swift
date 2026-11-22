@@ -362,6 +362,9 @@ struct CommentShareSheet: View {
 }
 
 /// Rounds its content's height up to a whole number of points, top-aligned.
+/// The Layout protocol is iOS 16+; on iOS 15 the modifier is a no-op and the
+/// fractional-height white line can appear on the last pixel row.
+@available(iOS 16.0, *)
 private struct WholePointHeight: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard let content = subviews.first else { return .zero }
@@ -375,8 +378,13 @@ private struct WholePointHeight: Layout {
 }
 
 private extension View {
+    @ViewBuilder
     func wholePointHeight() -> some View {
-        WholePointHeight { self }
+        if #available(iOS 16.0, *) {
+            WholePointHeight { self }
+        } else {
+            self
+        }
     }
 }
 

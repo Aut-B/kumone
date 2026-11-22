@@ -43,7 +43,7 @@ struct SoundEffectsButton: View {
                 }
                 .contentShape(Circle())
         }
-        .menuOrder(.fixed)
+        .compatMenuOrderFixed()
         .buttonStyle(.pressable)
         .accessibilityLabel("音效")
         .accessibilityValue(settings.soundEffectPreset.displayName)
@@ -311,7 +311,7 @@ private struct SoundEffectsEqualizerEditor: View {
                     .padding(.horizontal, 2)
                     .padding(.vertical, 4)
                 }
-                .scrollIndicators(.hidden)
+                .compatScrollIndicatorsHidden()
                 .equalizerHorizontalBounce()
             }
             // Keep the controls draggable while bypassed: the first value

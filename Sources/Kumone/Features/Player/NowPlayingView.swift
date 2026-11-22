@@ -1811,6 +1811,17 @@ private struct CompactTrackHeader: View {
     @State private var showAddToPlaylist = false
     @State private var commentsTrack: Track?
 
+    /// One enum-driven sheet, so the local-playlist picker and the NetEase
+    /// playlist picker don't compete for the same presentation slot.
+    private enum HeaderSheet: Identifiable {
+        case neteasePlaylist
+        case localPlaylist
+
+        var id: Int { hashValue }
+    }
+
+    @State private var activeSheet: HeaderSheet? = nil
+
     let showsExpandedArtwork: Bool
     let onOpenDestination: (Destination) -> Void
     /// Tap handler for the compact cover (used to collapse lyrics back to

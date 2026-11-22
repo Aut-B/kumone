@@ -211,6 +211,23 @@ extension View {
         return AnyView(self)
     }
 
+    /// `.menuOrder(.fixed)` is iOS 16+; older systems use the default order.
+    func compatMenuOrderFixed() -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.menuOrder(.fixed))
+        }
+        return AnyView(self)
+    }
+
+    /// `.scrollIndicators(.hidden)` is iOS 16+; older systems keep the default
+    /// indicator behaviour.
+    func compatScrollIndicatorsHidden() -> AnyView {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            return AnyView(self.scrollIndicators(.hidden))
+        }
+        return AnyView(self)
+    }
+
     /// `navigationDestination(for:)` is iOS 16+ / macOS 13+. On iOS 15 the
     /// value-based link is replaced by one that carries its own destination, so
     /// this modifier is simply dropped.

@@ -63,6 +63,9 @@ struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsManager
     @EnvironmentObject private var account: AccountStore
     @Environment(\.openDestination) private var openDestination
+    // Used by the iOS 15 storage row: at the form's root it dismisses the
+    // whole settings sheet before jumping to the downloads page.
+    @Environment(\.dismiss) private var dismiss
     #if os(macOS)
     @AppStorage(SettingsManager.Keys.menuBarPlayer) private var showMenuBarPlayer = false
     @State private var navigationPath: [SettingsPage] = []
@@ -359,7 +362,7 @@ struct SettingsView: View {
                 .listRowSeparator(.hidden)
             }
         }
-        .formStyle(.grouped)
+        .compatFormGrouped()
         #if os(macOS)
         .navigationDestination(for: SettingsPage.self) { page in
             Group {
