@@ -6,7 +6,6 @@ struct SidebarView: View {
 
     @EnvironmentObject private var account: AccountStore
     @State private var showNewPlaylist = false
-    @State private var newPlaylistName = ""
     @State private var avatarImage: PlatformImage?
 #if os(iOS)
     // iPad renders this sidebar layout (IOSMainWindow routes .pad to MainWindow)
@@ -89,12 +88,14 @@ struct SidebarView: View {
                 avatarImage = nil
             }
         }
-        .alert("新建歌单", isPresented: $showNewPlaylist) {
-            TextField("歌单名称", text: $newPlaylistName)
-            Button("创建") {
-                let name = newPlaylistName.trimmingCharacters(in: .whitespaces)
-                newPlaylistName = ""
-                guard !name.isEmpty else { return }
+        .sheet(isPresented: $showNewPlaylist) {
+            // alert-with-TextField needs iOS 16 (the field is dropped on 15),
+            // so the prompt is a sheet instead.
+            NamePromptSheet(
+                title: "新建歌单",
+                placeholder: "歌单名称",
+                submitLabel: "创建"
+            ) { name in
                 Task {
                     do {
                         try await MusicAPI.createPlaylist(name: name, isPrivate: false)
@@ -105,7 +106,6 @@ struct SidebarView: View {
                     }
                 }
             }
-            Button("取消", role: .cancel) { newPlaylistName = "" }
         }
     }
 

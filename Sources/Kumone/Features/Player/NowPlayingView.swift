@@ -3397,12 +3397,17 @@ struct LocalPlaylistPickerSheet: View {
                     Button("取消") { dismiss() }
                 }
             }
-            .alert("新建歌单", isPresented: $showCreate) {
-                TextField("歌单名称", text: $newPlaylistName)
-                Button("创建并添加") {
+            .sheet(isPresented: $showCreate) {
+                // alert-with-TextField needs iOS 16 (the field is dropped on
+                // 15), so the prompt is a sheet instead.
+                NamePromptSheet(
+                    title: "新建歌单",
+                    placeholder: "歌单名称",
+                    submitLabel: "创建并添加"
+                ) { name in
+                    newPlaylistName = name
                     createAndAdd()
                 }
-                Button("取消", role: .cancel) {}
             }
         }
     }

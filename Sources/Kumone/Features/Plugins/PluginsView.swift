@@ -77,12 +77,26 @@ struct PluginsRootView: View {
     @ObservedObject private var layout = PlaylistLayoutStore.shared
     @Environment(\.openDestination) private var openDestination
     @State private var query = ""
-    @State private var showManager = false
-    @State private var showWebDAV = false
-    @State private var showNewPlaylist = false
-    @State private var showReorder = false
-    @State private var newPlaylistName = ""
-    @State private var shortVideoPlatform: ShortVideoPlatform?
+
+    /// Which sheet the tab is presenting.
+    ///
+    /// One enum-driven sheet instead of several stacked `.sheet(isPresented:)`
+    /// modifiers: on iOS 15 a view keeps only the last presentation of a
+    /// modifier chain, so every earlier one silently does nothing (the menu
+    /// buttons fired, but no sheet ever appeared).
+    private enum PluginsSheet: Identifiable {
+        case manager
+        case webdavImport
+        case reorder
+        case newPlaylist
+        #if os(iOS)
+        case shortVideo(ShortVideoPlatform)
+        #endif
+
+        var id: Int { hashValue }
+    }
+
+    @State private var activeSheet: PluginsSheet? = nil
 
     /// Pinned first, then in the user's own order.
     private var orderedPlaylists: [ImportedPlaylist] { layout.orderedLocal(store.playlists) }
@@ -101,25 +115,25 @@ struct PluginsRootView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
-                        showWebDAV = true
+                        activeSheet = .webdavImport
                     } label: {
                         Image(systemName: "tray.and.arrow.down")
                     }
                     .accessibilityLabel("从 WebDAV 导入歌单")
                     Menu {
                         Button {
-                            showNewPlaylist = true
+                            activeSheet = .newPlaylist
                         } label: {
                             Label("新建本地歌单", systemImage: "plus")
                         }
                         Button {
-                            showReorder = true
+                            activeSheet = .reorder
                         } label: {
                             Label("调整歌单顺序", systemImage: "arrow.up.arrow.down")
                         }
                         .disabled(orderedPlaylists.count < 2)
                         Button {
-                            showManager = true
+                            activeSheet = .manager
                         } label: {
                             Label("插件管理", systemImage: "puzzlepiece.extension")
                         }
@@ -129,34 +143,32 @@ struct PluginsRootView: View {
                     .accessibilityLabel("更多")
                 }
             }
-            .sheet(isPresented: $showManager) {
-                PluginManagerView()
-            }
-            .sheet(isPresented: $showWebDAV) {
-                WebDAVImportView()
-            }
-            .sheet(isPresented: $showReorder) {
-                LocalPlaylistOrderSheet()
-            }
-            #if os(iOS)
-            .sheet(item: $shortVideoPlatform) { platform in
-                ShortVideoFavoritesView(platform: platform)
-            }
-            #endif
-            .alert("新建本地歌单", isPresented: $showNewPlaylist) {
-                TextField("歌单名称", text: $newPlaylistName)
-                Button("创建") {
-                    let name = newPlaylistName.trimmingCharacters(in: .whitespaces)
-                    newPlaylistName = ""
-                    guard !name.isEmpty else { return }
-                    do {
-                        _ = try ImportedPlaylistStore.shared.createPlaylist(name: name)
-                        ToastCenter.shared.show(String(localized: "歌单已创建"))
-                    } catch {
-                        ToastCenter.shared.show(error.localizedDescription)
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .manager:
+                    PluginManagerView()
+                case .webdavImport:
+                    WebDAVImportView()
+                case .reorder:
+                    LocalPlaylistOrderSheet()
+                case .newPlaylist:
+                    NamePromptSheet(
+                        title: "新建本地歌单",
+                        placeholder: "歌单名称",
+                        submitLabel: "创建"
+                    ) { name in
+                        do {
+                            _ = try ImportedPlaylistStore.shared.createPlaylist(name: name)
+                            ToastCenter.shared.show(String(localized: "歌单已创建"))
+                        } catch {
+                            ToastCenter.shared.show(error.localizedDescription)
+                        }
                     }
+                #if os(iOS)
+                case .shortVideo(let platform):
+                    ShortVideoFavoritesView(platform: platform)
+                #endif
                 }
-                Button("取消", role: .cancel) { newPlaylistName = "" }
             }
             .onAppear {
                 model.selectFirst()
@@ -227,7 +239,7 @@ struct PluginsRootView: View {
 
     private func shortVideoCard(_ platform: ShortVideoPlatform) -> some View {
         Button {
-            shortVideoPlatform = platform
+            activeSheet = .shortVideo(platform)
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: "play.rectangle.fill")

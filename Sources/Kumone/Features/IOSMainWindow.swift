@@ -35,6 +35,30 @@ public struct IOSMainWindow: View {
     @State private var lastForegroundRefresh: Date?
     @State private var showLogin = false
     @State private var showSettings = false
+
+    /// Which root-level sheet is up. `showSettings`/`showLogin` keep their
+    /// Bool form because other views bind to them directly; this derives one
+    /// item-driven sheet from the two.
+    private enum RootSheet: Identifiable {
+        case settings
+        case login
+
+        var id: Int { hashValue }
+    }
+
+    private var rootSheetBinding: Binding<RootSheet?> {
+        Binding(
+            get: {
+                if showSettings { return .settings }
+                if showLogin { return .login }
+                return nil
+            },
+            set: { sheet in
+                showSettings = sheet == .settings
+                showLogin = sheet == .login
+            }
+        )
+    }
     @State private var homePath: [Destination] = []
     @State private var explorePath: [Destination] = []
     @State private var fmPath: [Destination] = []
@@ -84,32 +108,41 @@ public struct IOSMainWindow: View {
             .task(id: settings.showMainWindowAmbientBackground) {
                 artworkStore.setArtworkNeeded(settings.showMainWindowAmbientBackground)
             }
-            .sheet(isPresented: $updater.showSheet) {
-                IOSUpdaterSheet()
-            }
-            // Presented here rather than from the Library tab or the iPad
-            // sidebar: a sheet hosted inside the tab view is re-hosted when
-            // the tabs update, which reset its navigation (#191 review).
-            .sheet(isPresented: $showSettings) {
-                // Outside the modifiers above, so hand the sheet the same
-                // environment the rest of the app gets.
-                SettingsSheet(
-                    titleDisplayMode: UIDevice.current.userInterfaceIdiom == .pad ? .inline : .automatic
-                )
-                .environmentObject(player)
-                .environmentObject(account)
-                .environmentObject(settings)
-                .environmentObject(toasts)
-                .environmentObject(artworkStore)
-                .tint(Theme.accent)
-                .preferredColorScheme(settings.appearance.colorScheme)
-                .environment(\.openLogin, { showLogin = true })
-                .environment(\.openDestination, openDestination)
-            }
-            .sheet(isPresented: $showLogin) {
-                LoginSheet()
+            // The update prompt lives on its own background node: presentation
+            // modifiers stacked on one chain keep only the last one on iOS 15,
+            // so the earlier sheets would silently never appear there.
+            .background(
+                Color.clear
+                    .sheet(isPresented: $updater.showSheet) {
+                        IOSUpdaterSheet()
+                    }
+            )
+            // Settings and login share one item-driven sheet (same reason as
+            // above). Presented here rather than from the Library tab or the
+            // iPad sidebar: a sheet hosted inside the tab view is re-hosted
+            // when the tabs update, which reset its navigation (#191 review).
+            .sheet(item: rootSheetBinding) { sheet in
+                switch sheet {
+                case .settings:
+                    // Outside the modifiers above, so hand the sheet the same
+                    // environment the rest of the app gets.
+                    SettingsSheet(
+                        titleDisplayMode: UIDevice.current.userInterfaceIdiom == .pad ? .inline : .automatic
+                    )
+                    .environmentObject(player)
                     .environmentObject(account)
+                    .environmentObject(settings)
                     .environmentObject(toasts)
+                    .environmentObject(artworkStore)
+                    .tint(Theme.accent)
+                    .preferredColorScheme(settings.appearance.colorScheme)
+                    .environment(\.openLogin, { showLogin = true })
+                    .environment(\.openDestination, openDestination)
+                case .login:
+                    LoginSheet()
+                        .environmentObject(account)
+                        .environmentObject(toasts)
+                }
             }
             .overlay(alignment: .top) {
                 VStack(spacing: 8) {
@@ -638,7 +671,6 @@ struct IOSLibraryView: View {
     @EnvironmentObject private var account: AccountStore
     @Environment(\.presentSettingsSheet) private var presentSettingsSheet
     @State private var showNewPlaylist = false
-    @State private var newPlaylistName = ""
 
     var body: some View {
         List {
@@ -789,12 +821,14 @@ struct IOSLibraryView: View {
                 .accessibilityLabel("设置")
             }
         }
-        .alert("新建歌单", isPresented: $showNewPlaylist) {
-            TextField("歌单名称", text: $newPlaylistName)
-            Button("创建") {
-                let name = newPlaylistName.trimmingCharacters(in: .whitespaces)
-                newPlaylistName = ""
-                guard !name.isEmpty else { return }
+        .sheet(isPresented: $showNewPlaylist) {
+            // alert-with-TextField needs iOS 16 (the field is dropped on 15),
+            // so the prompt is a sheet instead.
+            NamePromptSheet(
+                title: "新建歌单",
+                placeholder: "歌单名称",
+                submitLabel: "创建"
+            ) { name in
                 Task {
                     do {
                         try await MusicAPI.createPlaylist(name: name, isPrivate: false)
@@ -805,7 +839,6 @@ struct IOSLibraryView: View {
                     }
                 }
             }
-            Button("取消", role: .cancel) { newPlaylistName = "" }
         }
     }
 }
