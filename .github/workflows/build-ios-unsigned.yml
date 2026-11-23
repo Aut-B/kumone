@@ -10,10 +10,11 @@ permissions:
 
 jobs:
   build-ios:
-    # macos-26 is arm64 and kept failing to acquire a hosted runner at 0 steps
-    # (capacity). macos-15-intel is x64 and carries Xcode 16 / iOS 18 SDK, which
-    # covers every API this branch gates behind #available(iOS 18).
-    runs-on: macos-15-intel
+    # macos-26 (arm64) is required: Package.swift is swift-tools-version 6.2,
+    # only Xcode 26's Swift 6.2 resolves it. x64 images max out at Xcode 16
+    # and fail "Could not resolve package dependencies" (exit 74). If the
+    # arm64 queue is congested, jobs cancel at 0 steps — retry by retrigger.
+    runs-on: macos-26
     timeout-minutes: 90
     env:
       DEPLOY_TARGET: ${{ (contains(github.ref_name, 'ios15') || contains(github.ref_name, 'douyin')) && '15.0' || '16.0' }}
