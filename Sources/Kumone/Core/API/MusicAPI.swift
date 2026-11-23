@@ -548,12 +548,23 @@ enum MusicAPI {
         let data: [SongURLData]
     }
 
+    /// The web API still serves a URL the eapi refused with -460.
+    private static func songURLViaWeb(_ form: [String: String], using client: MusicClient) async throws -> [SongURLData] {
+        let data = try await client.api("/song/enhance/player/url/v1", form)
+        return try client.decoded(SongURLResponse.self, from: data).data
+    }
+
     static func songURL(ids: [Int], level: String, using client: MusicClient = .shared) async throws -> [SongURLData] {
         let idString = "[" + ids.map(String.init).joined(separator: ",") + "]"
-        var payload: [String: Any] = ["ids": idString, "level": level, "encodeType": "flac"]
-        if level == "sky" { payload["immerseType"] = "c51" }
-        let data = try await client.eapi("/song/enhance/player/url/v1", payload)
-        return try client.decoded(SongURLResponse.self, from: data).data
+        var form = ["ids": idString, "level": level, "encodeType": "flac"]
+        if level == "sky" { form["immerseType"] = "c51" }
+        let payload: [String: Any] = form
+        do {
+            let data = try await client.eapi("/song/enhance/player/url/v1", payload)
+            return try client.decoded(SongURLResponse.self, from: data).data
+        } catch MusicAPIError.business(let code, _) where code == -460 {
+            return try await songURLViaWeb(form, using: client)
+        }
     }
 
     /// `songURL`, asked once more after a moment when the request dies in
