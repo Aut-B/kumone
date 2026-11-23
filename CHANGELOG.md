@@ -7,6 +7,26 @@
 `---` 分隔，随后是完整的**中文**部分（`### 新增` / `### 修复` / `### 改进`）。英文块与中文块
 的条目一一对应、顺序一致。（0.3.19 起采用此双语分块格式；更早的版本沿用旧的中英交替格式。）
 
+## 0.3.37-ios15 - 2026-11-23
+
+### Added
+
+- **Comments**: the iPhone now-playing page's secondary controls gain a `text.bubble` comment entry when the playing song has comments; NetEase and Bilibili threads open in the existing sheet, while cloud uploads and Douyin/TikTok songs show no entry.
+
+### Fixed
+
+- **Playback**: songs the eAPI refuses with -460 now fall back once to the web API, so VIP songs can play again; normal songs still make a single request, and other errors keep their previous behaviour.
+
+---
+
+### 新增
+
+- **评论**：iPhone 播放页的次级控制区在歌曲有评论时新增 `text.bubble` 评论入口；网易云与 B站评论在原有 sheet 中打开，云盘上传与抖音/TikTok 歌曲不显示入口。
+
+### 修复
+
+- **播放**：eAPI 返回 -460 时改为回退一次 web API，VIP 歌曲可以恢复播放；普通歌曲仍只请求一次，其他错误行为不变。
+
 ## 0.3.37 - 2026-11-14
 
 ![分享评论 · Share a comment](https://raw.githubusercontent.com/missuo/kumone/v0.3.37/docs/releases/0.3.37-comment-share.png)
