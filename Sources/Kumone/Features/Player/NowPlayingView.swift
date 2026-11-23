@@ -1,5 +1,22 @@
 import SwiftUI
 
+/// The now-playing page's one enum-driven sheet: sound effects and song
+/// comments share a single presentation because iOS 15 only honours one
+/// `.sheet` per view.
+enum NowPlayingSheet: Identifiable {
+    case soundEffects
+    case comments(Track)
+
+    var id: String {
+        switch self {
+        case .soundEffects:
+            return "soundEffects"
+        case .comments(let track):
+            return "comments-\(track.id)"
+        }
+    }
+}
+
 /// Immersive full-window now-playing page: artwork-tinted gradient backdrop,
 /// large artwork on the left, big synced lyrics on the right.
 struct NowPlayingView: View {
@@ -28,7 +45,7 @@ struct NowPlayingView: View {
     /// Lyrics or comments in the regular page's right column (macOS, iPad).
     @State private var regularColumnPage = RegularColumnPage.lyrics
     #if os(iOS)
-    @State private var showSoundEffects = false
+    @State private var activeSheet: NowPlayingSheet?
     /// Held here rather than by the controls so the panel can sit above the
     /// whole page, with a catcher that closes it on a tap anywhere else.
     @State private var showsVolumeControl = false
@@ -88,7 +105,7 @@ struct NowPlayingView: View {
                     HStack(spacing: 8) {
                         #if os(iOS)
                         SoundEffectsButton(
-                            action: { showSoundEffects = true },
+                            action: { activeSheet = NowPlayingSheet.soundEffects },
                             diameter: 36,
                             glyphSize: 14
                         )
@@ -132,10 +149,24 @@ struct NowPlayingView: View {
         #endif
         .preferredColorScheme(.dark)
         #if os(iOS)
-        .soundEffectsPresentation(
-            isPresented: $showSoundEffects,
-            settings: settings
-        )
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .soundEffects:
+                NavigationView {
+                    SoundEffectsPage(initialSection: .equalizer)
+                        .environmentObject(settings)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("完成") { activeSheet = nil }
+                                    .tint(Color.primary)
+                            }
+                        }
+                }
+                .navigationViewStyle(.stack)
+            case .comments(let track):
+                SongCommentsView(track: track)
+            }
+        }
         .modifier(OfflinePlaybackAlert(player: player, onDownloads: { onOpenDestination(.downloaded) },
             enabled: player.showNowPlaying && !(settings.nowPlayingMode == .minimal && showQueueOnMobile)))
         .modifier(MeteredDownloadAlert(enabled: player.showNowPlaying && !(settings.nowPlayingMode == .minimal && showQueueOnMobile)))
@@ -365,7 +396,7 @@ struct NowPlayingView: View {
         HStack(spacing: 10) {
             Spacer(minLength: 0)
 
-            SoundEffectsButton(action: { showSoundEffects = true })
+            SoundEffectsButton(action: { activeSheet = NowPlayingSheet.soundEffects })
 
             circleButton(
                 icon: "list.bullet", size: 15,
@@ -810,7 +841,10 @@ struct NowPlayingView: View {
                 showsQueue: showQueueOnMobile,
                 onToggleLyrics: toggleImmersiveLyrics,
                 onToggleQueue: toggleImmersiveQueue,
-                onOpenSoundEffects: { showSoundEffects = true }
+                onOpenComments: { track in
+                    activeSheet = NowPlayingSheet.comments(track)
+                },
+                onOpenSoundEffects: { activeSheet = NowPlayingSheet.soundEffects }
             )
         }
         .padding(.top, 14)
@@ -906,7 +940,7 @@ struct NowPlayingView: View {
                 Color.clear
                 MinimalTrackInfoRow(
                     onOpenDestination: onOpenDestination,
-                    onOpenSoundEffects: { showSoundEffects = true },
+                    onOpenSoundEffects: { activeSheet = NowPlayingSheet.soundEffects },
                     metadataOnly: true
                 )
                     .padding(.top, NowPlayingPresentationMetrics.immersiveHeaderTopInset)
@@ -959,14 +993,14 @@ struct NowPlayingView: View {
             ZStack {
                 MinimalTrackInfoRow(
                     onOpenDestination: onOpenDestination,
-                    onOpenSoundEffects: { showSoundEffects = true }
+                    onOpenSoundEffects: { activeSheet = NowPlayingSheet.soundEffects }
                 )
                     .opacity(showLyricsOnMobile ? 0 : 1)
                     .allowsHitTesting(!showLyricsOnMobile)
                     .accessibilityHidden(showLyricsOnMobile)
                 MinimalTrackInfoRow(
                     onOpenDestination: onOpenDestination,
-                    onOpenSoundEffects: { showSoundEffects = true },
+                    onOpenSoundEffects: { activeSheet = NowPlayingSheet.soundEffects },
                     actionsOnly: true
                 )
                     .opacity(showLyricsOnMobile ? 1 : 0)
@@ -1209,7 +1243,7 @@ struct NowPlayingView: View {
             #if os(iOS)
             if showsSoundEffects {
                 SoundEffectsButton(
-                    action: { showSoundEffects = true },
+                    action: { activeSheet = NowPlayingSheet.soundEffects },
                     diameter: 40,
                     glyphSize: 15
                 )
@@ -2081,6 +2115,7 @@ private struct CompactSecondaryControls: View {
     let showsQueue: Bool
     let onToggleLyrics: () -> Void
     let onToggleQueue: () -> Void
+    let onOpenComments: (Track) -> Void
     let onOpenSoundEffects: () -> Void
 
     var body: some View {
@@ -2119,6 +2154,13 @@ private struct CompactSecondaryControls: View {
                 label: showsQueue ? "关闭播放队列" : "显示播放队列",
                 isActive: showsQueue
             ) { onToggleQueue() }
+
+            if let track = player.currentTrack,
+               SongCommentsMenuButton.isAvailable(for: track) {
+                secondaryButton(icon: "text.bubble", label: "查看评论") {
+                    onOpenComments(track)
+                }
+            }
         }
     }
 
