@@ -32,10 +32,10 @@ struct PlaylistSelectionSummaryBar: View {
     }
 }
 
-/// The batch action bar: 下一首播放 / 添加到歌单 / 删除.
+/// The batch action bar: 下一首播放 / 排到队尾 / 下载 / 添加到歌单 / 删除.
 ///
-/// There is deliberately no download button — this app has no download
-/// library, only a playback cache.
+/// Download is opt-in: callers that manage their own collection download pass
+/// `onDownload`; callers without one simply omit the button.
 struct PlaylistSelectionActionBar: View {
     let selectedCount: Int
     var canDelete = true
@@ -43,6 +43,12 @@ struct PlaylistSelectionActionBar: View {
     /// Queue the selection behind everything already waiting, instead of
     /// cutting in front of the song that is playing.
     var onQueueEnd: (() -> Void)? = nil
+    /// Download the current selection. Optional so local/cloud callers decide
+    /// whether the action bar offers bulk downloads.
+    var onDownload: (() -> Void)? = nil
+    /// Extra disabled state for the download button (e.g. a request is already
+    /// awaiting the metered-network gate). Ignored when `onDownload` is nil.
+    var downloadDisabled = false
     let onCollect: () -> Void
     let onDelete: () -> Void
 
@@ -60,6 +66,15 @@ struct PlaylistSelectionActionBar: View {
                     label: "排到队尾",
                     tint: .primary,
                     action: onQueueEnd
+                )
+            }
+            if let onDownload {
+                actionButton(
+                    icon: "arrow.down.circle",
+                    label: "下载",
+                    tint: .primary,
+                    disabled: downloadDisabled,
+                    action: onDownload
                 )
             }
             actionButton(
@@ -82,7 +97,7 @@ struct PlaylistSelectionActionBar: View {
         .background(.bar)
     }
 
-    private func actionButton(icon: String, label: String, tint: Color, action: @escaping () -> Void) -> some View {
+    private func actionButton(icon: String, label: String, tint: Color, disabled: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 3) {
                 Image(systemName: icon)
@@ -95,8 +110,47 @@ struct PlaylistSelectionActionBar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(selectedCount == 0)
-        .opacity(selectedCount == 0 ? 0.45 : 1)
+        .disabled(selectedCount == 0 || disabled)
+        .opacity(selectedCount == 0 || disabled ? 0.45 : 1)
+    }
+}
+
+/// The full multi-select chrome: summary row + action bar, with hairline
+/// dividers and a bar background. Callers wrap this in a `safeAreaInset`
+/// (iOS) or a pinned container themselves.
+struct PlaylistSelectionBar: View {
+    let selectedCount: Int
+    let totalCount: Int
+    var canDelete = true
+    let onToggleAll: () -> Void
+    let onPlayNext: () -> Void
+    var onQueueEnd: (() -> Void)? = nil
+    var onDownload: (() -> Void)? = nil
+    var downloadDisabled = false
+    let onCollect: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PlaylistSelectionSummaryBar(
+                selectedCount: selectedCount,
+                totalCount: totalCount,
+                onToggleAll: onToggleAll
+            )
+            Divider().opacity(0.4)
+            PlaylistSelectionActionBar(
+                selectedCount: selectedCount,
+                canDelete: canDelete,
+                onPlayNext: onPlayNext,
+                onQueueEnd: onQueueEnd,
+                onDownload: onDownload,
+                downloadDisabled: downloadDisabled,
+                onCollect: onCollect,
+                onDelete: onDelete
+            )
+            Divider().opacity(0.4)
+        }
+        .background(.bar)
     }
 }
 

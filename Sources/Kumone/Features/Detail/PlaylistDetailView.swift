@@ -11,7 +11,9 @@ struct PlaylistDetailView: View {
     // This page only sends playback commands; individual rows observe playback.
     private let player = PlayerService.shared
     @EnvironmentObject private var account: AccountStore
+    @EnvironmentObject private var settings: SettingsManager
     @ObservedObject private var layout = PlaylistLayoutStore.shared
+    @Environment(\.openLogin) private var openLogin
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showFullDescription = false
     @State private var multiSelectMode = false
@@ -20,6 +22,7 @@ struct PlaylistDetailView: View {
     @State private var showCollect = false
     @State private var showDeleteConfirm = false
     @State private var isDeleting = false
+    @State private var isDownloading = false
     #if os(iOS)
     @State private var showSearch = false
     @State private var searchFocused = false
@@ -133,14 +136,27 @@ struct PlaylistDetailView: View {
         .disabled(model.detail == nil)
     }
 
-    /// The plain search entry on other playlists.
-    private func searchToolbarButton(_ proxy: ScrollViewProxy) -> some View {
-        Button {
-            revealSearch(proxy)
+    /// The "…" toolbar menu on an ordinary (non-liked) playlist: in-list
+    /// search plus multi-select. Sorting is intentionally absent here — the
+    /// server-side order write API only exists for the liked list, and the
+    /// local display-order controls live in `likedSongsMenu`.
+    private func playlistMenu(_ proxy: ScrollViewProxy) -> some View {
+        Menu {
+            Button {
+                revealSearch(proxy)
+            } label: {
+                Label("在歌单内查找", systemImage: "magnifyingglass")
+            }
+            Button {
+                toggleMultiSelect()
+            } label: {
+                Label(multiSelectMode ? "退出多选" : "多选", systemImage: "checklist")
+            }
         } label: {
-            Label("在歌单内查找", systemImage: "magnifyingglass")
+            Image(systemName: "ellipsis.circle")
         }
-        .accessibilityIdentifier("playlistSearchButton")
+        .accessibilityLabel("更多")
+        .disabled(model.detail == nil)
     }
 
     var body: some View {
@@ -165,7 +181,7 @@ struct PlaylistDetailView: View {
                         if isOwnLikedSongs && supportsPlaylistSearch && !isSearchActive {
                             likedSongsMenu(proxy)
                         } else if supportsPlaylistSearch && !isSearchActive {
-                            searchToolbarButton(proxy)
+                            playlistMenu(proxy)
                         }
                     }
                     #endif
@@ -247,24 +263,18 @@ struct PlaylistDetailView: View {
                     // Pinned under the navigation bar, not at the bottom: the
                     // floating mini player would otherwise cover it.
                     if multiSelectMode {
-                        VStack(spacing: 0) {
-                            PlaylistSelectionSummaryBar(
-                                selectedCount: selectedIDs.count,
-                                totalCount: visibleTracks.count,
-                                onToggleAll: toggleSelectAll
-                            )
-                            Divider().opacity(0.4)
-                            PlaylistSelectionActionBar(
-                                selectedCount: selectedIDs.count,
-                                canDelete: isOwnPlaylist,
-                                onPlayNext: playSelectedNext,
-                                onQueueEnd: queueSelectedAtEnd,
-                                onCollect: { showCollect = true },
-                                onDelete: { showDeleteConfirm = true }
-                            )
-                            Divider().opacity(0.4)
-                        }
-                        .background(.bar)
+                        PlaylistSelectionBar(
+                            selectedCount: selectedIDs.count,
+                            totalCount: visibleTracks.count,
+                            canDelete: isOwnPlaylist,
+                            onToggleAll: toggleSelectAll,
+                            onPlayNext: playSelectedNext,
+                            onQueueEnd: queueSelectedAtEnd,
+                            onDownload: downloadSelected,
+                            downloadDisabled: isDownloading,
+                            onCollect: { showCollect = true },
+                            onDelete: { showDeleteConfirm = true }
+                        )
                     }
                 }
             }
@@ -488,6 +498,29 @@ struct PlaylistDetailView: View {
         player.addToQueueEnd(tracks)
         selectedIDs.removeAll()
         multiSelectMode = false
+    }
+
+    /// Download the current selection. Plugin tracks have no NetEase id and
+    /// are skipped; the rest go through the same metered-network gate and
+    /// `DownloadManager.enqueue` path as the whole-playlist download button,
+    /// just with a per-selection owner so the job can be paused/cancelled
+    /// independently.
+    private func downloadSelected() {
+        let tracks = selectedTracks.filter { $0.plugin == nil }
+        guard !tracks.isEmpty, !isDownloading else { return }
+        guard account.isLoggedIn else { openLogin(); return }
+        let owner = "playlist:\(playlistID):selection"
+        let name = (model.detail?.name ?? "歌单") + "（所选）"
+        let quality = settings.audioQuality.rawValue
+        MeteredDownloadCenter.shared.request(bulk: true, count: tracks.count, network: downloads.network) { metered in
+            isDownloading = true
+            Task { [scope = downloads.accountScope] in
+                defer { isDownloading = false }
+                guard downloads.accountScope == scope else { return }
+                await downloads.enqueue(tracks: tracks, owner: owner, name: name,
+                                        quality: quality, allowsMetered: metered)
+            }
+        }
     }
 
     private func deleteSelected() async {
