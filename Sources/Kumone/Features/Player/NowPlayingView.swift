@@ -1862,7 +1862,7 @@ private struct CompactTrackHeader: View {
 
     /// One enum-driven sheet, so the local-playlist picker and the NetEase
     /// playlist picker don't compete for the same presentation slot.
-    private enum HeaderSheet: Identifiable {
+    private enum HeaderSheet: Identifiable, Hashable {
         case neteasePlaylist
         case localPlaylist
         case comments(Track)
@@ -2729,7 +2729,7 @@ private struct MinimalLyricCentersKey: PreferenceKey {
 
 // MARK: - Minimal track info row
 
-private enum MoreSheet: Identifiable {
+private enum MoreSheet: Identifiable, Hashable {
     case neteasePlaylist
     case pluginPlaylist
     case localPlaylist
