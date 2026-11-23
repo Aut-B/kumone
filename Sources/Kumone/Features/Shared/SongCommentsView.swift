@@ -6,7 +6,9 @@ struct SongCommentsMenuButton: View {
     var showsIcons = false
     let action: () -> Void
 
-    static func isAvailable(for track: Track) -> Bool { track.id > 0 && !track.isCloud }
+    static func isAvailable(for track: Track) -> Bool {
+        SongCommentAvailability.isAvailable(for: track)
+    }
 
     var body: some View {
         if Self.isAvailable(for: track) {
@@ -34,7 +36,7 @@ struct SongCommentsView: View {
 
     init(track: Track) {
         self.track = track
-        _content = StateObject(wrappedValue: SongCommentsContent(songID: track.id))
+        _content = StateObject(wrappedValue: SongCommentsContent(track: track))
     }
 
     var body: some View {
@@ -140,7 +142,9 @@ struct SongCommentsList: View {
     @EnvironmentObject private var account: AccountStore
     @State private var sharedComment: SongComment?
 
-    private var canLike: Bool { account.authenticatedAccountID != nil }
+    private var canLike: Bool {
+        content.supportsLikes && account.authenticatedAccountID != nil
+    }
 
     var body: some View {
         phaseContent

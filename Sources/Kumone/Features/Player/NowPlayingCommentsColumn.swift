@@ -48,7 +48,7 @@ struct RegularCommentsPanel: View {
 
     init(track: Track) {
         self.track = track
-        _content = StateObject(wrappedValue: SongCommentsContent(songID: track.id))
+        _content = StateObject(wrappedValue: SongCommentsContent(track: track))
     }
 
     var body: some View {
