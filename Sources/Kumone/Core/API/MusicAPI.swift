@@ -389,6 +389,13 @@ enum MusicAPI {
     /// The comment thread of a song.
     static func songCommentThread(songID: Int) -> String { "R_SO_4_\(songID)" }
 
+    /// The web channel still serves comments the eapi refused with -460.
+    private static func songCommentsViaWeb(_ path: String, limit: Int, offset: Int,
+                                           using client: MusicClient) async throws -> SongCommentsPage {
+        let data = try await client.api(path, ["limit": String(limit), "offset": String(offset)])
+        return try client.decoded(SongCommentsPage.self, from: data)
+    }
+
     /// A page of a song's latest comments from `offset`, and on the first
     /// page its hot comments too.
     static func songComments(songID: Int, limit: Int = 20, offset: Int = 0,
@@ -396,9 +403,16 @@ enum MusicAPI {
         guard songID > 0 else {
             throw MusicAPIError.business(code: 400, message: String(localized: "无法识别这首歌曲"))
         }
-        let data = try await client.eapi("/v1/resource/comments/\(songCommentThread(songID: songID))",
-                                         ["limit": limit, "offset": offset])
-        return try client.decoded(SongCommentsPage.self, from: data)
+        let path = "/v1/resource/comments/\(songCommentThread(songID: songID))"
+        do {
+            let data = try await client.eapi(path, ["limit": limit, "offset": offset])
+            return try client.decoded(SongCommentsPage.self, from: data)
+        } catch MusicAPIError.business(let code, _) where code == -460 {
+            // A risk-controlled device loses every eapi call, comments with
+            // them; the web channel still answers (same shape), so fall back
+            // once, mirroring songURL.
+            return try await songCommentsViaWeb(path, limit: limit, offset: offset, using: client)
+        }
     }
 
     /// Likes a comment for the signed-in listener, or takes the like back.

@@ -1,21 +1,54 @@
+import CryptoKit
 import Foundation
 
 /// Read-only Bilibili comment API. Bilibili keys a video's comment thread by
 /// its numeric aid (`oid`), while plugin items may only carry a BV id, which
 /// `/x/web-interface/view` resolves. No credentials are sent.
+///
+/// The legacy `/x/v2/reply` endpoint now answers `replies: null` for unsigned
+/// callers, so comments go through `/x/v2/reply/wbi/main`, which requires the
+/// WBI request signature (`w_rid`): a day-scoped key pair (fetched through the
+/// web ticket + nav endpoints), a fixed key-table permutation, and MD5 over
+/// the sorted encoded query. Mirrors the reference plugin implementation in
+/// `Tools/plugin-js/test_bili_official.js`.
 enum BilibiliComments {
-    /// `sort=0` is time-ordered; `sort=2` is Bilibili's engagement ordering.
+    /// `hot` is Bilibili's engagement ordering (`mode=3`); `time` is
+    /// time-ordered (`mode=2`).
     enum Sort: Int, Sendable {
         case time = 0
         case hot = 2
+    }
+
+    /// WBI `mode` values differ from the legacy `sort` numbers.
+    private enum WBIMode: Int {
+        case time = 2
+        case hot = 3
     }
 
     static let browserUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36"
     static let referer = "https://www.bilibili.com/"
 
-    private static let replyURL = "https://api.bilibili.com/x/v2/reply"
+    private static let replyURL = "https://api.bilibili.com/x/v2/reply/wbi/main"
     private static let viewURL = "https://api.bilibili.com/x/web-interface/view"
+
+    /// The fixed permutation table of the WBI mixin key, from
+    /// bilibili-API-collect; the same 64 indexes the reference plugin uses.
+    private static let mixinKeyEncTab: [Int] = [
+        46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5,
+        49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55,
+        40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57,
+        62, 11, 36, 20, 34, 44, 52,
+    ]
+
+    private struct WBIKeys: Sendable {
+        let img: String
+        let sub: String
+        let day: Int
+    }
+
+    /// Day-scoped, so the ticket/nav round-trip runs at most once a day.
+    nonisolated(unsafe) private static var wbiKeysCache: WBIKeys?
 
     /// The numeric aid of a plugin track.
     static func aid(for track: Track) -> Int? {
@@ -70,13 +103,18 @@ enum BilibiliComments {
         guard oid > 0, page > 0, pageSize > 0 else {
             throw MusicAPIError.business(code: 400, message: String(localized: "无法识别这个视频"))
         }
-        let url = endpoint(replyURL, [
-            URLQueryItem(name: "type", value: "1"),
-            URLQueryItem(name: "oid", value: String(oid)),
-            URLQueryItem(name: "pn", value: String(page)),
-            URLQueryItem(name: "ps", value: String(pageSize)),
-            URLQueryItem(name: "sort", value: String(sort.rawValue)),
-        ])
+        let params: [String: String] = [
+            "type": "1",
+            "mode": String(sort == .hot ? WBIMode.hot.rawValue : WBIMode.time.rawValue),
+            "oid": String(oid),
+            "next": String(page - 1),
+            "plat": "1",
+            "ps": String(pageSize),
+            "web_location": "1315875",
+            "wts": String(Int(Date().timeIntervalSince1970)),
+        ]
+        let keys = try await wbiKeys(using: session)
+        let url = URL(string: "https://api.bilibili.com/x/v2/reply/wbi/main?" + signedQuery(params, keys: keys))!
         let object = try await get(url, using: session)
         guard let data = object["data"] as? [String: Any] else { return SongCommentsPage() }
         let replies = (data["replies"] as? [Any]) ?? []
@@ -84,7 +122,10 @@ enum BilibiliComments {
         let pageInfo = (data["page"] as? [String: Any]) ?? [:]
         let total = int(pageInfo["count"]).flatMap { $0 > 0 ? $0 : nil } ?? comments.count
         let more: Bool
-        if let isEnd = data["isEnd"] as? Bool {
+        let cursor = (data["cursor"] as? [String: Any]) ?? [:]
+        if let isEnd = cursor["is_end"] as? Bool {
+            more = !isEnd
+        } else if let isEnd = data["isEnd"] as? Bool {
             more = !isEnd
         } else if let number = int(pageInfo["num"]), let size = int(pageInfo["size"]), size > 0 {
             more = number * size < total
@@ -111,6 +152,86 @@ enum BilibiliComments {
         let aid = try await resolveAID(bvid: bvid, using: session)
         return try await fetchPage(oid: aid, page: page, pageSize: pageSize,
                                    sort: sort, using: session)
+    }
+
+    // MARK: - WBI signature
+
+    /// The day-scoped WBI key pair: the web ticket endpoint signs a timestamp
+    /// with a fixed secret and answers a `nav` object carrying the key URLs.
+    private static func fetchWBIKeys(using session: URLSession) async throws -> (img: String, sub: String) {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let mac = HMAC<SHA256>.authenticationCode(
+            for: Data("ts\(timestamp)".utf8),
+            using: SymmetricKey(data: Data("XgwSnGZ1p".utf8))
+        )
+        let hexSign = mac.map { String(format: "%02x", $0) }.joined()
+        let url = URL(string: "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket" +
+            "?key_id=ec02&hexsign=\(hexSign)&context[ts]=\(timestamp)&csrf=")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0",
+                         forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = object["data"] as? [String: Any],
+              let nav = payload["nav"] as? [String: Any],
+              let img = nav["img"] as? String, let sub = nav["sub"] as? String else {
+            throw MusicAPIError.decoding("ticket: missing data.nav keys")
+        }
+        return (strippedKey(img), strippedKey(sub))
+    }
+
+    /// "…/wbi/<key>.png" reads as "<key>".
+    private static func strippedKey(_ url: String) -> String {
+        guard let start = url.lastIndex(of: "/"), let end = url.lastIndex(of: "."), start < end else {
+            return url
+        }
+        return String(url[url.index(after: start)..<end])
+    }
+
+    private static func wbiKeys(using session: URLSession) async throws -> (img: String, sub: String) {
+        let day = Calendar(identifier: .gregorian).ordinality(of: .day, in: .year, for: Date()) ?? 0
+        if let cache = wbiKeysCache, cache.day == day {
+            return (cache.img, cache.sub)
+        }
+        let keys = try await fetchWBIKeys(using: session)
+        wbiKeysCache = WBIKeys(img: keys.img, sub: keys.sub, day: day)
+        return keys
+    }
+
+    /// The fixed-table permutation of "img+sub", truncated to 32 characters.
+    private static func mixinKey(_ raw: String) -> String {
+        var picked: [Character] = []
+        for index in mixinKeyEncTab {
+            guard index < raw.count else { continue }
+            picked.append(raw[raw.index(raw.startIndex, offsetBy: index)])
+        }
+        return String(picked.prefix(32))
+    }
+
+    /// JavaScript's `encodeURIComponent`: leaves alphanumerics and `-_.~`,
+    /// percent-encodes everything else as UTF-8.
+    private static func encodeURIComponent(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    /// Sorted, cleaned, encoded query with the trailing `w_rid` MD5, matching
+    /// the reference implementation's `getRid`.
+    private static func signedQuery(_ params: [String: String], keys: (img: String, sub: String)) -> String {
+        let mixin = mixinKey(keys.img + keys.sub)
+        let encoded: [String] = params.keys.sorted().map { key in
+            let value = params[key] ?? ""
+            let cleaned = value.replacingOccurrences(of: "[!'()*]",
+                                                     with: "", options: .regularExpression)
+            return encodeURIComponent(key) + "=" + encodeURIComponent(cleaned)
+        }
+        let query = encoded.joined(separator: "&")
+        let digest = Insecure.MD5.hash(data: Data((query + mixin).utf8))
+        let wRid = digest.map { String(format: "%02x", $0) }.joined()
+        return query + "&w_rid=" + wRid
     }
 
     private static func endpoint(_ base: String, _ query: [URLQueryItem]) -> URL {
