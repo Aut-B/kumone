@@ -654,7 +654,11 @@ struct NowPlayingView: View {
                     #endif
                 } else {
                     #if os(iOS)
-                    NowPlayingLyricsPager(isShown: true, horizontalInset: 32) {
+                    NowPlayingLyricsPager(
+                        isShown: true,
+                        horizontalInset: 32,
+                        onOpenComments: { activeSheet = NowPlayingSheet.comments($0) }
+                    ) {
                         IOSImmersiveLyricsColumn()
                             .contentShape(Rectangle())
                             .onTapGesture {
@@ -699,7 +703,11 @@ struct NowPlayingView: View {
             Spacer().frame(height: 44)
             if showLyricsOnMobile {
                 #if os(iOS)
-                NowPlayingLyricsPager(isShown: true, horizontalInset: 16) {
+                NowPlayingLyricsPager(
+                    isShown: true,
+                    horizontalInset: 16,
+                    onOpenComments: { activeSheet = NowPlayingSheet.comments($0) }
+                ) {
                     lyricsColumn
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -759,7 +767,11 @@ struct NowPlayingView: View {
                     CompactQueueContent()
                         .transition(.opacity)
                 } else {
-                    NowPlayingLyricsPager(isShown: showLyricsOnMobile, horizontalInset: 32) {
+                    NowPlayingLyricsPager(
+                        isShown: showLyricsOnMobile,
+                        horizontalInset: 32,
+                        onOpenComments: { activeSheet = NowPlayingSheet.comments($0) }
+                    ) {
                         IOSImmersiveLyricsColumn()
                     }
                         .opacity(showLyricsOnMobile ? 1 : 0)
@@ -964,7 +976,11 @@ struct NowPlayingView: View {
                     .opacity(showLyricsOnMobile ? 0 : 1)
                     .allowsHitTesting(!showLyricsOnMobile)
 
-                NowPlayingLyricsPager(isShown: showLyricsOnMobile, horizontalInset: 32) {
+                NowPlayingLyricsPager(
+                    isShown: showLyricsOnMobile,
+                    horizontalInset: 32,
+                    onOpenComments: { activeSheet = NowPlayingSheet.comments($0) }
+                ) {
                     IOSMinimalLyricsColumn {
                         showLyricsOnMobile = false
                     }
@@ -1843,13 +1859,13 @@ private struct CompactTrackHeader: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
     @State private var showAddToPlaylist = false
-    @State private var commentsTrack: Track?
 
     /// One enum-driven sheet, so the local-playlist picker and the NetEase
     /// playlist picker don't compete for the same presentation slot.
     private enum HeaderSheet: Identifiable {
         case neteasePlaylist
         case localPlaylist
+        case comments(Track)
 
         var id: Int { hashValue }
     }
@@ -1928,7 +1944,7 @@ private struct CompactTrackHeader: View {
                         TrackDownloadActions(track: track, showsIcons: true)
                         TrackBlacklistMenu(track: track, showsIcons: true)
                         SongCommentsMenuButton(track: track, showsIcons: true) {
-                            commentsTrack = track
+                            activeSheet = .comments(track)
                         }
                         Divider()
                         Button {
@@ -1986,11 +2002,10 @@ private struct CompactTrackHeader: View {
                     AddToPlaylistSheet(track: track)
                 case .localPlaylist:
                     AddTracksToPlaylistSheet(tracks: [track])
+                case .comments(let commentTrack):
+                    SongCommentsView(track: commentTrack)
                 }
             }
-        }
-        .sheet(item: $commentsTrack) { track in
-            SongCommentsView(track: track)
         }
     }
 }
@@ -2719,6 +2734,7 @@ private enum MoreSheet: Identifiable {
     case pluginPlaylist
     case localPlaylist
     case share
+    case comments(Track)
 
     var id: Int { hashValue }
 }
@@ -2727,7 +2743,6 @@ private struct MinimalTrackInfoRow: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
     @State private var showAddToPlaylist = false
-    @State private var commentsTrack: Track?
     @State private var airPlayRequest = 0
     @State private var moreSheet: MoreSheet? = nil
     let onOpenDestination: (Destination) -> Void
@@ -2783,11 +2798,10 @@ private struct MinimalTrackInfoRow: View {
                     AddTracksToPlaylistSheet(tracks: [track])
                 case .share:
                     ShareSheet(items: Self.shareItems(for: track))
+                case .comments(let commentTrack):
+                    SongCommentsView(track: commentTrack)
                 }
             }
-        }
-        .sheet(item: $commentsTrack) { track in
-            SongCommentsView(track: track)
         }
     }
 
@@ -2844,7 +2858,7 @@ private struct MinimalTrackInfoRow: View {
             TrackDownloadActions(track: track, showsIcons: true)
             TrackBlacklistMenu(track: track, showsIcons: true)
             SongCommentsMenuButton(track: track, showsIcons: true) {
-                commentsTrack = track
+                moreSheet = .comments(track)
             }
             Divider()
             Button {
@@ -3078,6 +3092,9 @@ struct NowPlayingScrubber: View {
     @State private var isHovering = false
     @State private var isDragging = false
     @State private var dragProgress: Double = 0
+    /// A drag that starts out vertical (or gets interrupted) is not a scrub:
+    /// it belongs to the page swipe / dismiss gesture, so it must not seek.
+    @State private var scrubCancelled = false
 
     private var fraction: Double {
         guard player.duration > 0 else { return 0 }
@@ -3120,14 +3137,26 @@ struct NowPlayingScrubber: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 guard player.duration > 0 else { return }
+                guard !scrubCancelled else { return }
+                let translation = value.translation
+                // A stationary touch is a tap-seek; once the finger moves,
+                // commit to scrubbing only while the motion stays horizontal.
+                if abs(translation.width) + abs(translation.height) > 1,
+                   abs(translation.height) > abs(translation.width) {
+                    scrubCancelled = true
+                    return
+                }
                 isDragging = true
                 player.isScrubbing = true
                 dragProgress = min(max(value.location.x / width, 0), 1) * player.duration
             }
             .onEnded { _ in
-                player.seek(to: dragProgress)
+                if !scrubCancelled {
+                    player.seek(to: dragProgress)
+                }
                 isDragging = false
                 player.isScrubbing = false
+                scrubCancelled = false
             }
     }
 

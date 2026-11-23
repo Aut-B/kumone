@@ -15,6 +15,10 @@ struct NowPlayingLyricsPager<Lyrics: View>: View {
     /// The layout's horizontal margin. Pages slide edge to edge across it
     /// and keep it inside.
     let horizontalInset: CGFloat
+    /// Raised on iOS 15 from the fallback entry button, where the swipe
+    /// TabView is disabled: comments open in the page's single sheet instead
+    /// of competing with the scrubber for a horizontal drag.
+    let onOpenComments: ((Track) -> Void)?
     private let lyrics: Lyrics
 
     @EnvironmentObject private var player: PlayerService
@@ -23,39 +27,70 @@ struct NowPlayingLyricsPager<Lyrics: View>: View {
     /// one of its pages closed again a moment later, when the pages refreshed.
     @State private var sharedComment: SharedComment?
 
-    init(isShown: Bool, horizontalInset: CGFloat, @ViewBuilder lyrics: () -> Lyrics) {
+    init(
+        isShown: Bool,
+        horizontalInset: CGFloat,
+        onOpenComments: ((Track) -> Void)? = nil,
+        @ViewBuilder lyrics: () -> Lyrics
+    ) {
         self.isShown = isShown
         self.horizontalInset = horizontalInset
+        self.onOpenComments = onOpenComments
         self.lyrics = lyrics()
     }
 
     var body: some View {
         if let track = player.currentTrack, SongCommentsMenuButton.isAvailable(for: track) {
-            TabView(selection: $page) {
-                lyrics
-                    .padding(.horizontal, horizontalInset)
-                    .tag(Page.lyrics)
-                // The list keeps a 16pt margin of its own.
-                NowPlayingCommentsPage(track: track, isActive: isShown && page == .comments) { comment in
-                    sharedComment = SharedComment(track: track, comment: comment)
+            if #available(iOS 16, *) {
+                TabView(selection: $page) {
+                    lyrics
+                        .padding(.horizontal, horizontalInset)
+                        .tag(Page.lyrics)
+                    // The list keeps a 16pt margin of its own.
+                    NowPlayingCommentsPage(track: track, isActive: isShown && page == .comments) { comment in
+                        sharedComment = SharedComment(track: track, comment: comment)
+                    }
+                        .id(track.id)
+                        .padding(.horizontal, max(horizontalInset - 16, 0))
+                        .tag(Page.comments)
                 }
-                    .id(track.id)
-                    .padding(.horizontal, max(horizontalInset - 16, 0))
-                    .tag(Page.comments)
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .padding(.horizontal, -horizontalInset)
-            .overlay(alignment: .bottom) {
-                pageIndicator
-            }
-            .sheet(item: $sharedComment) { shared in
-                CommentShareSheet(track: shared.track, comment: shared.comment)
-            }
-            .onChange(of: isShown) { shown in
-                guard !shown, page != .lyrics else { return }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) { page = .lyrics }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .padding(.horizontal, -horizontalInset)
+                .overlay(alignment: .bottom) {
+                    pageIndicator
+                }
+                .sheet(item: $sharedComment) { shared in
+                    CommentShareSheet(track: shared.track, comment: shared.comment)
+                }
+                .onChange(of: isShown) { shown in
+                    guard !shown, page != .lyrics else { return }
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { page = .lyrics }
+                }
+            } else {
+                // iOS 15's UIPageViewController pan fights the lyrics list's
+                // own drag and the scrubber; open comments from a button into
+                // the page's sheet instead of a swipe page.
+                ZStack(alignment: .bottomTrailing) {
+                    lyrics
+                        .padding(.horizontal, horizontalInset)
+                    if let onOpenComments {
+                        Button {
+                            onOpenComments(track)
+                        } label: {
+                            Image(systemName: "text.bubble.fill")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.85))
+                                .frame(width: 36, height: 36)
+                                .background(.black.opacity(0.35), in: Circle())
+                        }
+                        .buttonStyle(.pressable)
+                        .accessibilityLabel("查看评论")
+                        .padding(.trailing, 8)
+                        .padding(.bottom, 4)
+                    }
+                }
             }
         } else {
             lyrics
