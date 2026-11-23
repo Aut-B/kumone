@@ -1022,18 +1022,51 @@ final class PlayerService: ObservableObject {
             lastRefusalCode = code
         }
 
+        // JS plugin tracks: resolve through the plugin's getMediaSource instead.
+        // This branch was lost when the upstream 0.3.37 player was merged: without
+        // it every plugin track fell through to the NetEase songURL lookup with the
+        // plugin item's id and could never play. Mirrors the release line.
+        if let plugin = track.plugin,
+           let itemData = plugin.rawJSON.data(using: .utf8),
+           let itemDict = (try? JSONSerialization.jsonObject(with: itemData)) as? [String: Any],
+           let item = PluginMusicItem(normalizing: itemDict, platform: plugin.platform) {
+            let source = await PluginManager.shared.getMediaSource(
+                platform: plugin.platform,
+                item: item,
+                quality: SettingsManager.shared.audioQuality.pluginQuality
+            )
+            guard generation == resolveGeneration else { return }
+            resolvedURL = source.url
+            pluginHeaders = source.headers
+            // Bilibili CDN hosts sometimes check referer/UA on direct links;
+            // attach browser-style defaults when the plugin didn't provide any.
+            if let host = resolvedURL?.host,
+               host.contains("bilivideo.com") || host.contains("upos"),
+               pluginHeaders == nil || pluginHeaders!.isEmpty {
+                pluginHeaders = [
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36",
+                    "Referer": "https://www.bilibili.com/",
+                ]
+            }
+            data = nil
+        }
+
         // The service refused, or offers only a trial: a copy already cached,
         // of the service's own at another quality or of a third-party source,
         // plays before third-party sources are asked again. Trials are never
-        // cached, so a cached copy of a trial song is the whole song.
-        if resolvedURL == nil || data?.freeTrialInfo != nil, cacheEnabled,
+        // cached, so a cached copy of a trial song is the whole song. Plugin
+        // tracks never take this path: an id collision with a NetEase cache
+        // entry would play a different song.
+        if track.plugin == nil, resolvedURL == nil || data?.freeTrialInfo != nil, cacheEnabled,
            await loadFallbackCache(for: track, generation: generation, allowsUnblock: allowsUnblock, resumeAt: resumeAt) {
             return
         }
         guard generation == resolveGeneration else { return }
 
         // The service refused — try third-party sources (unblock-style).
-        if resolvedURL == nil || data?.freeTrialInfo != nil, allowsUnblock {
+        // NEVER for plugin tracks: their name-based matching can resolve to a
+        // different song entirely (wrong music), which is worse than failing.
+        if track.plugin == nil, resolvedURL == nil || data?.freeTrialInfo != nil, allowsUnblock {
             if await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt) { return }
         }
         guard generation == resolveGeneration else { return }
