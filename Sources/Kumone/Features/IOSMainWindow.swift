@@ -669,6 +669,7 @@ struct IOSMiniPlayerBar: View {
 struct IOSLibraryView: View {
     @Binding var showLogin: Bool
     @EnvironmentObject private var account: AccountStore
+    @ObservedObject private var layout = PlaylistLayoutStore.shared
     @Environment(\.presentSettingsSheet) private var presentSettingsSheet
     @State private var showNewPlaylist = false
 
@@ -751,7 +752,10 @@ struct IOSLibraryView: View {
 
                 if !account.createdPlaylists.isEmpty {
                     Section {
-                        ForEach(account.createdPlaylists) { playlist in
+                        // Pinned first, then the user's own order (local pin
+                        // layout); NetEase's server-side order is untouched.
+                        // The context menu was lost in the 0.3.37 merge.
+                        ForEach(layout.orderedCloud(account.createdPlaylists)) { playlist in
                             DestinationLink(value: Destination.playlist(playlist.id)) {
                                 HStack(spacing: 10) {
                                     CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
@@ -765,6 +769,24 @@ struct IOSLibraryView: View {
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
+                                    Spacer()
+                                    if layout.isPinned(cloud: playlist.id) {
+                                        Image(systemName: "pin.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(Theme.accent)
+                                    }
+                                }
+                            }
+                            .contextMenu {
+                                Button {
+                                    layout.togglePin(cloud: playlist.id)
+                                } label: {
+                                    Label(
+                                        layout.isPinned(cloud: playlist.id)
+                                            ? String(localized: "取消置顶")
+                                            : String(localized: "置顶"),
+                                        systemImage: layout.isPinned(cloud: playlist.id) ? "pin.slash" : "pin"
+                                    )
                                 }
                             }
                         }
@@ -784,7 +806,7 @@ struct IOSLibraryView: View {
 
                 if !account.subscribedPlaylists.isEmpty {
                     Section("收藏的歌单") {
-                        ForEach(account.subscribedPlaylists) { playlist in
+                        ForEach(layout.orderedCloud(account.subscribedPlaylists)) { playlist in
                             DestinationLink(value: Destination.playlist(playlist.id)) {
                                 HStack(spacing: 10) {
                                     CachedAsyncImage(url: playlist.coverURL?.resizedImageURL(80), animated: false)
@@ -798,6 +820,24 @@ struct IOSLibraryView: View {
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
+                                    Spacer()
+                                    if layout.isPinned(cloud: playlist.id) {
+                                        Image(systemName: "pin.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(Theme.accent)
+                                    }
+                                }
+                            }
+                            .contextMenu {
+                                Button {
+                                    layout.togglePin(cloud: playlist.id)
+                                } label: {
+                                    Label(
+                                        layout.isPinned(cloud: playlist.id)
+                                            ? String(localized: "取消置顶")
+                                            : String(localized: "置顶"),
+                                        systemImage: layout.isPinned(cloud: playlist.id) ? "pin.slash" : "pin"
+                                    )
                                 }
                             }
                         }
