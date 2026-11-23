@@ -10,7 +10,10 @@ permissions:
 
 jobs:
   build-ios:
-    runs-on: macos-26
+    # macos-26 is arm64 and kept failing to acquire a hosted runner at 0 steps
+    # (capacity). macos-15-intel is x64 and carries Xcode 16 / iOS 18 SDK, which
+    # covers every API this branch gates behind #available(iOS 18).
+    runs-on: macos-15-intel
     timeout-minutes: 90
     env:
       DEPLOY_TARGET: ${{ (contains(github.ref_name, 'ios15') || contains(github.ref_name, 'douyin')) && '15.0' || '16.0' }}
