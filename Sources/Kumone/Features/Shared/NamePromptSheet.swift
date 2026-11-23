@@ -46,7 +46,19 @@ struct NamePromptSheet: View {
         #if os(iOS)
         .navigationViewStyle(.stack)
         #endif
-        .onAppear { nameFocused = true }
+        // iOS 15 drops a focus assignment made in .onAppear: the sheet's
+        // presentation animation has not finished, so the field is not yet in
+        // the window and can never become first responder. Without the keyboard
+        // the name stays empty, Create stays disabled, and the user sees a
+        // sheet that "does nothing". Defer to the next runloop after the
+        // animation. .task cancels automatically when the sheet dismisses;
+        // re-check cancellation after the sleep so a closed sheet is never
+        // refocused (try? swallows the CancellationError from Task.sleep).
+        .task {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            nameFocused = true
+        }
     }
 
     private var trimmedName: String {
