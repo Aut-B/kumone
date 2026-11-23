@@ -41,6 +41,8 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     private var driverTask: Task<Void, Never>?
     private var idleRounds = 0
     private var lastCount = 0
+    /// 本地已有的视频 id 集合：抓取时整段都是旧 id 的响应可以跳过完整解析。
+    private var knownVideoIDs: Set<String> = []
     private var startedAt = Date()
     private var hasLoadedPage = false
     private var pendingCollect = false
@@ -51,6 +53,10 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     private var popupController: ShortVideoPopupViewController?
     private var lastPopupSignature = ""
     private var lastPopupAt = Date.distantPast
+    /// 登录完成轮询用：每次开始新一轮轮询自增，旧轮询据此自我失效。
+    private var loginWatchGeneration = 0
+    /// 登录浮层是否曾经出现过（区分「弹出过又关掉」和「压根没弹出」）。
+    private var loginDialogSeen = false
 
     static let handlerName = "shortvideo"
 
@@ -186,13 +192,28 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         load(platform.homeURLString)
     }
 
-    /// 直接打开站点登录页（抖音是 sso.douyin.com）。
+    /// 打开登录。
+    ///
+    /// 直接 `load(loginURL)` 是不行的：`sso.douyin.com` 只是一个登录落地页，
+    /// 登录浮层必须由 `www.douyin.com` 自己的前端拉起来，才有回调把 cookie
+    /// 写进 douyin.com 域。这里改成：先在当前页面里用 JS 点官方登录按钮，
+    /// 点不到再退回 SSO。
     func openLoginPage() {
         hasLoadedPage = true
-        phase = .loading
         lastError = nil
-        status = "登录页：登录完成后点「收藏页」回去抓取"
-        load(platform.loginURLString)
+        phase = .loading
+        status = "正在调出登录浮层…"
+        webView.evaluateJavaScript(Self.loginTriggerScript) { [weak self] result, error in
+            guard let self else { return }
+            if error == nil, Self.truthy(result) {
+                self.status = "已调出登录浮层，登录完成后等待自动刷新…"
+                self.watchLoginCompletion()
+                return
+            }
+            // 页面没渲染登录按钮（还没加载完、或站点改版）：退回站点自己的登录页。
+            self.status = "登录页：登录完成后点「收藏页」回去抓取"
+            self.load(self.platform.loginURLString)
+        }
     }
 
     func reloadCurrentPage() {
@@ -239,10 +260,6 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             note("拦下非网页弹窗：\(scheme)://")
             return
         }
-        guard popupController == nil else {
-            note("已有弹窗，忽略重复请求")
-            return
-        }
         // `window.open` 会被两条路同时报到（JS 桥 + WKUIDelegate），这里去重。
         let signature = url.absoluteString
         if signature == lastPopupSignature, Date().timeIntervalSince(lastPopupAt) < 3 {
@@ -250,6 +267,14 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         }
         lastPopupSignature = signature
         lastPopupAt = Date()
+
+        // 弹窗已经开着时以前直接 return：抖音登录先弹扫码再转手机号，第二次
+        // `window.open` 被静默吞掉，用户感觉「点了完全没反应」。现在让已有
+        // 弹窗自己跳过去，而不是丢弃这次导航。
+        if let existing = popupController {
+            existing.load(request)
+            return
+        }
 
         guard let host = ShortVideoTopView.controller() else {
             note("弹窗失败：找不到可用的窗口")
@@ -302,6 +327,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         phase = .collecting
         idleRounds = 0
         lastCount = videos.count
+        knownVideoIDs = Set(videos.map { $0.id })
         startedAt = Date()
         lastError = nil
         lastScriptError = nil
@@ -326,7 +352,9 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     }
 
     private func startDriver() {
-        webView.evaluateJavaScript(Self.driverScript(for: platform)) { [weak self] _, error in
+        // 把本地已有的条数传进去：驱动脚本滚到「见过 ≥ 本地基线、且连续两轮没新增」
+        // 就停，不再为了同步几条新增而把几百条旧收藏从头滚一遍。
+        webView.evaluateJavaScript(Self.driverScript(for: platform, knownCount: videos.count)) { [weak self] _, error in
             guard let self, let error else { return }
             self.note("驱动脚本失败：\(error.localizedDescription)")
         }
@@ -364,6 +392,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     func clear() {
         videos = []
+        knownVideoIDs = []
         ShortVideoStore.save(videos, for: platform)
         status = "已清空，可重新抓取"
         phase = .idle
@@ -375,6 +404,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         let merged = ShortVideoMerge.merge(videos, remote)
         guard merged != videos else { return }
         videos = merged
+        knownVideoIDs = Set(merged.map { $0.id })
         ShortVideoStore.save(videos, for: platform)
         status = "已同步 \(videos.count) 条"
     }
@@ -407,6 +437,12 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     private func ingest(_ body: String) {
         rawCount += 1
+        // 先只扫 id：整段都是本地已有的旧响应就跳过 `JSONSerialization`，
+        // 收藏多时避免每段都重跑完整解析。扫不到 id 时退回到原路径。
+        let seenIDs = ShortVideoParser.ids(inResponseBody: body)
+        if !seenIDs.isEmpty, seenIDs.isSubset(of: knownVideoIDs) {
+            return
+        }
         let parsed = ShortVideoParser.videos(fromResponseBody: body, platform: platform)
         guard !parsed.isEmpty else {
             note("第 \(rawCount) 段数据没解析出条目（\(body.count) 字符）")
@@ -432,6 +468,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             } else {
                 videos.append(video)
                 indexByID[video.id] = videos.count - 1
+                knownVideoIDs.insert(video.id)
                 changed += 1
             }
         }
@@ -463,6 +500,106 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             }
         }
     }
+
+    /// `evaluateJavaScript` 把 JS 布尔桥接成 `NSNumber` 而不是 `Bool`，
+    /// 直接 `as? Bool` 会永远失败，于是每次都被当成「没点到」退回 SSO。
+    static func truthy(_ value: Any?) -> Bool {
+        if let flag = value as? Bool { return flag }
+        if let number = value as? NSNumber { return number.boolValue }
+        return false
+    }
+
+    /// 等登录完成，然后刷新当前页把登录态带进来。
+    ///
+    /// 抖音的登录浮层是前端自己管理的，登录完不会整页跳转，cookie 虽然写进了
+    /// douyin.com 域，但当前页面上的旧渲染还是未登录状态；不刷新就抓不到收藏。
+    private func watchLoginCompletion() {
+        loginWatchGeneration += 1
+        loginDialogSeen = false
+        let generation = loginWatchGeneration
+        pollLoginState(generation: generation, attempt: 0)
+    }
+
+    private func pollLoginState(generation: Int, attempt: Int) {
+        guard generation == loginWatchGeneration, attempt < 60 else { return }
+        let probe = """
+        (function () {
+          var dialog = document.querySelector(
+            '[class*=login-container], [class*=loginModal], [id*=login-modal]'
+          );
+          var dialogVisible = false;
+          if (dialog) {
+            var style = window.getComputedStyle(dialog);
+            var rect = dialog.getBoundingClientRect();
+            dialogVisible = style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && rect.width > 0
+              && rect.height > 0;
+          }
+          var avatar = document.querySelector(
+            '[data-e2e*=user-info], [class*=userInfo], [class*=avatar]'
+          );
+          // seen 用来区分「登录浮层出现过又关掉」和「压根没弹出浮层」：
+          // 未登录页面上也有 avatar 节点，只看它会一开头就误判成已登录。
+          return { visible: dialogVisible, seen: !!dialog, avatar: !!avatar };
+        })();
+        """
+        webView.evaluateJavaScript(probe) { [weak self] result, _ in
+            guard let self, generation == self.loginWatchGeneration else { return }
+            let map = result as? [String: Any] ?? [:]
+            let visible = Self.truthy(map["visible"])
+            let seen = Self.truthy(map["seen"])
+            let avatar = Self.truthy(map["avatar"])
+            if seen { self.loginDialogSeen = true }
+            // 判定登录完成：浮层曾出现过、现在已关闭，且页面上出现了登录态节点。
+            if self.loginDialogSeen && !visible && avatar {
+                self.loginWatchGeneration += 1
+                self.status = "登录成功，正在刷新页面…"
+                self.webView.reload()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.pollLoginState(generation: generation, attempt: attempt + 1)
+            }
+        }
+    }
+
+    /// 在当前页面里找官方登录入口并点一下。
+    ///
+    /// 顺序：抖音头部的「登录」按钮 → 侧栏「我的」→ TikTok 的 log in 链接。
+    /// 返回 true 表示点到了至少一个候选元素。
+    static let loginTriggerScript: String = """
+    (function () {
+      var texts = ['登录', '立即登录', 'Log in', 'Log in to TikTok', '登录/注册'];
+      var nodes = document.querySelectorAll(
+        'button, a, div[role=button], [data-e2e*=login], [class*=login]'
+      );
+      var hit = 0;
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var t = (el.innerText || el.textContent || '').trim();
+        if (t.length === 0 || t.length > 12) { continue; }
+        for (var j = 0; j < texts.length; j++) {
+          if (t === texts[j] || t.indexOf(texts[j]) === 0) {
+            var r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) { continue; }
+            el.click();
+            hit = hit + 1;
+            break;
+          }
+        }
+        if (hit > 0) { break; }
+      }
+      if (hit === 0) {
+        // 兜底：站点常把登录入口挂在 avatar / 个人中心上。
+        var avatar = document.querySelector(
+          '[data-e2e*=avatar], [class*=avatar], [class*=Avatar]'
+        );
+        if (avatar) { avatar.click(); hit = hit + 1; }
+      }
+      return hit > 0;
+    })();
+    """
 
     // MARK: - 注入脚本
 
@@ -535,6 +672,14 @@ final class ShortVideoCollector: NSObject, ObservableObject {
           function post(url, text) {
             try {
               if (!interesting(text)) { return; }
+              // 记下页面上累计见过多少条：驱动脚本靠它判断「是否已经抓够本地基线」。
+              try {
+                // 只数明确的视频 id 字段，避免把 "id": 之类的杂项算进去导致提前停止滚动。
+                var ids = text.match(/"(?:aweme_id|item_id)"\\s*:\\s*"?([0-9]{8,})/g);
+                if (ids) {
+                  window.__kumoneSeenCount = (window.__kumoneSeenCount || 0) + ids.length;
+                }
+              } catch (e) {}
               // 同一段响应只回传一次；太大的（>3MB）跳过，别把主线程堵死。
               var key = String(url) + '#' + text.length;
               if (posted[key]) { return; }
@@ -607,12 +752,20 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     }
 
     /// 自动点开「收藏」tab，并持续滚到底，让列表继续分页。
-    static func driverScript(for platform: ShortVideoPlatform) -> String {
+    ///
+    /// `knownCount` 是本地已经有的收藏条数（0 表示没有本地基线）。
+    /// 一旦页面上累计见过的条目达到这个数、且连续若干轮没有新增，就停止滚动：
+    /// 收藏几百条时，无限滚动会把整个收藏夹从头拉一遍；只要新增的部分抓到了，
+    /// 剩下的旧条目本地本来就有，没必要再滚。
+    static func driverScript(for platform: ShortVideoPlatform, knownCount: Int = 0) -> String {
         let titles = platform.tabTitles.map { "\"\($0)\"" }.joined(separator: ", ")
         return """
         (function () {
           if (window.__kumoneDriver) { return; }
           var TITLES = [\(titles)];
+          var KNOWN = \(knownCount);
+          var idleRounds = 0;
+          var lastHeight = 0;
           window.__kumoneDriver = setInterval(function () {
             try {
               if (!window.__kumoneClickedTab) {
@@ -627,8 +780,28 @@ final class ShortVideoCollector: NSObject, ObservableObject {
                     }
                   }
                 }
+                return;
               }
-              window.scrollTo(0, document.body.scrollHeight);
+              var height = document.body.scrollHeight;
+              if (height === lastHeight) {
+                idleRounds = idleRounds + 1;
+              } else {
+                idleRounds = 0;
+                lastHeight = height;
+              }
+              // 滚不动了：已经到底，或者能拉的都拉完了。
+              if (idleRounds >= 4) {
+                clearInterval(window.__kumoneDriver);
+                window.__kumoneDriver = null;
+                return;
+              }
+              // 已经攒够本地基线那么多条、又连续两轮没有新的：就停，不再无谓地翻旧数据。
+              if (KNOWN > 0 && window.__kumoneSeenCount >= KNOWN && idleRounds >= 2) {
+                clearInterval(window.__kumoneDriver);
+                window.__kumoneDriver = null;
+                return;
+              }
+              window.scrollTo(0, height);
             } catch (e) {}
           }, 1200);
         })();

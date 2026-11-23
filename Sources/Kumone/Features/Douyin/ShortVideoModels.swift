@@ -228,6 +228,27 @@ struct ShortVideo: Identifiable, Hashable, Codable {
 }
 
 enum ShortVideoParser {
+    /// 只从响应里扫出所有视频 id，不做完整 JSON 解析。
+    ///
+    /// 用于 `ingest` 的增量判断：整段响应的 id 都在本地已知集合里时，
+    /// 跳过 `JSONSerialization` 与字段映射，收藏多时显著省 CPU。
+    /// `__kumoneSeenCount` 只数 `aweme_id` / `item_id`，而 `video(from:)`
+    /// 里抖音取 `aweme_id`、TikTok 取 `id`，这里把 `id` 也算上以覆盖两边；
+    /// 仅匹配 8 位以上数字，避免误伤杂项字段。
+    static func ids(inResponseBody body: String) -> Set<String> {
+        guard let regex = try? NSRegularExpression(
+            pattern: #""(?:aweme_id|item_id|id)"\s*:\s*"?([0-9]{8,})"#,
+            options: []
+        ) else { return [] }
+        let range = NSRange(body.startIndex..., in: body)
+        var result: Set<String> = []
+        regex.enumerateMatches(in: body, options: [], range: range) { match, _, _ in
+            guard let match, let r = Range(match.range(at: 1), in: body) else { return }
+            result.insert(String(body[r]))
+        }
+        return result
+    }
+
     /// 解析网页里截获的一段 JSON。
     ///
     /// 抖音是 `aweme_list` / `aweme_detail`，TikTok 是 `itemList` / `itemStruct`；

@@ -148,6 +148,12 @@ final class ShortVideoPopupViewController: UIViewController, WKNavigationDelegat
         }
     }
 
+    /// 已有弹窗时让它自己跳转，而不是丢掉第二次 `window.open`：
+    /// 抖音登录经常先弹二维码、再转手机号，第二次导航被吞就表现为「点了没反应」。
+    func load(_ newRequest: URLRequest) {
+        webView.load(newRequest)
+    }
+
     @objc private func backSelf() {
         if webView.canGoBack {
             webView.goBack()
