@@ -7,7 +7,10 @@
 // Project Identity
 // ==========================================
 PRODUCT_NAME = KumoneIOS
-PRODUCT_BUNDLE_IDENTIFIER = sb.moe.kumone-ios
+// Must stay sb.moe.kumone (NOT -ios): the user's installed builds use that id
+// and every delivery is an in-place覆盖装 over it. Upstream 0.3.37 renamed it
+// to sb.moe.kumone-ios, which would install as a brand-new app and lose data.
+PRODUCT_BUNDLE_IDENTIFIER = sb.moe.kumone
 // PRODUCT_DISPLAY_NAME is not a real build setting; the Home Screen
 // name comes from CFBundleDisplayName.
 INFOPLIST_KEY_CFBundleDisplayName = Kumone
