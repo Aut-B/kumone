@@ -38,10 +38,9 @@ enum ShortVideoLoginCookie {
 /// 由站点自己的 JS 去签，我们只在旁边把返回的 JSON 抄一份——里面本来就带着
 /// 可以直接播的地址。
 ///
-/// 关键点：**登录、搜索这些交互阶段完全不注入任何脚本**。之前为了抓接口在
-/// documentStart 就换掉 `fetch` / `XMLHttpRequest`，站点一旦察觉被改过，
-/// 「登录」按钮和搜索就会静默失效。现在脚本只在点「开始抓取」时才注入，
-/// 页面加载和登录全程是原样的。
+/// 关键点：**登录、搜索这些交互阶段不向原生回传任何抓取数据**。收藏页从
+/// documentStart 起只装一个「缓冲区」监听：站点自己的请求先留在 JS 里，只有
+/// 点「开始抓取」才激活并回传。首页、视频详情和登录页完全不装监听。
 @MainActor
 final class ShortVideoCollector: NSObject, ObservableObject {
     enum Phase: Equatable {
@@ -75,8 +74,13 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     private var startedAt = Date()
     private var hasLoadedPage = false
     private var pendingCollect = false
-    private var hookInstalled = false
-    private var reloadingForCollect = false
+    /// 本次抓取是否已经为「缓冲为空」刷新过一次页面（防 reload 死循环）。
+    private var attemptedReloadFallback = false
+    /// 每次主框架导航自增，异步探测据此丢弃过期页面的回调。
+    private var navigationGeneration = 0
+    /// 当前收藏页监听已准备好的导航代次。
+    private var preparedGeneration = -1
+    private var preparingCollection = false
     /// 一共收到多少段被抄下来的响应（不等于视频条数）。
     @Published private(set) var rawCount = 0
     private var popupController: ShortVideoPopupViewController?
@@ -179,9 +183,9 @@ final class ShortVideoCollector: NSObject, ObservableObject {
                          forMainFrameOnly: true)
         )
         configuration.userContentController.addUserScript(
-            WKUserScript(source: Self.armedHookScript(for: platform),
+            WKUserScript(source: Self.favoritesBufferHookScript(for: platform),
                          injectionTime: .atDocumentStart,
-                         forMainFrameOnly: false)
+                         forMainFrameOnly: true)
         )
 
         let view = WKWebView(frame: .zero, configuration: configuration)
@@ -425,11 +429,29 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             // 只要还在个人页就行（`/user/self` 下面挂着「收藏」和各个「收藏夹」）。
             return current.contains("/user/self")
         case .tiktok:
-            return current.contains("tiktok.com/@")
+            // `tiktok.com/@user/video/123` 同样是 `/@` 开头，但那是视频详情页。
+            return current.contains("tiktok.com/@") && !current.contains("/video/")
         }
     }
 
     private func beginCollecting() {
+        guard isOnFavoritesPage else {
+            // 打开收藏页后被重定向到登录页时会走到这里：不能再 reload，否则会在
+            // 「收藏页 → 登录页」之间无限循环。交给用户登录后手动重试。
+            pendingCollect = false
+            phase = .idle
+            status = "当前不在收藏页（可能被重定向到登录），登录后再点「开始抓取」"
+            note("抓取中止：页面不是收藏页")
+            return
+        }
+        guard pageReady, !webView.isLoading else {
+            pendingCollect = true
+            status = "收藏页加载完成后自动开始抓取…"
+            note("收藏页尚未加载完成，抓取排队到 didFinish")
+            return
+        }
+
+        pendingCollect = false
         phase = .collecting
         idleRounds = 0
         lastCount = videos.count
@@ -437,44 +459,89 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         startedAt = Date()
         lastError = nil
         lastScriptError = nil
-        reloadingForCollect = false
         rawCount = 0
+        preparedGeneration = -1
+        preparingCollection = false
+        attemptedReloadFallback = false
+        status = "正在抓取…准备当前收藏页的监听"
+        note("开始抓取：直接激活当前收藏页的缓冲监听，不重新加载")
+        prepareCollectionOnCurrentPage()
+    }
 
-        // 监听已经在当前页面装好、而且用户就停在收藏页时，不要再 reload：
-        // 否则用户手选的收藏夹会被冲回默认「收藏」tab。
-        if hookInstalled && isOnFavoritesPage {
-            status = "正在抓取…监听已就绪，直接开始"
-            note("开始抓取：监听已就绪，跳过重新加载")
-            // 用户可能正停在某个收藏夹里：标记 tab 已经点过，驱动脚本就不会再去
-            // 点「收藏」把选择冲回默认收藏夹。
-            // 同时清掉上一轮「同一段响应只回传一次」的去重表，否则清空本地列表后
-            // 重抓时，页面再发同样的请求也不会再上报。
-            webView.evaluateJavaScript(
-                "window.__kumoneClickedTab = true;"
-                + "window.__kumoneSeenCount = 0;"
-                + "if (window.__kumonePosted) {"
-                + "for (var k in window.__kumonePosted) { delete window.__kumonePosted[k]; }"
-                + "}"
-            )
-            startDriver()
-            return
-        }
-
-        status = "正在抓取…正在重新加载页面，让收藏接口重新请求一次"
-        note("开始抓取：置标记并重新加载")
-
-        // 接口请求必须发生在监听装好**之后**。以前是在已经加载完的页面上
-        // 补装监听，页面早把收藏拉过了，于是永远收到 0 段数据——TikTok 的
-        // 收藏页是整页渲染，切 tab 也不会再发请求，就一条都抓不到。
-        let js = "try{localStorage.setItem('__kumoneArm','1');}catch(e){}"
-        webView.evaluateJavaScript(js) { [weak self] _, _ in
+    /// 监听必须在收藏页 documentStart 就装好，否则首屏收藏请求早于 didFinish，
+    /// 跳过 reload 后就会一段数据都收不到。这里只负责激活/兜底补装当前页面，
+    /// 等 JS 把浏览期间缓冲的响应用 `send` 回传后再启动驱动脚本。
+    private func prepareCollectionOnCurrentPage() {
+        guard phase == .collecting, isOnFavoritesPage, !preparingCollection else { return }
+        preparingCollection = true
+        preparedGeneration = -1
+        let generation = navigationGeneration
+        let probe = "!!window.__kumoneShortVideoHook"
+            + " && typeof window.__kumoneStartCollecting === 'function'"
+        webView.evaluateJavaScript(probe) { [weak self] result, _ in
             guard let self else { return }
-            self.reloadingForCollect = true
-            if self.webView.url == nil {
-                self.reloadCurrentPage()
-            } else {
-                self.webView.reload()
+            guard generation == self.navigationGeneration, self.phase == .collecting else {
+                if generation == self.navigationGeneration {
+                    self.preparingCollection = false
+                }
+                return
             }
+            if Self.truthy(result) {
+                self.activateHook(generation: generation)
+            } else {
+                self.webView.evaluateJavaScript(Self.hookScript(for: self.platform)) { [weak self] _, _ in
+                    guard let self else { return }
+                    guard generation == self.navigationGeneration, self.phase == .collecting else {
+                        if generation == self.navigationGeneration {
+                            self.preparingCollection = false
+                        }
+                        return
+                    }
+                    self.activateHook(generation: generation)
+                }
+            }
+        }
+    }
+
+    private func activateHook(generation: Int) {
+        webView.evaluateJavaScript(Self.activateHookScript) { [weak self] result, error in
+            guard let self else { return }
+            guard generation == self.navigationGeneration, self.phase == .collecting else {
+                if generation == self.navigationGeneration {
+                    self.preparingCollection = false
+                }
+                return
+            }
+            self.preparingCollection = false
+            if let error {
+                self.note("激活监听失败：\(error.localizedDescription)")
+            }
+            // 激活脚本现在返回回放的缓冲段数：-1 = 监听根本没装上，
+            // 0 = 装上了但缓冲为空（首屏请求发生在监听安装之前，晚注入场景）。
+            let flushed = (result as? NSNumber)?.intValue ?? -1
+            if flushed < 0 {
+                // 明确报错，绝不静默 0 条（BATCH_03 复审要求）。
+                self.stopCollecting(message: "监听激活失败：请退出收藏页重进后再点「开始抓取」")
+                return
+            }
+            if flushed == 0 {
+                // 缓冲为空：兜底刷新当前页一次。reload 的是当前 URL（不是默认
+                // 收藏页），收藏夹的 URL 参数原样保留；重载后 documentStart 的
+                // 全站缓冲监听从第一刻起抄请求，首屏数据不会漏。
+                if self.attemptedReloadFallback {
+                    self.stopCollecting(message: "没有收到收藏接口数据：请确认已在收藏页，或重新登录后再试")
+                    return
+                }
+                self.attemptedReloadFallback = true
+                self.pendingCollect = true
+                self.status = "正在刷新当前收藏页以捕获首屏数据（保持所选收藏夹）…"
+                self.note("缓冲为空：刷新当前页重新捕获首屏")
+                self.reloadCurrentPage()
+                return
+            }
+            self.preparedGeneration = generation
+            self.note("监听已激活，回放 \(flushed) 段缓冲，开始驱动当前收藏页")
+            self.startDriver()
         }
     }
 
@@ -502,10 +569,10 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     func stopCollecting(message: String? = nil) {
         driverTask?.cancel()
         driverTask = nil
-        reloadingForCollect = false
+        preparingCollection = false
         webView.evaluateJavaScript(
             "try{clearInterval(window.__kumoneDriver);window.__kumoneDriver=null;"
-            + "localStorage.setItem('__kumoneArm','0');}catch(e){}"
+            + "window.__kumoneCollecting=false;}catch(e){}"
         )
         phase = .finished
         status = message ?? "已抓取 \(videos.count) 条"
@@ -551,10 +618,10 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             lastCount = videos.count
         }
         if idleRounds >= 6 {
-            if videos.isEmpty {
-                let detail = rawCount == 0
-                    ? "一段接口数据都没收到（页面没发出请求，或不是收藏页）"
-                    : "收到 \(rawCount) 段数据但解析出 0 条（字段可能变了）"
+            if rawCount == 0 {
+                stopCollecting(message: "一条都没抓到：当前收藏页没有回传数据（监听未生效或页面不是收藏页）")
+            } else if videos.isEmpty {
+                let detail = "收到 \(rawCount) 段数据但解析出 0 条（字段可能变了）"
                 stopCollecting(message: "一条都没抓到：\(detail)")
             } else {
                 stopCollecting(message: "抓取完成，共 \(videos.count) 条")
@@ -562,7 +629,13 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         }
     }
 
-    private func ingest(_ body: String) {
+    private func ingest(_ body: String, url: String?) {
+        guard !Self.isNonFavoriteResponse(url: url, platform: platform) else {
+            note("跳过非收藏接口：\(url?.prefix(80) ?? "")")
+            return
+        }
+        guard phase == .collecting, isOnFavoritesPage else { return }
+        guard Self.favoriteListMarkers(for: platform).contains(where: { body.contains($0) }) else { return }
         rawCount += 1
         // 先只扫 id：整段都是本地已有的旧响应就跳过 `JSONSerialization`，
         // 收藏多时避免每段都重跑完整解析。扫不到 id 时退回到原路径。
@@ -796,38 +869,133 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     // MARK: - 注入脚本
 
 
-    /// 只有用户点了「开始抓取」才生效的监听脚本。
+    static func favoriteListMarkers(for platform: ShortVideoPlatform) -> [String] {
+        switch platform {
+        case .douyin: return ["aweme_list"]
+        case .tiktok: return ["itemList", "item_list"]
+        }
+    }
+
+    /// 「作品」列表和收藏列表的响应字段长得很像（都带 `aweme_list` / `itemList`），
+    /// 只靠字段名分不出来。这里列出已知的作品接口，避免用户停在「作品」tab 时
+    /// 把作品当收藏写进本地并同步上云。
+    static func nonFavoriteURLMarkers(for platform: ShortVideoPlatform) -> [String] {
+        switch platform {
+        case .douyin:
+            // 「作品」和「喜欢」都不是收藏；收藏夹/收藏列表走别的接口。
+            return ["/aweme/v1/web/aweme/post/", "/aweme/v1/web/aweme/favorite/"]
+        case .tiktok:
+            // 作品、喜欢、转发都不是收藏。
+            return ["/api/post/item_list", "/api/like/item_list", "/api/repost/item_list"]
+        }
+    }
+
+    static func isNonFavoriteResponse(url: String?, platform: ShortVideoPlatform) -> Bool {
+        guard let url, !url.isEmpty else { return false }
+        return nonFavoriteURLMarkers(for: platform).contains(where: { url.contains($0) })
+    }
+
+    /// 全站从 documentStart 起安装的缓冲监听。
     ///
-    /// 标记存在 `localStorage` 里，所以点抓取 → 置标记 → reload 之后，
-    /// 页面自己的请求从第一刻起就会被抄下来。登录、搜索阶段标记是 0，
-    /// 页面完全干净，不会被脚本影响。
-    static func armedHookScript(for platform: ShortVideoPlatform) -> String {
-        """
+    /// 之前只在个人页/收藏页安装，但用户从首页经站内 SPA 进入收藏页时没有
+    /// 新 document，监听装不上，首屏收藏请求就会漏掉（BATCH_03 复审指出的
+    /// 晚注入空洞）。改成全站安装：hookScript 的 post() 自己按 onFavoritesPage()
+    /// 过滤，首页/视频详情页的响应根本不会进 buffer，也不会向原生回传；
+    /// 在收藏页缓冲的响应，要等用户点「开始抓取」才由 `__kumoneStartCollecting`
+    /// 一次性回传，浏览阶段不向原生发任何抓取数据，也不改动页面请求。
+    static func favoritesBufferHookScript(for platform: ShortVideoPlatform) -> String {
+        let needle = platform.cookieDomainNeedle
+        return """
         (function () {
-          var armed = false;
-          try { armed = window.localStorage.getItem('__kumoneArm') === '1'; } catch (e) {}
-          if (!armed) { return; }
+          var host = String(window.location.hostname || '').toLowerCase();
+          var suffix = ".\(needle)";
+          var onSite = host === "\(needle)"
+            || (host.length > suffix.length && host.slice(-suffix.length) === suffix);
+          if (!onSite) { return; }
           \(hookScript(for: platform))
         })();
         """
     }
 
+    static let activateHookScript = """
+    (function () {
+      if (typeof window.__kumoneStartCollecting !== 'function') { return -1; }
+      window.__kumoneStartCollecting();
+      return window.__kumoneFlushedCount || 0;
+    })();
+    """
+
     static func hookScript(for platform: ShortVideoPlatform) -> String {
-        let markers = platform.payloadMarkers.map { "\"\($0)\"" }.joined(separator: ", ")
+        let markers = favoriteListMarkers(for: platform).map { "\"\($0)\"" }.joined(separator: ", ")
+        let nonFavoriteMarkers = nonFavoriteURLMarkers(for: platform)
+            .map { "\"\($0)\"" }
+            .joined(separator: ", ")
+        // 是否还需要驱动脚本去点「收藏」tab：
+        // - 抖音：URL 带 `showTab=favorite_collection` 说明当前就是收藏区（用户手选的
+        //   收藏夹也在这个 tab 下），点 tab 会把手选收藏夹冲回默认，必须跳过；
+        //   没带这个参数（例如停在「作品」）才允许点。
+        // - TikTok：`/@me` 是个人页根，收藏 tab 默认没打开，得靠驱动点一下才会发请求。
+        let tabAlreadyOpen: String
+        switch platform {
+        case .douyin:
+            tabAlreadyOpen = "window.location.search.indexOf('showTab=favorite_collection') >= 0"
+        case .tiktok:
+            tabAlreadyOpen = "false"
+        }
+        let favoritesPageCheck: String
+        switch platform {
+        case .douyin:
+            favoritesPageCheck = """
+            function onFavoritesPage() {
+              var path = String(window.location.pathname || '');
+              if (path.indexOf('/user/self') !== 0) { return false; }
+              var search = String(window.location.search || '');
+              // 只排除已知的「作品 / 喜欢」tab；收藏夹和未知 tab 仍按收藏页处理。
+              if (search.indexOf('showTab=post') >= 0
+                  || search.indexOf('showTab=like') >= 0) {
+                return false;
+              }
+              return true;
+            }
+            """
+        case .tiktok:
+            favoritesPageCheck = """
+            function onFavoritesPage() {
+              var path = String(window.location.pathname || '');
+              return path.indexOf('/@') === 0 && path.indexOf('/video/') < 0;
+            }
+            """
+        }
         return """
         (function () {
           if (window.__kumoneShortVideoHook) { return; }
           window.__kumoneShortVideoHook = true;
+          window.__kumoneCollecting = false;
+          window.__kumoneSeenCount = 0;
+          // 当前页面上是否已经见过收藏列表响应。它跨多轮抓取保留：第二轮抓取时
+          // 页面已经停在收藏区，驱动就不该再点 tab 把收藏夹冲回默认。
+          window.__kumoneSawFavoritesData = false;
 
           var MARKERS = [\(markers)];
+          var NON_FAVORITE = [\(nonFavoriteMarkers)];
+          var TAB_ALREADY_OPEN = \(tabAlreadyOpen);
+          \(favoritesPageCheck)
           var HANDLER = "\(handlerName)";
           var reported = {};
+          var posted = {};
+          var buffer = [];
+          var bufferChars = 0;
+          var MAX_BUFFERED = 40;
+          // 浏览阶段可能攒很久：按条数和总字符数双上限，避免在手机上把内存吃满。
+          var MAX_BUFFER_CHARS = 6000000;
+          window.__kumonePosted = posted;
 
           function send(payload) {
             try { window.webkit.messageHandlers[HANDLER].postMessage(payload); } catch (e) {}
           }
 
           function note(text) {
+            if (!window.__kumoneCollecting) { return; }
             try {
               var key = String(text).slice(0, 120);
               if (reported[key]) { return; }
@@ -859,27 +1027,69 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             return false;
           }
 
-          var posted = {};
-          // 暴露给原生侧：跳过 reload 重新抓取时清空去重表。
-          window.__kumonePosted = posted;
+          function countSeen(text) {
+            try {
+              // 只数明确的视频 id 字段，避免把 "id": 之类的杂项算进去导致提前停止滚动。
+              var ids = text.match(/"(?:aweme_id|item_id)"\\s*:\\s*"?([0-9]{8,})/g);
+              if (ids) {
+                window.__kumoneSeenCount = (window.__kumoneSeenCount || 0) + ids.length;
+              }
+            } catch (e) {}
+          }
+
+          function deliver(payload) {
+            countSeen(payload.body);
+            send(payload);
+          }
+
+          window.__kumoneStartCollecting = function () {
+            window.__kumoneCollecting = true;
+            window.__kumoneSeenCount = 0;
+            // 同一页面上再次抓取时清掉「同一段响应只回传一次」的去重表，
+            // 否则页面重发同样的请求不会再上报。
+            for (var k in posted) { delete posted[k]; }
+            var pending = buffer.slice();
+            buffer.length = 0;
+            bufferChars = 0;
+            // 已经见过当前页的收藏数据、或 URL 已标明收藏 tab，就不要再点 tab：
+            // 点「收藏」会把用户手选的收藏夹重置回默认。只有两样都不成立时才让
+            // 驱动点 tab 重新触发请求（TikTok 首次打开 `/@me` 属于这种）。
+            window.__kumoneClickedTab = window.__kumoneSawFavoritesData || TAB_ALREADY_OPEN;
+            for (var i = 0; i < pending.length; i++) {
+              deliver(pending[i]);
+            }
+            window.__kumoneFlushedCount = pending.length;
+          };
 
           function post(url, text) {
             try {
               if (!interesting(text)) { return; }
-              // 记下页面上累计见过多少条：驱动脚本靠它判断「是否已经抓够本地基线」。
-              try {
-                // 只数明确的视频 id 字段，避免把 "id": 之类的杂项算进去导致提前停止滚动。
-                var ids = text.match(/"(?:aweme_id|item_id)"\\s*:\\s*"?([0-9]{8,})/g);
-                if (ids) {
-                  window.__kumoneSeenCount = (window.__kumoneSeenCount || 0) + ids.length;
-                }
-              } catch (e) {}
+              var address = String(url || '');
+              for (var n = 0; n < NON_FAVORITE.length; n++) {
+                if (address.indexOf(NON_FAVORITE[n]) >= 0) { return; }
+              }
+              // SPA 在同一个 document 里切换页面时 hook 会一直留着：
+              // 只缓存/回传当前确实在收藏页时拿到的响应，避免把首页或
+              // 别人的个人页数据带进收藏。
+              if (!onFavoritesPage()) { return; }
+              window.__kumoneSawFavoritesData = true;
               // 同一段响应只回传一次；太大的（>3MB）跳过，别把主线程堵死。
-              var key = String(url) + '#' + text.length;
+              var key = address + '#' + text.length;
               if (posted[key]) { return; }
               posted[key] = true;
               if (text.length > 3000000) { return; }
-              send({ url: String(url), body: text });
+              var payload = { url: String(url), body: text };
+              if (window.__kumoneCollecting) {
+                deliver(payload);
+              } else {
+                bufferChars += text.length;
+                while (buffer.length > 0
+                       && (buffer.length >= MAX_BUFFERED || bufferChars > MAX_BUFFER_CHARS)) {
+                  var dropped = buffer.shift();
+                  bufferChars -= dropped.body.length;
+                }
+                buffer.push(payload);
+              }
             } catch (e) {}
           }
 
@@ -962,6 +1172,10 @@ final class ShortVideoCollector: NSObject, ObservableObject {
           var lastHeight = 0;
           window.__kumoneDriver = setInterval(function () {
             try {
+              // 数据可能在「开始抓取」之后才到：先等一拍，别抢在响应前面点 tab。
+              if (!window.__kumoneClickedTab && window.__kumoneSawFavoritesData) {
+                window.__kumoneClickedTab = true;
+              }
               if (!window.__kumoneClickedTab) {
                 var nodes = document.querySelectorAll('div,span,a,li,button');
                 for (var i = 0; i < nodes.length; i++) {
@@ -1009,11 +1223,14 @@ extension ShortVideoCollector: WKScriptMessageHandler {
         guard message.name == ShortVideoCollector.handlerName,
               let payload = message.body as? [String: Any] else { return }
         let body = payload["body"] as? String
+        let bodyURL = payload["url"] as? String
         let error = payload["error"] as? String
         let popup = payload["popup"] as? String
         Task { @MainActor [weak self] in
             guard let self else { return }
-            if let body { self.ingest(body) }
+            if let body, self.phase == .collecting, self.isOnFavoritesPage {
+                self.ingest(body, url: bodyURL)
+            }
             if let error {
                 self.lastScriptError = error
                 self.note("页面：\(error)")
@@ -1080,7 +1297,9 @@ extension ShortVideoCollector: WKNavigationDelegate {
     nonisolated func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.hookInstalled = false
+            self.navigationGeneration += 1
+            self.preparedGeneration = -1
+            self.preparingCollection = false
             self.pageReady = false
             self.syncNavigationState()
         }
@@ -1106,47 +1325,20 @@ extension ShortVideoCollector: WKNavigationDelegate {
                 self.beginCollecting()
                 return
             }
-            if self.reloadingForCollect {
-                self.reloadingForCollect = false
-                self.webView.evaluateJavaScript("!!window.__kumoneShortVideoHook") { [weak self] result, _ in
-                    guard let self else { return }
-                    self.hookInstalled = Self.truthy(result)
-                    if !self.hookInstalled {
-                        self.note("监听未装上，下次抓取会重新加载")
-                    }
-                    self.note("重新加载完成，开始驱动页面")
-                    self.startDriver()
-                }
-                return
-            }
             // 页面上没有登录入口时用户就点了登录：等渲染完再点，避免落到 SSO 整页。
             if self.pendingLogin {
                 self.pendingLogin = false
                 self.triggerLoginPrompt()
                 return
             }
-            // 浏览阶段就把监听装好：用户在收藏页翻到自己想要的收藏夹后直接点
-            // 「开始抓取」，快路径（hookInstalled && isOnFavoritesPage）就不会
-            // reload——reload 会把手选的收藏夹冲回默认 tab。hookScript 自带
-            // __kumoneShortVideoHook 幂等标记，重复注入无害；这里只装监听、
-            // 不启动驱动脚本，页面不会有任何自动滚动。didStartProvisionalNavigation
-            // 每次导航都会把 hookInstalled 清 false，所以在每次导航完成后探测
-            // 回写，不乐观置 true。
-            let passiveHost = self.webView.url?.host?.lowercased() ?? ""
-            if !self.reloadingForCollect,
-               !passiveHost.isEmpty,
-               passiveHost.contains(self.platform.cookieDomainNeedle) {
-                self.webView.evaluateJavaScript(Self.hookScript(for: self.platform)) { [weak self] _, _ in
-                    guard let self else { return }
-                    self.webView.evaluateJavaScript("!!window.__kumoneShortVideoHook") { [weak self] result, _ in
-                        guard let self else { return }
-                        let installed = Self.truthy(result)
-                        if installed != self.hookInstalled {
-                            self.hookInstalled = installed
-                            self.note(installed ? "监听已就绪：抓取无需重载" : "监听未装上")
-                        }
-                    }
-                }
+            // 抓取过程中发生了整页导航（用户自己点链接/刷新）：旧页面的驱动已失效，
+            // 等新页加载完重新准备当前收藏页，绝不再走「reload 收藏页」那条路。
+            if self.phase == .collecting,
+               self.isOnFavoritesPage,
+               self.preparedGeneration != self.navigationGeneration,
+               !self.preparingCollection {
+                self.prepareCollectionOnCurrentPage()
+                return
             }
             if self.phase == .loading {
                 self.status = self.loggedIn
