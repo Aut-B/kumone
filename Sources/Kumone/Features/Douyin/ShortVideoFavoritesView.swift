@@ -13,8 +13,7 @@ struct ShortVideoFavoritesView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showWeb = false
     @State private var showClearConfirm = false
-    @State private var showSyncSettings = false
-    @State private var showLog = false
+    @State private var activeSheet: FavoritesSheet?
     @State private var syncMessage: String?
 
     /// 这个平台的「按需缓存」开关：开=抓过/同步过/播过的都留本地；关=纯在线播。
@@ -41,8 +40,17 @@ struct ShortVideoFavoritesView: View {
                     Button("关闭") { dismiss() }
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
+                    if platform == .douyin {
+                        Button {
+                            activeSheet = .addByLink
+                        } label: {
+                            Image(systemName: "doc.on.clipboard")
+                        }
+                        .accessibilityLabel("粘贴分享链接添加")
+                    }
+
                     Button {
-                        showSyncSettings = true
+                        activeSheet = .syncSettings
                     } label: {
                         Image(systemName: "arrow.triangle.2.circlepath.icloud")
                     }
@@ -85,7 +93,7 @@ struct ShortVideoFavoritesView: View {
                         .disabled(!collector.canGoForward)
                         Divider()
                         Button {
-                            showLog = true
+                            activeSheet = .log
                         } label: {
                             Label("诊断日志", systemImage: "doc.text.magnifyingglass")
                         }
@@ -145,8 +153,30 @@ struct ShortVideoFavoritesView: View {
                 Button("清空", role: .destructive) { collector.clear() }
                 Button("取消", role: .cancel) {}
             }
-            .sheet(isPresented: $showSyncSettings) {
-                ShortVideoSyncSettingsView()
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .syncSettings:
+                    ShortVideoSyncSettingsView()
+                case .log:
+                    ShortVideoLogView(lines: collector.logLines)
+                case .addByLink:
+                    ShortVideoAddByLinkSheet(
+                        platform: platform,
+                        existingKeys: Set(collector.videos.map(\.key)),
+                        onImported: { video, syncError in
+                            // 只接受本平台条目；跨平台一律忽略，防止抖音条目串进 TikTok。
+                            guard video.platformKind == platform else { return }
+                            collector.applyRemote([video])
+                            // 刚加进来的一条要能立刻看到，所以从网页切回列表。
+                            showWeb = false
+                            if let syncError {
+                                syncMessage = "已添加「\(video.title)」，但 WebDAV 推送失败：\(syncError)"
+                            } else {
+                                syncMessage = "已添加「\(video.title)」"
+                            }
+                        }
+                    )
+                }
             }
         }
     }
@@ -267,9 +297,6 @@ struct ShortVideoFavoritesView: View {
             .padding(12)
             .background(.bar)
         }
-        .sheet(isPresented: $showLog) {
-            ShortVideoLogView(lines: collector.logLines)
-        }
     }
 
     // MARK: - 列表
@@ -338,9 +365,6 @@ struct ShortVideoFavoritesView: View {
             }
             .padding(12)
             .background(.bar)
-        }
-        .sheet(isPresented: $showLog) {
-            ShortVideoLogView(lines: collector.logLines)
         }
     }
 
@@ -482,6 +506,16 @@ struct ShortVideoFavoritesView: View {
             syncMessage = "同步失败：\(error.localizedDescription)"
         }
     }
+}
+
+/// 收藏页只挂一个 item 驱动的弹窗，用它区分三种用途，避免同一层放多个
+/// `isPresented` 状态互相抢占。
+private enum FavoritesSheet: String, Identifiable {
+    case syncSettings
+    case log
+    case addByLink
+
+    var id: String { rawValue }
 }
 
 private struct ShortVideoLogView: View {
