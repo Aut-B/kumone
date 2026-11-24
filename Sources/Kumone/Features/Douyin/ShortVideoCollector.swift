@@ -74,8 +74,6 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     private var startedAt = Date()
     private var hasLoadedPage = false
     private var pendingCollect = false
-    /// 本次抓取是否已经为「缓冲为空」刷新过一次页面（防 reload 死循环）。
-    private var attemptedReloadFallback = false
     /// 每次主框架导航自增，异步探测据此丢弃过期页面的回调。
     private var navigationGeneration = 0
     /// 当前收藏页监听已准备好的导航代次。
@@ -462,7 +460,6 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         rawCount = 0
         preparedGeneration = -1
         preparingCollection = false
-        attemptedReloadFallback = false
         status = "正在抓取…准备当前收藏页的监听"
         note("开始抓取：直接激活当前收藏页的缓冲监听，不重新加载")
         prepareCollectionOnCurrentPage()
@@ -524,23 +521,20 @@ final class ShortVideoCollector: NSObject, ObservableObject {
                 self.stopCollecting(message: "监听激活失败：请退出收藏页重进后再点「开始抓取」")
                 return
             }
-            if flushed == 0 {
-                // 缓冲为空：兜底刷新当前页一次。reload 的是当前 URL（不是默认
-                // 收藏页），收藏夹的 URL 参数原样保留；重载后 documentStart 的
-                // 全站缓冲监听从第一刻起抄请求，首屏数据不会漏。
-                if self.attemptedReloadFallback {
-                    self.stopCollecting(message: "没有收到收藏接口数据：请确认已在收藏页，或重新登录后再试")
-                    return
-                }
-                self.attemptedReloadFallback = true
-                self.pendingCollect = true
-                self.status = "正在刷新当前收藏页以捕获首屏数据（保持所选收藏夹）…"
-                self.note("缓冲为空：刷新当前页重新捕获首屏")
-                self.reloadCurrentPage()
-                return
+            if flushed > 0 {
+                self.status = "正在抓取…已回放 \(flushed) 段缓冲"
+                self.note("监听已激活，回放 \(flushed) 段缓冲，开始驱动当前收藏页")
+            } else {
+                // 缓冲为空只说明首屏请求发生在监听装好之前（或当前 tab 还没
+                // 请求过收藏列表）。不能靠 reload 触发数据：整页刷新会把用户
+                // 手选的收藏夹重置回默认，页面若不再发请求还会在
+                // 「reload → 空缓冲」之间死循环。直接启动驱动脚本——它在
+                // `__kumoneClickedTab` 为 false 时会点「收藏」tab 触发请求；
+                // tick 同时开跑，由 6 轮 idle 或 300 秒硬超时收尾。
+                self.status = "正在抓取…等待收藏页返回数据"
+                self.note("监听已激活，缓冲为空：启动驱动脚本触发收藏请求（不刷新当前页）")
             }
             self.preparedGeneration = generation
-            self.note("监听已激活，回放 \(flushed) 段缓冲，开始驱动当前收藏页")
             self.startDriver()
         }
     }
