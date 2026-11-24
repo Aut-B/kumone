@@ -50,12 +50,17 @@ final class ShortVideoPopupBridge: NSObject, WKScriptMessageHandler {
 /// SPA 冲掉——表现就是「二维码刚出来又闪回首页」。现在开一个真正的弹窗：
 /// cookie 落在同一个域上，登录完关掉弹窗、本页刷新一下就是登录态。
 @MainActor
-final class ShortVideoPopupViewController: UIViewController, WKNavigationDelegate {
+final class ShortVideoPopupViewController: UIViewController, WKNavigationDelegate,
+    WKUIDelegate, WKHTTPCookieStoreObserver {
     private let request: URLRequest
     private let userAgent: String
+    private let onLogin: () -> Void
     private let onClose: () -> Void
     private let bridge = ShortVideoPopupBridge()
     private var didNotify = false
+    private var didNotifyLogin = false
+    /// cookie 变化回调偶尔会漏，补一个低频兜底轮询（登录成功即停止查询）。
+    private var cookiePollTimer: Timer?
 
     private lazy var webView: WKWebView = {
         let configuration = WKWebViewConfiguration()
@@ -72,6 +77,7 @@ final class ShortVideoPopupViewController: UIViewController, WKNavigationDelegat
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.customUserAgent = userAgent
         view.navigationDelegate = self
+        view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
         return view
     }()
@@ -88,9 +94,13 @@ final class ShortVideoPopupViewController: UIViewController, WKNavigationDelegat
     })();
     """
 
-    init(request: URLRequest, userAgent: String, onClose: @escaping () -> Void) {
+    init(request: URLRequest,
+         userAgent: String,
+         onLogin: @escaping () -> Void,
+         onClose: @escaping () -> Void) {
         self.request = request
         self.userAgent = userAgent
+        self.onLogin = onLogin
         self.onClose = onClose
         super.init(nibName: nil, bundle: nil)
     }
@@ -98,6 +108,10 @@ final class ShortVideoPopupViewController: UIViewController, WKNavigationDelegat
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        cookiePollTimer?.invalidate()
     }
 
     override func viewDidLoad() {
@@ -133,6 +147,12 @@ final class ShortVideoPopupViewController: UIViewController, WKNavigationDelegat
         bridge.onClose = { [weak self] in
             self?.closeSelf()
         }
+        webView.configuration.websiteDataStore.httpCookieStore.add(self)
+        cookiePollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkLoginCookies()
+            }
+        }
         webView.load(request)
     }
 
@@ -164,12 +184,54 @@ final class ShortVideoPopupViewController: UIViewController, WKNavigationDelegat
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        cookiePollTimer?.invalidate()
+        cookiePollTimer = nil
+        webView.configuration.websiteDataStore.httpCookieStore.remove(self)
         guard !didNotify else { return }
         didNotify = true
         onClose()
     }
 
+    // MARK: - 登录态
+
+    /// 弹窗可能停在 `sso.douyin.com`、`www.tiktok.com/login` 等子域上，
+    /// 用 host 的最后两段还原主站域（douyin.com / tiktok.com）。
+    private var cookieDomainNeedle: String? {
+        guard let host = (webView.url ?? request.url)?.host?.lowercased(),
+              !host.isEmpty else { return nil }
+        let parts = host.split(separator: ".").map(String.init)
+        guard parts.count >= 2 else { return host }
+        return parts.suffix(2).joined(separator: ".")
+    }
+
+    /// 只检查、不打印 cookie 值；登录成功后只回传一次。
+    private func checkLoginCookies() {
+        guard !didNotifyLogin, let needle = cookieDomainNeedle else { return }
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+            guard cookies.contains(where: {
+                ShortVideoLoginCookie.isLogin($0, needle: needle)
+            }) else { return }
+            Task { @MainActor [weak self] in
+                guard let self, !self.didNotifyLogin else { return }
+                self.didNotifyLogin = true
+                self.onLogin()
+            }
+        }
+    }
+
+    nonisolated func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+        Task { @MainActor [weak self] in
+            self?.checkLoginCookies()
+        }
+    }
+
     // MARK: - WKNavigationDelegate
+
+    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        Task { @MainActor [weak self] in
+            self?.checkLoginCookies()
+        }
+    }
 
     /// 自定义 scheme（`snssdk1128://`、`alipays://`、`weixin://`）交给系统，
     /// 别让弹窗卡在一个永远加载不完的空白页上。
@@ -196,6 +258,23 @@ final class ShortVideoPopupViewController: UIViewController, WKNavigationDelegat
             }
         }
         decisionHandler(.cancel)
+    }
+
+    // MARK: - WKUIDelegate
+
+    /// 弹窗里再 `window.open`（扫码转手机号等）时复用当前弹窗，
+    /// 否则 WebKit 因为没有 `WKUIDelegate` 直接丢弃第二次导航。
+    nonisolated func webView(_ webView: WKWebView,
+                             createWebViewWith configuration: WKWebViewConfiguration,
+                             for navigationAction: WKNavigationAction,
+                             windowFeatures: WKWindowFeatures) -> WKWebView? {
+        let target = navigationAction.request.url?.absoluteString ?? ""
+        guard !target.isEmpty, target != "about:blank" else { return nil }
+        let request = navigationAction.request
+        Task { @MainActor [weak self] in
+            self?.webView.load(request)
+        }
+        return nil
     }
 }
 #endif

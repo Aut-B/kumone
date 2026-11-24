@@ -2,6 +2,35 @@
 import Foundation
 import WebKit
 
+/// 登录 cookie 的判定规则：主 WebView 和登录弹窗共用同一套，避免两边结论不一致。
+enum ShortVideoLoginCookie {
+    /// 两个站的登录 cookie 名字基本一致。
+    static let names: Set<String> = [
+        "sessionid", "sessionid_ss", "sid_guard", "sid_tt", "uid_tt",
+    ]
+
+    /// 只认主站域（或主站子域）上的 cookie。`sso.` / `login.` 这类单点登录
+    /// 子域的 host-only cookie 只对登录页有效，不能代表主站已登录。
+    static func matchesDomain(_ cookie: HTTPCookie, needle: String) -> Bool {
+        let domain = cookie.domain.lowercased()
+        let host = domain.hasPrefix(".") ? String(domain.dropFirst()) : domain
+        guard host == needle || host.hasSuffix("." + needle) else { return false }
+        guard !host.hasPrefix("sso."), !host.hasPrefix("login.") else { return false }
+        return true
+    }
+
+    /// `expiresDate` 为 nil 表示会话 cookie，仍然有效；只拒绝明确过期的。
+    static func isExpired(_ cookie: HTTPCookie, now: Date = Date()) -> Bool {
+        guard let expires = cookie.expiresDate else { return false }
+        return expires <= now
+    }
+
+    static func isLogin(_ cookie: HTTPCookie, needle: String, now: Date = Date()) -> Bool {
+        guard names.contains(cookie.name), matchesDomain(cookie, needle: needle) else { return false }
+        return !isExpired(cookie, now: now)
+    }
+}
+
 /// 在真实的 `WKWebView` 里抓收藏夹。
 ///
 /// 抖音和 TikTok 的网页接口都要签名（抖音是 `a_bogus` + UIFID，缺了就
@@ -57,6 +86,16 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     private var loginWatchGeneration = 0
     /// 登录浮层是否曾经出现过（区分「弹出过又关掉」和「压根没弹出」）。
     private var loginDialogSeen = false
+    /// 主页面是否已经加载完成：登录按钮要等页面渲染完再点，否则会落到 SSO 整页。
+    private var pageReady = false
+    /// 页面还没加载完时用户就点了登录：记下来，等 didFinish 再点。
+    private var pendingLogin = false
+    /// 回首页重试登录按钮的次数，避免首页也点不到时无限循环。
+    private var loginRetryCount = 0
+    /// 最近一次因 popup 登录成功而刷新主页面，用来避免关闭 popup 时重复 reload。
+    private var lastLoginSyncAt = Date.distantPast
+    /// 登录态通知的观察者令牌，deinit 时注销。
+    private var loginObserver: NSObjectProtocol?
 
     static let handlerName = "shortvideo"
 
@@ -151,11 +190,25 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
         webView = view
+        loginObserver = NotificationCenter.default.addObserver(
+            forName: .shortVideoLoginStateDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let platformRawValue = notification.object as? String
+            Task { @MainActor [weak self] in
+                guard let self, platformRawValue == self.platform.rawValue else { return }
+                self.handleLoginStateDidChange()
+            }
+        }
         note("已就绪（\(useMobileUserAgent ? "手机 UA" : "桌面 UA")）")
     }
 
     deinit {
         driverTask?.cancel()
+        if let loginObserver = loginObserver {
+            NotificationCenter.default.removeObserver(loginObserver)
+        }
     }
 
     // MARK: - 日志
@@ -201,6 +254,33 @@ final class ShortVideoCollector: NSObject, ObservableObject {
     func openLoginPage() {
         hasLoadedPage = true
         lastError = nil
+        loginRetryCount = 0
+        refreshLoginState { [weak self] in
+            guard let self else { return }
+            if self.loggedIn {
+                self.status = "已登录 \(self.platform.albumName)，无需再次登录"
+                self.note("已登录，跳过登录浮层")
+                return
+            }
+            guard self.pageReady else {
+                self.pendingLogin = true
+                self.status = "页面加载完成后自动调出登录浮层…"
+                self.note("页面未加载完成，登录请求排队到 didFinish")
+                if !self.webView.isLoading {
+                    if self.webView.url == nil {
+                        self.load(self.platform.homeURLString)
+                    } else {
+                        self.webView.reload()
+                    }
+                }
+                return
+            }
+            self.triggerLoginPrompt()
+        }
+    }
+
+    /// 只在 `didFinish` 之后调用：页面没渲染完时点按钮会落到 SSO 整页。
+    private func triggerLoginPrompt() {
         phase = .loading
         status = "正在调出登录浮层…"
         webView.evaluateJavaScript(Self.loginTriggerScript) { [weak self] result, error in
@@ -210,8 +290,17 @@ final class ShortVideoCollector: NSObject, ObservableObject {
                 self.watchLoginCompletion()
                 return
             }
-            // 页面没渲染登录按钮（还没加载完、或站点改版）：退回站点自己的登录页。
+            // 首页也可能还没渲染出入口：先回首页重试一次，再退回 SSO 整页。
+            if self.loginRetryCount == 0 {
+                self.loginRetryCount = 1
+                self.pendingLogin = true
+                self.status = "登录入口尚未渲染，正在回到首页重试…"
+                self.note("登录入口未找到，回首页重试一次")
+                self.openHomePage()
+                return
+            }
             self.status = "登录页：登录完成后点「收藏页」回去抓取"
+            self.note("登录入口未找到，退回站点登录页")
             self.load(self.platform.loginURLString)
         }
     }
@@ -282,13 +371,31 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         }
         note("弹窗：\(url.absoluteString.prefix(70))")
 
-        let controller = ShortVideoPopupViewController(request: request, userAgent: userAgent) { [weak self] in
-            guard let self else { return }
-            self.note("关闭弹窗，刷新本页")
-            self.popupController = nil
-            self.refreshLoginState()
-            self.reloadCurrentPage()
-        }
+        let controller = ShortVideoPopupViewController(
+            request: request,
+            userAgent: userAgent,
+            onLogin: { [weak self] in
+                guard let self else { return }
+                NotificationCenter.default.post(
+                    name: .shortVideoLoginStateDidChange,
+                    object: self.platform.rawValue
+                )
+            },
+            onClose: { [weak self] in
+                guard let self else { return }
+                self.popupController = nil
+                self.refreshLoginState { [weak self] in
+                    guard let self else { return }
+                    // 登录通知已经刷新过主页时不再重复加载。
+                    if self.loggedIn {
+                        self.note("关闭弹窗，登录态已同步")
+                        return
+                    }
+                    self.note("关闭弹窗，刷新本页")
+                    self.reloadCurrentPage()
+                }
+            }
+        )
         popupController = controller
         let navigation = UINavigationController(rootViewController: controller)
         navigation.modalPresentationStyle = .fullScreen
@@ -479,24 +586,89 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     // MARK: - 登录状态
 
-    func refreshLoginState() {
+    /// 检查主站登录态。`completion` 在主线程、登录态写回之后调用。
+    ///
+    /// 只认主站域上、没过期的登录 cookie。以前只按名字判断，
+    /// 过期的 `sessionid` 也会被当成已登录，于是收藏页一直 403。
+    /// 日志只输出 cookie 名，绝不输出 cookie 值。
+    func refreshLoginState(completion: (() -> Void)? = nil) {
         let needle = platform.cookieDomainNeedle
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
-            var names: Set<String> = []
-            for cookie in cookies where cookie.domain.lowercased().contains(needle) {
-                names.insert(cookie.name)
+            let now = Date()
+            var active: Set<String> = []
+            var expired: Set<String> = []
+            for cookie in cookies where ShortVideoLoginCookie.names.contains(cookie.name) {
+                guard ShortVideoLoginCookie.matchesDomain(cookie, needle: needle) else { continue }
+                if ShortVideoLoginCookie.isExpired(cookie, now: now) {
+                    expired.insert(cookie.name)
+                } else {
+                    active.insert(cookie.name)
+                }
             }
-            let loggedIn = names.contains("sessionid")
-                || names.contains("sessionid_ss")
-                || names.contains("sid_guard")
-                || names.contains("sid_tt")
-                || names.contains("uid_tt")
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if self.loggedIn != loggedIn {
-                    self.loggedIn = loggedIn
-                    self.note(loggedIn ? "检测到登录态" : "检测到未登录")
-                }
+                self.applyLoginState(loggedIn: !active.isEmpty, expiredNames: expired)
+                completion?()
+            }
+        }
+    }
+
+    /// 把 cookie 检测结果写回界面。日志里只允许出现 cookie 名。
+    private func applyLoginState(loggedIn: Bool, expiredNames: Set<String>) {
+        let changed = self.loggedIn != loggedIn
+        if changed {
+            self.loggedIn = loggedIn
+        }
+        if loggedIn {
+            guard changed else { return }
+            self.note("检测到登录态")
+            if self.status.isEmpty
+                || self.status.contains("未登录")
+                || self.status.contains("登录已过期") {
+                self.status = "已登录 \(platform.albumName)"
+            }
+            return
+        }
+        if !expiredNames.isEmpty {
+            guard changed || status != "登录已过期，请重新登录" else { return }
+            note("登录 cookie 已过期：\(expiredNames.sorted().joined(separator: ", "))")
+            status = "登录已过期，请重新登录"
+            return
+        }
+        guard changed else { return }
+        note("检测到未登录")
+        if status.isEmpty {
+            status = "未登录，请先登录 \(platform.albumName)"
+        }
+    }
+
+    /// popup 登录成功后收到通知：先等主站 cookie 可见，再刷新主 WebView。
+    private func handleLoginStateDidChange() {
+        let now = Date()
+        guard now.timeIntervalSince(lastLoginSyncAt) >= 2 else { return }
+        lastLoginSyncAt = now
+        note("收到登录态变更，检查主站 cookie")
+        syncLoginAfterPopup(attempt: 0)
+    }
+
+    private func syncLoginAfterPopup(attempt: Int) {
+        refreshLoginState { [weak self] in
+            guard let self else { return }
+            if self.loggedIn {
+                self.lastLoginSyncAt = Date()
+                self.phase = .loading
+                self.status = "登录成功，正在刷新页面…"
+                self.note("登录态已同步，刷新主页面")
+                self.webView.reload()
+                return
+            }
+            // popup 写 cookie 和通知几乎同时发生，给主站 cookie 一点落盘时间。
+            guard attempt < 3 else {
+                self.note("收到登录通知，但主站 cookie 仍不可见")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.syncLoginAfterPopup(attempt: attempt + 1)
             }
         }
     }
@@ -887,6 +1059,7 @@ extension ShortVideoCollector: WKNavigationDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.hookInstalled = false
+            self.pageReady = false
             self.syncNavigationState()
         }
     }
@@ -902,6 +1075,7 @@ extension ShortVideoCollector: WKNavigationDelegate {
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            self.pageReady = true
             self.refreshLoginState()
             self.syncNavigationState()
             self.note("加载完成：\(self.webView.url?.absoluteString.prefix(70) ?? "")")
@@ -916,8 +1090,16 @@ extension ShortVideoCollector: WKNavigationDelegate {
                 self.startDriver()
                 return
             }
+            // 页面上没有登录入口时用户就点了登录：等渲染完再点，避免落到 SSO 整页。
+            if self.pendingLogin {
+                self.pendingLogin = false
+                self.triggerLoginPrompt()
+                return
+            }
             if self.phase == .loading {
-                self.status = "页面已加载：登录后点「开始抓取」"
+                self.status = self.loggedIn
+                    ? "页面已加载：已登录，可点「开始抓取」"
+                    : "页面已加载：登录后点「开始抓取」"
             }
         }
     }
@@ -970,5 +1152,10 @@ private extension DateFormatter {
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
+}
+
+extension Notification.Name {
+    /// popup 里登录成功后广播给主 collector；`object` 是平台 rawValue。
+    static let shortVideoLoginStateDidChange = Notification.Name("shortVideoLoginStateDidChange")
 }
 #endif
