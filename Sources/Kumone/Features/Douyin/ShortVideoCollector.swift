@@ -223,8 +223,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
 
     func loadFavoritesPageIfNeeded() {
         guard !hasLoadedPage else { return }
-        hasLoadedPage = true
-        openHomePage()
+        reloadPage()
     }
 
     /// 打开收藏页。
@@ -438,9 +437,31 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         startedAt = Date()
         lastError = nil
         lastScriptError = nil
+        reloadingForCollect = false
+        rawCount = 0
+
+        // 监听已经在当前页面装好、而且用户就停在收藏页时，不要再 reload：
+        // 否则用户手选的收藏夹会被冲回默认「收藏」tab。
+        if hookInstalled && isOnFavoritesPage {
+            status = "正在抓取…监听已就绪，直接开始"
+            note("开始抓取：监听已就绪，跳过重新加载")
+            // 用户可能正停在某个收藏夹里：标记 tab 已经点过，驱动脚本就不会再去
+            // 点「收藏」把选择冲回默认收藏夹。
+            // 同时清掉上一轮「同一段响应只回传一次」的去重表，否则清空本地列表后
+            // 重抓时，页面再发同样的请求也不会再上报。
+            webView.evaluateJavaScript(
+                "window.__kumoneClickedTab = true;"
+                + "window.__kumoneSeenCount = 0;"
+                + "if (window.__kumonePosted) {"
+                + "for (var k in window.__kumonePosted) { delete window.__kumonePosted[k]; }"
+                + "}"
+            )
+            startDriver()
+            return
+        }
+
         status = "正在抓取…正在重新加载页面，让收藏接口重新请求一次"
         note("开始抓取：置标记并重新加载")
-        rawCount = 0
 
         // 接口请求必须发生在监听装好**之后**。以前是在已经加载完的页面上
         // 补装监听，页面早把收藏拉过了，于是永远收到 0 段数据——TikTok 的
@@ -448,7 +469,6 @@ final class ShortVideoCollector: NSObject, ObservableObject {
         let js = "try{localStorage.setItem('__kumoneArm','1');}catch(e){}"
         webView.evaluateJavaScript(js) { [weak self] _, _ in
             guard let self else { return }
-            self.hookInstalled = true
             self.reloadingForCollect = true
             if self.webView.url == nil {
                 self.reloadCurrentPage()
@@ -530,7 +550,7 @@ final class ShortVideoCollector: NSObject, ObservableObject {
             idleRounds = 0
             lastCount = videos.count
         }
-        if idleRounds >= 10 {
+        if idleRounds >= 6 {
             if videos.isEmpty {
                 let detail = rawCount == 0
                     ? "一段接口数据都没收到（页面没发出请求，或不是收藏页）"
@@ -840,6 +860,8 @@ final class ShortVideoCollector: NSObject, ObservableObject {
           }
 
           var posted = {};
+          // 暴露给原生侧：跳过 reload 重新抓取时清空去重表。
+          window.__kumonePosted = posted;
 
           function post(url, text) {
             try {
@@ -1086,8 +1108,15 @@ extension ShortVideoCollector: WKNavigationDelegate {
             }
             if self.reloadingForCollect {
                 self.reloadingForCollect = false
-                self.note("重新加载完成，开始驱动页面")
-                self.startDriver()
+                self.webView.evaluateJavaScript("!!window.__kumoneShortVideoHook") { [weak self] result, _ in
+                    guard let self else { return }
+                    self.hookInstalled = Self.truthy(result)
+                    if !self.hookInstalled {
+                        self.note("监听未装上，下次抓取会重新加载")
+                    }
+                    self.note("重新加载完成，开始驱动页面")
+                    self.startDriver()
+                }
                 return
             }
             // 页面上没有登录入口时用户就点了登录：等渲染完再点，避免落到 SSO 整页。
@@ -1095,6 +1124,29 @@ extension ShortVideoCollector: WKNavigationDelegate {
                 self.pendingLogin = false
                 self.triggerLoginPrompt()
                 return
+            }
+            // 浏览阶段就把监听装好：用户在收藏页翻到自己想要的收藏夹后直接点
+            // 「开始抓取」，快路径（hookInstalled && isOnFavoritesPage）就不会
+            // reload——reload 会把手选的收藏夹冲回默认 tab。hookScript 自带
+            // __kumoneShortVideoHook 幂等标记，重复注入无害；这里只装监听、
+            // 不启动驱动脚本，页面不会有任何自动滚动。didStartProvisionalNavigation
+            // 每次导航都会把 hookInstalled 清 false，所以在每次导航完成后探测
+            // 回写，不乐观置 true。
+            let passiveHost = self.webView.url?.host?.lowercased() ?? ""
+            if !self.reloadingForCollect,
+               !passiveHost.isEmpty,
+               passiveHost.contains(self.platform.cookieDomainNeedle) {
+                self.webView.evaluateJavaScript(Self.hookScript(for: self.platform)) { [weak self] _, _ in
+                    guard let self else { return }
+                    self.webView.evaluateJavaScript("!!window.__kumoneShortVideoHook") { [weak self] result, _ in
+                        guard let self else { return }
+                        let installed = Self.truthy(result)
+                        if installed != self.hookInstalled {
+                            self.hookInstalled = installed
+                            self.note(installed ? "监听已就绪：抓取无需重载" : "监听未装上")
+                        }
+                    }
+                }
             }
             if self.phase == .loading {
                 self.status = self.loggedIn

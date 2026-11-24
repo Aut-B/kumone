@@ -117,12 +117,13 @@ struct ShortVideoFavoritesView: View {
             }
             .onAppear {
                 cachePolicy = ShortVideoCachePolicy.load(for: platform)
-                collector.loadFavoritesPageIfNeeded()
                 Task { await autoSync() }
                 // 直链两小时左右就失效，过期了自动重抓一遍（不用用户点）。
                 if collector.isStale {
                     showWeb = true
                     collector.startCollecting()
+                } else {
+                    collector.loadFavoritesPageIfNeeded()
                 }
             }
             .onDisappear {
