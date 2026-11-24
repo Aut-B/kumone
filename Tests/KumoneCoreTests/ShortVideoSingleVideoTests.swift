@@ -40,6 +40,48 @@ struct ShortVideoSingleVideoTests {
         #expect(id == "6792858421352729859")
     }
 
+    @Test func detectsTikTokLinksWithoutNetworkParsing() {
+        #expect(ShortVideoSingleVideo.supportsTikTokLinkImport == false)
+        #expect(ShortVideoSingleVideo.containsTikTokLink(
+            "https://www.tiktok.com/@creator/video/7464115130314394940"
+        ))
+        #expect(ShortVideoSingleVideo.containsTikTokLink(
+            "看看这个 https://vm.tiktok.com/ZMabc123/ 作品"
+        ))
+        #expect(!ShortVideoSingleVideo.containsTikTokLink(
+            "https://www.douyin.com/video/\(awemeID)"
+        ))
+        #expect(!ShortVideoSingleVideo.containsTikTokLink(
+            "https://notiktok.com/@creator/video/7464115130314394940"
+        ))
+        #expect(!ShortVideoSingleVideo.containsTikTokLink(
+            "https://www.tiktok.com.example.com/@creator/video/7464115130314394940"
+        ))
+    }
+
+    @Test func routesTikTokLinkToFallbackCopy() {
+        #expect(ShortVideoSingleVideo.importDecision(
+            forShareText: "https://www.tiktok.com/@creator/video/7464115130314394940"
+        ) == .tiktokUnavailable)
+        #expect(ShortVideoSingleVideo.importDecision(
+            forShareText: "https://www.douyin.com/video/\(awemeID)"
+        ) == .douyin(id: awemeID))
+        #expect(ShortVideoSingleVideo.importDecision(
+            forShareText: "抖音 \(awemeID) 对比 https://www.tiktok.com/@creator/video/7464115130314394940"
+        ) == .douyin(id: awemeID))
+        #expect(ShortVideoSingleVideo.importDecision(
+            forShareText: "没有链接"
+        ) == .unsupported)
+    }
+
+    @Test func exposesExactTikTokFallbackCopy() {
+        #expect(ShortVideoSingleVideo.tiktokUnavailableTitle
+            == "TikTok 暂不支持按链接添加")
+        #expect(ShortVideoSingleVideo.tiktokUnavailableMessage
+            == "TikTok 暂不支持按链接添加单个视频：TikTok 没有提供免登录的播放地址。请先在 TikTok 登录，再用「同步收藏」抓取整份收藏。")
+        #expect(ShortVideoSingleVideo.tiktokUnavailableNotice == "TikTok 单曲暂不可用")
+    }
+
     @Test func mapsItemInfoJSON() throws {
         let video = try #require(ShortVideoSingleVideo.video(
             fromItemInfo: Data(Self.itemInfoJSON.utf8)

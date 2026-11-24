@@ -239,6 +239,41 @@ enum ShortVideoSingleVideo {
         options: [.caseInsensitive]
     )
 
+    private static let tiktokLinkRegex = try? NSRegularExpression(
+        pattern: #"(?:^|[^A-Za-z0-9.-])(?:https?://)?(?:[A-Za-z0-9-]+\.)*tiktok\.com(?:[/?#]|$)"#,
+        options: [.caseInsensitive]
+    )
+
+    /// B06 实测结论：TikTok 免登录纯 HTTP 拿不到播放直链与 `videoID`，
+    /// 因此单链接导入只做识别与回退，不发起任何 TikTok 网络请求。
+    /// 未来若实测到可播放地址，再把这个开关与解析路径一起翻案。
+    static let supportsTikTokLinkImport = false
+
+    /// 回退文案逐字来自 B06 决策报告，避免 UI 层改写成新的承诺。
+    static let tiktokUnavailableTitle = "TikTok 暂不支持按链接添加"
+    static let tiktokUnavailableMessage = "TikTok 暂不支持按链接添加单个视频：TikTok 没有提供免登录的播放地址。请先在 TikTok 登录，再用「同步收藏」抓取整份收藏。"
+    /// 工具栏或列表里的短提示，完整说明仍用上面的标题与正文。
+    static let tiktokUnavailableNotice = "TikTok 单曲暂不可用"
+
+    /// 单条分享文案的导入结论；TikTok 分支不带 id，防止 UI 误落空条目。
+    enum LinkImportDecision: Equatable {
+        case douyin(id: String)
+        case tiktokUnavailable
+        case unsupported
+    }
+
+    static func importDecision(forShareText text: String) -> LinkImportDecision {
+        if let id = awemeID(from: text) { return .douyin(id: id) }
+        if containsTikTokLink(text) { return .tiktokUnavailable }
+        return .unsupported
+    }
+
+    static func containsTikTokLink(_ text: String) -> Bool {
+        guard let regex = tiktokLinkRegex else { return false }
+        let fullRange = NSRange(location: 0, length: (text as NSString).length)
+        return regex.firstMatch(in: text, options: [], range: fullRange) != nil
+    }
+
     /// 从完整 URL、短链跳转后的 `Location` 或整段分享文案里取作品 id。
     static func awemeID(from text: String) -> String? {
         guard let regex = idRegex else { return nil }
