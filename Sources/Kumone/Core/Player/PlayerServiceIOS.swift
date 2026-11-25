@@ -1288,6 +1288,13 @@ final class PlayerService: ObservableObject {
             return .superseded
         }
 
+        // Every item gets a store of its own. The outgoing item's tap can keep
+        // calling `process` until it is finalized, and previously the fallback
+        // and offline paths installed a new item without ever calling
+        // `beginPreparing`, so both taps shared one store and its equalizer
+        // state. This is the structural half of that fix; `SpectrumStore`'s
+        // lock covers the window inside a single store.
+        AudioSpectrum.shared.beginPreparing()
         let item = AVPlayerItem(asset: asset)
         if let assetTrack,
            let mix = AudioSpectrum.shared.makeAudioMix(for: assetTrack) {

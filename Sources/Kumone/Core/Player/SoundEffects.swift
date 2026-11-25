@@ -197,6 +197,9 @@ final class GraphicEqualizerDSP: @unchecked Sendable {
     private var smoothingFramesRemaining = 0
     private var lastRevision = UInt32.max
     private var hasFilterHistory = false
+    /// `coefficients` only depends on `currentGains` and `sampleRate`, so it is
+    /// rebuilt when either actually moves instead of once per audio buffer.
+    private var coefficientsDirty = true
 
     func configure(format: AudioStreamBasicDescription) {
         let nextSampleRate = format.mSampleRate > 0 ? format.mSampleRate : 44_100
@@ -227,15 +230,22 @@ final class GraphicEqualizerDSP: @unchecked Sendable {
         adoptPublishedTarget(force: false)
         advanceSmoothing(frames: requestedFrames)
 
-        let transparent = currentGains.allSatisfy { abs($0) < Self.epsilon }
-            && abs(currentPreampDB) < Self.epsilon
+        // A plain loop rather than `allSatisfy`: the audio thread must not pay
+        // for a generic closure (or give the optimizer a reason to allocate).
+        var transparent = abs(currentPreampDB) < Self.epsilon
             && smoothingFramesRemaining == 0
+        if transparent {
+            for gain in currentGains where abs(gain) >= Self.epsilon {
+                transparent = false
+                break
+            }
+        }
         if transparent {
             if hasFilterHistory { reset() }
             return
         }
 
-        rebuildCoefficients()
+        if coefficientsDirty { rebuildCoefficients() }
         let preamp = powf(10, currentPreampDB / 20)
         let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
         if isInterleaved {
@@ -282,6 +292,9 @@ final class GraphicEqualizerDSP: @unchecked Sendable {
 
     private func advanceSmoothing(frames: Int) {
         guard smoothingFramesRemaining > 0 else { return }
+        // The gains (and therefore the biquads) move during the glide, so the
+        // cached coefficients are stale until it settles.
+        coefficientsDirty = true
         let step = min(frames, smoothingFramesRemaining)
         let fraction = Float(step) / Float(smoothingFramesRemaining)
         for index in currentGains.indices {
@@ -306,6 +319,7 @@ final class GraphicEqualizerDSP: @unchecked Sendable {
                     sampleRate: sampleRate)
                 : .identity
         }
+        coefficientsDirty = false
     }
 
     private func processChannel(_ samples: UnsafeMutablePointer<Float>, frames: Int,
