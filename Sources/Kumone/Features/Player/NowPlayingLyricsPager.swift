@@ -4,7 +4,8 @@ import SwiftUI
 /// The iPhone now-playing lyrics with the song's comments one page to their
 /// right: swipe left for the comments, right for the lyrics again. Songs
 /// without a public thread (cloud uploads), or with the swipe turned off in
-/// settings (#225), show the lyrics alone.
+/// settings (#225), show the lyrics alone. A plugin track carries no lyric
+/// source, so its pager only holds the comments and opens there.
 struct NowPlayingLyricsPager<Lyrics: View>: View {
     private enum Page: Hashable {
         case lyrics, comments
@@ -36,16 +37,15 @@ struct NowPlayingLyricsPager<Lyrics: View>: View {
     }
 
     var body: some View {
-        if settings.swipeToComments,
-           let track = player.currentTrack,
-           SongCommentAvailability.isAvailable(for: track),
-           !SongCommentAvailability.isShortVideoTrack(track) {
-            TabView(selection: $page) {
-                lyrics
-                    .padding(.horizontal, horizontalInset)
-                    .tag(Page.lyrics)
+        if let track = commentsTrack {
+            TabView(selection: pageSelection) {
+                if !hasNoLyrics {
+                    lyrics
+                        .padding(.horizontal, horizontalInset)
+                        .tag(Page.lyrics)
+                }
                 // The list keeps a 16pt margin of its own.
-                NowPlayingCommentsPage(track: track, isActive: isShown && page == .comments) { comment in
+                NowPlayingCommentsPage(track: track, isActive: isShown && currentPage == .comments) { comment in
                     sharedComment = SharedComment(track: track, comment: comment)
                 }
                     .id(track.id)
@@ -55,31 +55,79 @@ struct NowPlayingLyricsPager<Lyrics: View>: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
             .padding(.horizontal, -horizontalInset)
             .overlay(alignment: .bottom) {
-                pageIndicator
+                if pages.count > 1 { pageIndicator }
             }
             .sheet(item: $sharedComment) { shared in
                 CommentShareSheet(track: shared.track, comment: shared.comment)
             }
-            .onChange(of: isShown) { shown in
-                guard !shown, page != .lyrics else { return }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) { page = .lyrics }
-            }
+            .onAppear { alignPage() }
+            .onChange(of: hasNoLyrics) { _ in alignPage() }
+            .onChange(of: isShown) { _ in alignPage() }
+        } else if hasNoLyrics {
+            EmptyView()
         } else {
             lyrics
         }
     }
 
+    private var commentsTrack: Track? {
+        guard settings.swipeToComments,
+              let track = player.currentTrack,
+              SongCommentAvailability.isAvailable(for: track),
+              !SongCommentAvailability.isShortVideoTrack(track) else { return nil }
+        return track
+    }
+
+    /// A plugin track has no lyrics page at all, so the comments are the
+    /// pager's first (and only) page.
+    private var startsOnComments: Bool {
+        hasNoLyrics && commentsTrack != nil
+    }
+
+    private var pages: [Page] {
+        hasNoLyrics ? [.comments] : [.lyrics, .comments]
+    }
+
+    /// `hasNoLyrics` is only set by `startPlaying`; after a restored session
+    /// the plugin tag is the remaining evidence that there is no lyric source.
+    private var hasNoLyrics: Bool {
+        player.hasNoLyrics || player.currentTrack?.isPluginTrack == true
+    }
+
+    /// The page actually on screen: a plugin track has no lyrics page, so it
+    /// reads as comments even before the state is aligned.
+    private var currentPage: Page {
+        startsOnComments ? .comments : page
+    }
+
+    private var pageSelection: Binding<Page> {
+        Binding(
+            get: { currentPage },
+            set: { page = $0 }
+        )
+    }
+
+    private func alignPage() {
+        let target: Page = startsOnComments ? .comments : .lyrics
+        guard page != target else { return }
+        withoutAnimation { page = target }
+    }
+
+    private func withoutAnimation(_ update: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, update)
+    }
+
     private var pageIndicator: some View {
         HStack(spacing: 6) {
-            ForEach([Page.lyrics, .comments], id: \.self) { item in
+            ForEach(pages, id: \.self) { item in
                 Capsule()
-                    .fill(.white.opacity(item == page ? 0.8 : 0.28))
-                    .frame(width: item == page ? 14 : 5, height: 5)
+                    .fill(.white.opacity(item == currentPage ? 0.8 : 0.28))
+                    .frame(width: item == currentPage ? 14 : 5, height: 5)
             }
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: page)
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: currentPage)
         .padding(.bottom, 2)
         .allowsHitTesting(false)
         .accessibilityHidden(true)

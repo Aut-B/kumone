@@ -108,18 +108,20 @@ struct NowPlayingView: View {
                         )
                         #endif
 
-                        Button {
-                            withAnimation(AppAnimation.standard) {
-                                showLyricsOnMobile.toggle()
+                        if !lyricsUnavailable {
+                            Button {
+                                withAnimation(AppAnimation.standard) {
+                                    showLyricsOnMobile.toggle()
+                                }
+                            } label: {
+                                Image(systemName: showLyricsOnMobile ? "music.note" : "quote.bubble")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(showLyricsOnMobile ? Theme.accent : .white.opacity(0.85))
+                                    .frame(width: 36, height: 36)
+                                    .background(.white.opacity(0.12), in: Circle())
                             }
-                        } label: {
-                            Image(systemName: showLyricsOnMobile ? "music.note" : "quote.bubble")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(showLyricsOnMobile ? Theme.accent : .white.opacity(0.85))
-                                .frame(width: 36, height: 36)
-                                .background(.white.opacity(0.12), in: Circle())
+                            .buttonStyle(.pressable)
                         }
-                        .buttonStyle(.pressable)
                     }
                     .padding(.top, 20)
                     .padding(.trailing, 20)
@@ -173,15 +175,23 @@ struct NowPlayingView: View {
         #endif
         #if os(iOS)
         .onAppear {
-            showLyricsOnMobile = settings.nowPlayingMode == .immersive
+            showLyricsOnMobile = settings.nowPlayingMode == .immersive && canOpenLyricsPanel
             showQueueOnMobile = false
         }
         .onChange(of: settings.nowPlayingMode) { _ in
-            showLyricsOnMobile = settings.nowPlayingMode == .immersive
+            showLyricsOnMobile = settings.nowPlayingMode == .immersive && canOpenLyricsPanel
             showQueueOnMobile = false
         }
         .onChange(of: player.currentTrack?.id) { _ in
-            if player.hasNoLyrics
+            if showsCommentsWithoutLyrics {
+                // Comments are this track's only panel, and the immersive
+                // layout has no lyrics button to bring it back from the cover.
+                if settings.nowPlayingMode == .immersive {
+                    showLyricsOnMobile = true
+                }
+                return
+            }
+            if !canOpenLyricsPanel
                 || settings.nowPlayingMode == .minimal
                 || settings.nowPlayingMode == .vinyl {
                 showLyricsOnMobile = false
@@ -196,8 +206,37 @@ struct NowPlayingView: View {
     }
 
     private var hasLyricsColumn: Bool {
+        if lyricsUnavailable { return false }
         if let lyrics = player.lyrics, !lyrics.isEmpty { return true }
         return player.lyrics == nil // still loading — keep layout stable
+    }
+
+    /// Plugin tracks carry no lyric source. `hasNoLyrics` is only published by
+    /// `startPlaying`, so a restored session must fall back to the track tag.
+    private var lyricsUnavailable: Bool {
+        #if os(iOS)
+        return player.hasNoLyrics || player.currentTrack?.isPluginTrack == true
+        #else
+        return player.currentTrack?.isPluginTrack == true
+        #endif
+    }
+
+    /// The lyrics panel is only worth opening when it has lyrics to show, or
+    /// comments to swipe to. A short-video song has neither.
+    private var canOpenLyricsPanel: Bool {
+        !lyricsUnavailable || (settings.swipeToComments && commentsTrack != nil)
+    }
+
+    /// A plugin track with no lyrics has no lyrics button in the compact
+    /// classic chrome. Keep its comments pager on screen so they stay reachable.
+    private var showsCommentsWithoutLyrics: Bool {
+        #if os(iOS)
+        return lyricsUnavailable
+            && commentsTrack != nil
+            && settings.swipeToComments
+        #else
+        return false
+        #endif
     }
 
     private func close() {
@@ -586,7 +625,10 @@ struct NowPlayingView: View {
 
     private func vinylCompactLayout(size: CGSize) -> some View {
         let discDimension = min(size.width - 64, size.height * 0.42, 320)
-        let showsVinyl = !showLyricsOnMobile && !showQueueOnMobile
+        // The queue outranks the vinyl/lyrics surfaces: on a plugin track with
+        // no lyrics and no comments `canOpenLyricsPanel` is false, and without
+        // this precedence the queue button looks dead.
+        let showsVinyl = !showQueueOnMobile && (!showLyricsOnMobile || !canOpenLyricsPanel)
 
         return VStack(spacing: 0) {
             #if os(iOS)
@@ -616,6 +658,7 @@ struct NowPlayingView: View {
                             trackId: player.currentTrack?.id,
                             size: discDimension,
                             onTap: {
+                                guard canOpenLyricsPanel else { return }
                                 withAnimation(AppAnimation.standard) {
                                     showLyricsOnMobile = true
                                 }
@@ -630,6 +673,7 @@ struct NowPlayingView: View {
                         .accessibilityIdentifier("vinylTurntable")
 
                         MiniLyricsView(onOpen: {
+                            guard canOpenLyricsPanel else { return }
                             withAnimation(AppAnimation.standard) {
                                 showLyricsOnMobile = true
                             }
@@ -695,7 +739,7 @@ struct NowPlayingView: View {
         let artworkDim = min(size.width - 64, size.height * 0.38, 300)
         return VStack(spacing: 20) {
             Spacer().frame(height: 44)
-            if showLyricsOnMobile {
+            if (showLyricsOnMobile && canOpenLyricsPanel) || showsCommentsWithoutLyrics {
                 #if os(iOS)
                 NowPlayingLyricsPager(
                     isShown: true,
@@ -715,6 +759,7 @@ struct NowPlayingView: View {
                     artworkView(size: artworkDim)
                     trackMetaView
                     MiniLyricsView {
+                        guard canOpenLyricsPanel else { return }
                         withAnimation(AppAnimation.standard) {
                             showLyricsOnMobile = true
                         }
@@ -736,7 +781,9 @@ struct NowPlayingView: View {
     #if os(iOS)
     private func immersiveCompactLayout(size: CGSize) -> some View {
         let artworkDimension = min(size.width - 112, size.height * 0.3, 250)
-        let showsExpandedArtwork = !showLyricsOnMobile && !showQueueOnMobile
+        // Queue precedence, same reason as `showsVinyl` above.
+        let showsExpandedArtwork =
+            !showQueueOnMobile && (!showLyricsOnMobile || !canOpenLyricsPanel)
 
         return VStack(spacing: 0) {
             Color.clear.frame(
@@ -759,7 +806,7 @@ struct NowPlayingView: View {
                 if showQueueOnMobile {
                     CompactQueueContent()
                         .transition(.opacity)
-                } else {
+                } else if canOpenLyricsPanel {
                     NowPlayingLyricsPager(
                         isShown: showLyricsOnMobile,
                         horizontalInset: 32
@@ -842,6 +889,7 @@ struct NowPlayingView: View {
             CompactSecondaryControls(
                 showsVolumeControl: $showsVolumeControl,
                 showsLyrics: showLyricsOnMobile,
+                showsLyricsButton: !lyricsUnavailable,
                 showsQueue: showQueueOnMobile,
                 onToggleLyrics: toggleImmersiveLyrics,
                 onToggleQueue: toggleImmersiveQueue,
@@ -898,6 +946,7 @@ struct NowPlayingView: View {
     }
 
     private func toggleImmersiveLyrics() {
+        guard canOpenLyricsPanel else { return }
         withAnimation(ImmersiveArtworkTransition.animation) {
             if showQueueOnMobile {
                 showQueueOnMobile = false
@@ -909,6 +958,7 @@ struct NowPlayingView: View {
     }
 
     private func showImmersiveLyrics() {
+        guard canOpenLyricsPanel else { return }
         withAnimation(ImmersiveArtworkTransition.animation) {
             showQueueOnMobile = false
             showLyricsOnMobile = true
@@ -917,12 +967,16 @@ struct NowPlayingView: View {
 
     /// Tapping the top-left cover while lyrics/queue are up returns to the
     /// expanded artwork — the Apple Music gesture requested in #50. Idempotent,
-    /// so a tap while already expanded is a harmless no-op.
+    /// so a tap while already expanded is a harmless no-op — except for a
+    /// plugin track with comments only, where it reopens the comments page.
     private func collapseImmersiveArtwork() {
-        guard showLyricsOnMobile || showQueueOnMobile else { return }
         withAnimation(ImmersiveArtworkTransition.animation) {
-            showLyricsOnMobile = false
-            showQueueOnMobile = false
+            if showLyricsOnMobile || showQueueOnMobile {
+                showLyricsOnMobile = false
+                showQueueOnMobile = false
+            } else if showsCommentsWithoutLyrics {
+                showLyricsOnMobile = true
+            }
         }
     }
 
@@ -945,8 +999,8 @@ struct NowPlayingView: View {
                     metadataOnly: true
                 )
                     .padding(.top, NowPlayingPresentationMetrics.immersiveHeaderTopInset)
-                    .opacity(showLyricsOnMobile ? 1 : 0)
-                    .accessibilityHidden(!showLyricsOnMobile)
+                    .opacity(showsMinimalLyrics ? 1 : 0)
+                    .accessibilityHidden(!showsMinimalLyrics)
             }
             .frame(height: 90)
 
@@ -959,28 +1013,30 @@ struct NowPlayingView: View {
                     .contentShape(Rectangle())
                     .onTapGesture(perform: toggleMinimalLyrics)
                     .accessibilityIdentifier("immersiveArtwork")
-                    .accessibilityLabel("显示歌词")
-                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel(canOpenLyricsPanel ? "显示歌词" : "封面")
+                    .accessibilityAddTraits(canOpenLyricsPanel ? .isButton : [])
                     .accessibilityAction { toggleMinimalLyrics() }
-                    .opacity(showLyricsOnMobile ? 0 : 1)
-                    .allowsHitTesting(!showLyricsOnMobile)
+                    .opacity(showsMinimalLyrics ? 0 : 1)
+                    .allowsHitTesting(!showsMinimalLyrics)
 
-                NowPlayingLyricsPager(
-                    isShown: showLyricsOnMobile,
-                    horizontalInset: 32
-                ) {
-                    IOSMinimalLyricsColumn {
-                        showLyricsOnMobile = false
+                if canOpenLyricsPanel {
+                    NowPlayingLyricsPager(
+                        isShown: showLyricsOnMobile,
+                        horizontalInset: 32
+                    ) {
+                        IOSMinimalLyricsColumn {
+                            showLyricsOnMobile = false
+                        }
                     }
+                    .opacity(showsMinimalLyrics ? 1 : 0)
+                    .allowsHitTesting(showsMinimalLyrics)
+                    .accessibilityHidden(!showsMinimalLyrics)
                 }
-                .opacity(showLyricsOnMobile ? 1 : 0)
-                .allowsHitTesting(showLyricsOnMobile)
-                .accessibilityHidden(!showLyricsOnMobile)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .simultaneousGesture(
                 minimalDismissGesture,
-                including: showLyricsOnMobile ? .none : .all
+                including: showsMinimalLyrics ? .none : .all
             )
             .padding(.bottom, 20)
 
@@ -999,17 +1055,17 @@ struct NowPlayingView: View {
                     onOpenDestination: onOpenDestination,
                     onOpenSoundEffects: { activeSheet = NowPlayingSheet.soundEffects }
                 )
-                    .opacity(showLyricsOnMobile ? 0 : 1)
-                    .allowsHitTesting(!showLyricsOnMobile)
-                    .accessibilityHidden(showLyricsOnMobile)
+                    .opacity(showsMinimalLyrics ? 0 : 1)
+                    .allowsHitTesting(!showsMinimalLyrics)
+                    .accessibilityHidden(showsMinimalLyrics)
                 MinimalTrackInfoRow(
                     onOpenDestination: onOpenDestination,
                     onOpenSoundEffects: { activeSheet = NowPlayingSheet.soundEffects },
                     actionsOnly: true
                 )
-                    .opacity(showLyricsOnMobile ? 1 : 0)
-                    .allowsHitTesting(showLyricsOnMobile)
-                    .accessibilityHidden(!showLyricsOnMobile)
+                    .opacity(showsMinimalLyrics ? 1 : 0)
+                    .allowsHitTesting(showsMinimalLyrics)
+                    .accessibilityHidden(!showsMinimalLyrics)
             }
             .frame(height: 44)
             NowPlayingScrubber()
@@ -1026,8 +1082,13 @@ struct NowPlayingView: View {
     }
 
     private func toggleMinimalLyrics() {
-        guard showLyricsOnMobile || player.lyrics?.isEmpty == false else { return }
+        guard canOpenLyricsPanel else { return }
+        guard showLyricsOnMobile || player.lyrics?.isEmpty == false || commentsTrack != nil else { return }
         showLyricsOnMobile.toggle()
+    }
+
+    private var showsMinimalLyrics: Bool {
+        showLyricsOnMobile && canOpenLyricsPanel
     }
 
     private var minimalDismissGesture: some Gesture {
@@ -1371,7 +1432,8 @@ struct NowPlayingView: View {
     private var regularRightColumn: some View {
         ZStack(alignment: .top) {
             Group {
-                if regularColumnPage == .comments, let track = commentsTrack {
+                if regularColumnPage == .comments || !hasLyricsColumn,
+                   let track = commentsTrack {
                     RegularCommentsPanel(track: track)
                         .id(track.id)
                         .padding(.top, 52)
@@ -1379,17 +1441,11 @@ struct NowPlayingView: View {
                 } else if hasLyricsColumn {
                     lyricsColumn
                         .transition(.opacity)
-                } else {
-                    Text("暂无歌词")
-                        .font(.system(size: 15))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .transition(.opacity)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if commentsTrack != nil {
+            if commentsTrack != nil && hasLyricsColumn {
                 RegularColumnSwitch(selection: $regularColumnPage)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 24)
@@ -1476,18 +1532,11 @@ struct NowPlayingView: View {
                     .foregroundStyle(.white.opacity(0.6))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if player.currentTrack?.isPluginTrack == true {
-            // Plugin tracks have no lyric source — show a stable placeholder
-            // instead of spinning forever.
-            VStack(spacing: 10) {
-                Image(systemName: "text.quote")
-                    .font(.system(size: 36, weight: .light))
-                    .foregroundStyle(.white.opacity(0.4))
-                Text("暂无歌词")
-                    .font(.system(size: 15))
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if lyricsUnavailable {
+            // Plugin tracks have no lyric source. The surrounding layout hides
+            // the lyrics area; if it is still on screen (a song with comments),
+            // stay blank instead of spinning forever.
+            Color.clear
         } else {
             ProgressView()
                 .controlSize(.small)
@@ -2110,6 +2159,7 @@ private struct CompactSecondaryControls: View {
     @EnvironmentObject private var player: PlayerService
     @Binding var showsVolumeControl: Bool
     let showsLyrics: Bool
+    let showsLyricsButton: Bool
     let showsQueue: Bool
     let onToggleLyrics: () -> Void
     let onToggleQueue: () -> Void
@@ -2117,11 +2167,13 @@ private struct CompactSecondaryControls: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            secondaryButton(
-                icon: showsLyrics && !showsQueue ? "quote.bubble.fill" : "quote.bubble",
-                label: showsLyrics ? "显示封面" : "显示歌词",
-                isActive: showsLyrics && !showsQueue
-            ) { onToggleLyrics() }
+            if showsLyricsButton {
+                secondaryButton(
+                    icon: showsLyrics && !showsQueue ? "quote.bubble.fill" : "quote.bubble",
+                    label: showsLyrics ? "显示封面" : "显示歌词",
+                    isActive: showsLyrics && !showsQueue
+                ) { onToggleLyrics() }
+            }
 
             RoutePickerButton(diameter: 44, glyphSize: 17)
                 .frame(maxWidth: .infinity)
