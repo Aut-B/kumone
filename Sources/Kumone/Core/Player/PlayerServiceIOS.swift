@@ -872,6 +872,13 @@ final class PlayerService: ObservableObject {
         pendingAudioResourceLoader?.cancel()
         pendingAudioResourceLoader = nil
         scrobbleIfNeeded(completed: false)
+        // Silence the outgoing song now rather than when the next one is
+        // ready: resolving its URL can take seconds, and meanwhile the old
+        // item would keep playing under the new song's title and lyrics.
+        if engine.currentItem != nil {
+            engine.replaceCurrentItem(with: nil)
+            releaseCurrentPlaybackResources()
+        }
         currentTrack = track
         playbackAccountID = AccountStore.shared.profile?.userId
         // Kill the previous item IMMEDIATELY: otherwise the old audio keeps
@@ -1909,6 +1916,12 @@ final class PlayerService: ObservableObject {
                 try session.validate()
                 applyPlaybackSession(session)
                 NowPlayingManager.shared.updateMetadata(for: session.currentTrack, duration: duration)
+                // Nothing plays until the user resumes, so load the lyrics
+                // now or the now-playing page waits on them until then.
+                let generation = resolveGeneration
+                Task {
+                    await loadLyrics(for: session.currentTrack, generation: generation)
+                }
             } catch { ToastCenter.shared.show(error.localizedDescription) }
             return
         }
