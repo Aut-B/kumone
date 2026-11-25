@@ -2,7 +2,7 @@ name: Build unsigned iOS IPA
 
 on:
   push:
-    branches: ["dev-musicfree", "dev-musicfree-0.3.17", "dev-musicfree-0.3.19", "dev-musicfree-0.3.20", "dev-musicfree-0.3.20-ios15", "dev-musicfree-0.3.21", "dev-musicfree-0.3.21-ios15", "dev-musicfree-0.3.24", "dev-musicfree-0.3.24-ios15", "dev-musicfree-0.3.37-ios15", "feat/douyin-ios15", "feat/douyin-ios15-0.3.37"]
+    branches: ["dev-musicfree", "dev-musicfree-0.3.17", "dev-musicfree-0.3.19", "dev-musicfree-0.3.20", "dev-musicfree-0.3.20-ios15", "dev-musicfree-0.3.21", "dev-musicfree-0.3.21-ios15", "dev-musicfree-0.3.24", "dev-musicfree-0.3.24-ios15", "dev-musicfree-0.3.37-ios15", "dev-musicfree-0.3.38-ios15", "feat/douyin-ios15", "feat/douyin-ios15-0.3.37"]
   workflow_dispatch:
 
 permissions:
@@ -18,8 +18,8 @@ jobs:
     timeout-minutes: 90
     env:
       DEPLOY_TARGET: ${{ (contains(github.ref_name, 'ios15') || contains(github.ref_name, 'douyin')) && '15.0' || '16.0' }}
-      BUILD_NUM: ${{ contains(github.ref_name, '0.3.37') && '370' || (contains(github.ref_name, 'douyin') && '194' || (endsWith(github.ref_name, '-ios15') && (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '174' || '164') || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '173' || '163'))) }}
-      MARKETING: ${{ contains(github.ref_name, '0.3.37') && '0.3.37' || (contains(github.ref_name, 'douyin') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.21') && '0.3.21' || '0.3.20'))) }}
+      BUILD_NUM: ${{ contains(github.ref_name, '0.3.38') && '378' || (contains(github.ref_name, '0.3.37') && '370' || (contains(github.ref_name, 'douyin') && '194' || (endsWith(github.ref_name, '-ios15') && (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '174' || '164') || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '173' || '163')))) }}
+      MARKETING: ${{ contains(github.ref_name, '0.3.38') && '0.3.38' || (contains(github.ref_name, '0.3.37') && '0.3.37' || (contains(github.ref_name, 'douyin') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.24') && '0.3.24' || (startsWith(github.ref_name, 'dev-musicfree-0.3.21') && '0.3.21' || '0.3.20')))) }}
     steps:
       - uses: actions/checkout@v4
 
