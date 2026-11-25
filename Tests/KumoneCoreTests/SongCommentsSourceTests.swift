@@ -32,6 +32,22 @@ struct SongCommentAvailabilityTests {
         #expect(!SongCommentAvailability.isAvailable(for: unknown))
     }
 
+    @Test func shortVideoFavouritesHaveNoComments() throws {
+        let douyin = try makeTrack(platform: "douyin", itemID: "7400000000000000000")
+        #expect(SongCommentAvailability.source(for: douyin) == .unavailable)
+        #expect(!SongCommentAvailability.isAvailable(for: douyin))
+        #expect(SongCommentAvailability.isShortVideoTrack(douyin))
+
+        let tiktok = try makeTrack(platform: "TikTok", itemID: "7400000000000000001")
+        #expect(!SongCommentAvailability.isAvailable(for: tiktok))
+        #expect(SongCommentAvailability.isShortVideoTrack(tiktok))
+
+        let netease = try makeTrack(id: 186016)
+        #expect(!SongCommentAvailability.isShortVideoTrack(netease))
+        let bilibili = try makeTrack(platform: "bilibili", rawJSON: #"{"aid":123}"#)
+        #expect(!SongCommentAvailability.isShortVideoTrack(bilibili))
+    }
+
     @Test func neteaseTracksNeedASongID() throws {
         let song = try makeTrack(id: 186016)
         #expect(SongCommentAvailability.source(for: song) == .netease)

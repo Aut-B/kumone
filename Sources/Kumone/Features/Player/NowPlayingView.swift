@@ -1375,7 +1375,8 @@ struct NowPlayingView: View {
 
     private var commentsTrack: Track? {
         guard let track = player.currentTrack,
-              SongCommentsMenuButton.isAvailable(for: track) else { return nil }
+              SongCommentsMenuButton.isAvailable(for: track),
+              !SongCommentAvailability.isShortVideoTrack(track) else { return nil }
         return track
     }
 
@@ -2171,7 +2172,8 @@ private struct CompactSecondaryControls: View {
             ) { onToggleQueue() }
 
             if let track = player.currentTrack,
-               SongCommentsMenuButton.isAvailable(for: track) {
+               SongCommentsMenuButton.isAvailable(for: track),
+               !SongCommentAvailability.isShortVideoTrack(track) {
                 secondaryButton(icon: "text.bubble", label: "查看评论") {
                     onOpenComments(track)
                 }

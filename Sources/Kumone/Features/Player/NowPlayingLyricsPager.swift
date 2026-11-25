@@ -44,7 +44,8 @@ struct NowPlayingLyricsPager<Lyrics: View>: View {
     var body: some View {
         if settings.swipeToComments,
            let track = player.currentTrack,
-           SongCommentsMenuButton.isAvailable(for: track) {
+           SongCommentsMenuButton.isAvailable(for: track),
+           !SongCommentAvailability.isShortVideoTrack(track) {
             if #available(iOS 16, *) {
                 TabView(selection: $page) {
                     lyrics

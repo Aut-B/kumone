@@ -20,6 +20,9 @@ enum SongCommentAvailability {
     static func source(for track: Track) -> SongCommentSource {
         // Cloud uploads have no public thread, whatever their plugin says.
         guard !track.isCloud else { return .unavailable }
+        // Douyin/TikTok favourites only resolve play URLs through the plugin
+        // shell; they have no comment backend, so their player entries hide.
+        guard !isShortVideoTrack(track) else { return .unavailable }
         guard let plugin = track.plugin else {
             return track.id > 0 ? .netease : .unavailable
         }
@@ -36,6 +39,14 @@ enum SongCommentAvailability {
 
     static func isAvailable(_ source: SongCommentSource) -> Bool {
         source.isAvailable
+    }
+
+    /// Douyin/TikTok favourites are plugin tracks whose platform is the
+    /// short-video source ("douyin" / "tiktok"). The player shell hides its
+    /// comment entries for them; NetEase and Bilibili paths stay untouched.
+    static func isShortVideoTrack(_ track: Track) -> Bool {
+        guard let platform = track.plugin?.platform.lowercased() else { return false }
+        return platform == "douyin" || platform == "tiktok"
     }
 
     /// Plugin platforms carry their mounted plugin's name, e.g. "bilibili",

@@ -3,7 +3,7 @@ import SwiftUI
 /// Shows ``UpstreamSetupView`` until first-launch setup is done, then `content`.
 struct UpstreamGate<Content: View>: View {
     @ViewBuilder let content: () -> Content
-    @State private var configured = Upstream.isConfigured || KumonePaths.isOfflineUITest
+    @State private var configured = upstreamSetupSatisfied()
 
     var body: some View {
         Group {
@@ -15,10 +15,19 @@ struct UpstreamGate<Content: View>: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: Upstream.didChange).receive(on: RunLoop.main)) { _ in
             withAnimation(.easeInOut(duration: 0.3)) {
-                configured = Upstream.isConfigured || KumonePaths.isOfflineUITest
+                configured = upstreamSetupSatisfied()
             }
         }
     }
+}
+
+/// The XCUITest suite launches with `-kumone.ui.test`; without this the
+/// fresh-simulator arithmetic gate would cover the tab bar and search field
+/// those tests drive.
+private func upstreamSetupSatisfied() -> Bool {
+    Upstream.isConfigured
+        || KumonePaths.isOfflineUITest
+        || CommandLine.arguments.contains("-kumone.ui.test")
 }
 
 /// First-launch check: two random arithmetic questions, both required.
