@@ -12,6 +12,10 @@ final class NowPlayingManager {
     private var artworkTask: Task<Void, Never>?
     private var playbackStateCancellables: Set<AnyCancellable> = []
     private var info: [String: Any] = [:]
+    /// Every handler this manager added, so re-registering replaces instead of
+    /// stacking. Two `play` handlers would turn one lock-screen tap into
+    /// pause+play.
+    private var commandTargets: [(command: MPRemoteCommand, token: Any)] = []
     #if os(iOS)
     /// Binds the app's Now Playing state to its AVPlayer. The system's Now
     /// Playing / lock-screen / Dynamic Island surface launches the app behind
@@ -50,9 +54,84 @@ final class NowPlayingManager {
     #if os(iOS)
     private var activationAttemptInFlight = false
     private var lastActivationAttempt: Date = .distantPast
+    private var sessionObserversInstalled = false
     /// `updateElapsed` ticks several times a second; activation is retried
     /// no more often than this.
     private static let activationRetryInterval: TimeInterval = 2
+
+    /// Re-asserts the audio session before publishing. On iOS 15 there is no
+    /// `MPNowPlayingSession`: the process-wide center is the only lock-screen
+    /// surface, and nothing else re-asserts the session there — the reclaim
+    /// path below is iOS 16-only, and `setActive(true)` otherwise runs only at
+    /// launch and when the audio-mix setting changes. A slot lost to another
+    /// app, an interruption or a media-services reset therefore stayed lost
+    /// until the next launch re-ran `PlayerService.init()`.
+    /// `setActive(true)` is a no-op while active and is rate-limited because
+    /// `updateElapsed` ticks several times a second.
+    private func ensureActiveSharedCenter() {
+        let now = Date()
+        guard now.timeIntervalSince(lastActivationAttempt) >= Self.activationRetryInterval else { return }
+        lastActivationAttempt = now
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+
+    /// Republishes what is already known after the system dropped it (media
+    /// services reset, an interruption ending, a card claimed by another app).
+    private func republishInfo() {
+        guard !info.isEmpty else { return }
+        let rate = info[MPNowPlayingInfoPropertyPlaybackRate] as? Double ?? 0
+        infoCenter.nowPlayingInfo = info
+        infoCenter.playbackState = rate > 0 ? .playing : .paused
+    }
+
+    /// Media services resets drop the now-playing registration without any
+    /// playback callback, so they are observed directly.
+    private func installSessionObserversIfNeeded() {
+        guard !sessionObserversInstalled else { return }
+        sessionObserversInstalled = true
+        let center = NotificationCenter.default
+        center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.recoverAfterSystemEvent()
+            }
+        }
+        center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let value = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      AVAudioSession.InterruptionType(rawValue: value) == .ended
+                else { return }
+                self.recoverAfterSystemEvent()
+            }
+        }
+    }
+
+    /// Re-registers the commands and republishes the card. iOS 16 keeps its
+    /// session path: ask the existing session to become active again (its
+    /// established fallback takes over if it cannot) instead of moving to the
+    /// shared centers.
+    private func recoverAfterSystemEvent() {
+        guard let player else { return }
+        if #available(iOS 16.0, *) {
+            reclaimSessionIfNeeded(whilePlaying: player.isPlaying)
+            republishInfo()
+            return
+        }
+        // A media-services reset discards the session configuration and an
+        // interruption can leave the session inactive; re-apply the player's
+        // category before re-asserting. This is the moment the slot was
+        // taken, so the tick rate limit must not swallow it.
+        player.applyAudioMixPreference()
+        lastActivationAttempt = Date()
+        registerRemoteCommands(for: player)
+        republishInfo()
+    }
 
     /// Claims the session again when it has lost its active slot (another app
     /// took Now Playing while we were paused). While audio is audibly playing
@@ -96,6 +175,7 @@ final class NowPlayingManager {
     func attach(to player: PlayerService, avPlayer: AVPlayer? = nil) {
         self.player = player
         #if os(iOS)
+        installSessionObserversIfNeeded()
         if #available(iOS 16.0, *), let avPlayer {
             let session = MPNowPlayingSession(players: [avPlayer])
             // We publish the full dictionary ourselves (elapsed time, queue
@@ -111,33 +191,34 @@ final class NowPlayingManager {
     /// Registers the remote commands on the current command center. Run again
     /// when that center changes, i.e. when the session is given up.
     private func registerRemoteCommands(for player: PlayerService) {
+        removeRegisteredCommandTargets()
         playbackStateCancellables.removeAll()
         let center = commandCenter
 
-        center.playCommand.addTarget { [weak player] _ in
+        addTarget(center.playCommand) { [weak player] _ in
             guard let player, player.hasCurrentTrack else { return .noActionableNowPlayingItem }
             if !player.isPlaying { player.togglePlayPause() }
             return .success
         }
-        center.pauseCommand.addTarget { [weak player] _ in
+        addTarget(center.pauseCommand) { [weak player] _ in
             guard let player, player.hasCurrentTrack else { return .noActionableNowPlayingItem }
             if player.isPlaying { player.togglePlayPause() }
             return .success
         }
-        center.togglePlayPauseCommand.addTarget { [weak player] _ in
+        addTarget(center.togglePlayPauseCommand) { [weak player] _ in
             guard let player, player.hasCurrentTrack else { return .noActionableNowPlayingItem }
             player.togglePlayPause()
             return .success
         }
-        center.nextTrackCommand.addTarget { [weak player] _ in
+        addTarget(center.nextTrackCommand) { [weak player] _ in
             player?.next()
             return .success
         }
-        center.previousTrackCommand.addTarget { [weak player] _ in
+        addTarget(center.previousTrackCommand) { [weak player] _ in
             player?.previous()
             return .success
         }
-        center.changePlaybackPositionCommand.addTarget { [weak player] event in
+        addTarget(center.changePlaybackPositionCommand) { [weak player] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             player?.seek(to: event.positionTime)
             return .success
@@ -147,7 +228,7 @@ final class NowPlayingManager {
         center.likeCommand.isEnabled = true
         center.likeCommand.localizedTitle = String(localized: "喜欢")
         center.likeCommand.localizedShortTitle = String(localized: "喜欢")
-        center.likeCommand.addTarget { [weak player] _ in
+        addTarget(center.likeCommand) { [weak player] _ in
             guard let track = player?.currentTrack else { return .noActionableNowPlayingItem }
             Task { @MainActor in
                 await AccountStore.shared.toggleLike(trackID: track.id)
@@ -164,14 +245,14 @@ final class NowPlayingManager {
         // media buttons everywhere, including CarPlay.
 
         // Shuffle / Repeat — backs the shuffle and repeat buttons on the CarPlay Now Playing screen.
-        center.changeShuffleModeCommand.addTarget { [weak player] event in
+        addTarget(center.changeShuffleModeCommand) { [weak player] event in
             guard let player,
                   let event = event as? MPChangeShuffleModeCommandEvent else { return .commandFailed }
             let wantOn = event.shuffleType != .off
             if player.shuffleEnabled != wantOn { player.toggleShuffle() }
             return .success
         }
-        center.changeRepeatModeCommand.addTarget { [weak player] event in
+        addTarget(center.changeRepeatModeCommand) { [weak player] event in
             guard let player,
                   let event = event as? MPChangeRepeatModeCommandEvent else { return .commandFailed }
             // MPRepeatType: .off / .one / .all → RepeatMode: .off / .one / .all
@@ -216,6 +297,18 @@ final class NowPlayingManager {
             .store(in: &playbackStateCancellables)
     }
 
+    private func addTarget(
+        _ command: MPRemoteCommand,
+        handler: @escaping (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus
+    ) {
+        commandTargets.append((command, command.addTarget(handler: handler)))
+    }
+
+    private func removeRegisteredCommandTargets() {
+        for (command, token) in commandTargets { command.removeTarget(token) }
+        commandTargets.removeAll()
+    }
+
     /// Reflects the current track's hearted state on the like command.
     func refreshLikeState() {
         guard let track = player?.currentTrack else {
@@ -231,7 +324,15 @@ final class NowPlayingManager {
         // A session can lose its active slot while playback was stopped;
         // claim it again as soon as a new track is put up. The player may not
         // be audible yet, so a refusal here is not held against the session.
-        if #available(iOS 16.0, *) { reclaimSessionIfNeeded(whilePlaying: false) }
+        if #available(iOS 16.0, *) {
+            reclaimSessionIfNeeded(whilePlaying: false)
+        } else {
+            // One attempt per track: the rate limit exists for the several
+            // `updateElapsed` ticks a second, and it must not swallow the
+            // publish the lock screen keys off after a quick skip.
+            lastActivationAttempt = .distantPast
+            ensureActiveSharedCenter()
+        }
         #endif
         info = [
             MPMediaItemPropertyTitle: track.name,
@@ -268,12 +369,38 @@ final class NowPlayingManager {
     func updateElapsed(_ elapsed: TimeInterval, rate: Double) {
         #if os(iOS)
         // Resuming the same track publishes through here, not updateMetadata.
-        if #available(iOS 16.0, *), rate > 0 { reclaimSessionIfNeeded(whilePlaying: true) }
+        if #available(iOS 16.0, *) {
+            if rate > 0 { reclaimSessionIfNeeded(whilePlaying: true) }
+        } else if rate > 0, (info[MPNowPlayingInfoPropertyPlaybackRate] as? Double ?? 0) <= 0 {
+            // Only the paused→playing edge needs the session re-asserted; the
+            // steady ticks several times a second must not call into
+            // AVAudioSession.
+            lastActivationAttempt = .distantPast
+            ensureActiveSharedCenter()
+        }
         #endif
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         info[MPNowPlayingInfoPropertyPlaybackRate] = rate
         infoCenter.nowPlayingInfo = info
         infoCenter.playbackState = rate > 0 ? .playing : .paused
+    }
+
+    /// Re-asserts the card when the app moves to the background — the moment
+    /// the lock screen renders it. On iOS 15 the shared slot may have been
+    /// taken since the last publish (another app, an interruption, a media
+    /// services reset); iOS 16 keeps its session and is merely asked to
+    /// become active again if it lost the slot.
+    func refreshSystemCard() {
+        #if os(iOS)
+        if #available(iOS 16.0, *) {
+            reclaimSessionIfNeeded(whilePlaying: player?.isPlaying == true)
+        } else {
+            guard player?.currentTrack != nil else { return }
+            lastActivationAttempt = .distantPast
+            ensureActiveSharedCenter()
+        }
+        republishInfo()
+        #endif
     }
 
     func clear() {
