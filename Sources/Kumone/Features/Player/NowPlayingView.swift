@@ -1,18 +1,15 @@
 import SwiftUI
 
-/// The now-playing page's one enum-driven sheet: sound effects and song
-/// comments share a single presentation because iOS 15 only honours one
-/// `.sheet` per view.
+/// The now-playing page's sheet: sound effects open from several places, so
+/// they share a single presentation because iOS 15 only honours one `.sheet`
+/// per view.
 enum NowPlayingSheet: Identifiable {
     case soundEffects
-    case comments(Track)
 
     var id: String {
         switch self {
         case .soundEffects:
             return "soundEffects"
-        case .comments(let track):
-            return "comments-\(track.id)"
         }
     }
 }
@@ -163,8 +160,6 @@ struct NowPlayingView: View {
                         }
                 }
                 .navigationViewStyle(.stack)
-            case .comments(let track):
-                SongCommentsView(track: track)
             }
         }
         .modifier(OfflinePlaybackAlert(player: player, onDownloads: { onOpenDestination(.downloaded) },
@@ -656,8 +651,7 @@ struct NowPlayingView: View {
                     #if os(iOS)
                     NowPlayingLyricsPager(
                         isShown: true,
-                        horizontalInset: 32,
-                        onOpenComments: { activeSheet = NowPlayingSheet.comments($0) }
+                        horizontalInset: 32
                     ) {
                         IOSImmersiveLyricsColumn()
                             .contentShape(Rectangle())
@@ -705,8 +699,7 @@ struct NowPlayingView: View {
                 #if os(iOS)
                 NowPlayingLyricsPager(
                     isShown: true,
-                    horizontalInset: 16,
-                    onOpenComments: { activeSheet = NowPlayingSheet.comments($0) }
+                    horizontalInset: 16
                 ) {
                     lyricsColumn
                 }
@@ -769,8 +762,7 @@ struct NowPlayingView: View {
                 } else {
                     NowPlayingLyricsPager(
                         isShown: showLyricsOnMobile,
-                        horizontalInset: 32,
-                        onOpenComments: { activeSheet = NowPlayingSheet.comments($0) }
+                        horizontalInset: 32
                     ) {
                         IOSImmersiveLyricsColumn()
                     }
@@ -853,9 +845,6 @@ struct NowPlayingView: View {
                 showsQueue: showQueueOnMobile,
                 onToggleLyrics: toggleImmersiveLyrics,
                 onToggleQueue: toggleImmersiveQueue,
-                onOpenComments: { track in
-                    activeSheet = NowPlayingSheet.comments(track)
-                },
                 onOpenSoundEffects: { activeSheet = NowPlayingSheet.soundEffects }
             )
         }
@@ -978,8 +967,7 @@ struct NowPlayingView: View {
 
                 NowPlayingLyricsPager(
                     isShown: showLyricsOnMobile,
-                    horizontalInset: 32,
-                    onOpenComments: { activeSheet = NowPlayingSheet.comments($0) }
+                    horizontalInset: 32
                 ) {
                     IOSMinimalLyricsColumn {
                         showLyricsOnMobile = false
@@ -1375,7 +1363,7 @@ struct NowPlayingView: View {
 
     private var commentsTrack: Track? {
         guard let track = player.currentTrack,
-              SongCommentsMenuButton.isAvailable(for: track),
+              SongCommentAvailability.isAvailable(for: track),
               !SongCommentAvailability.isShortVideoTrack(track) else { return nil }
         return track
     }
@@ -1866,7 +1854,6 @@ private struct CompactTrackHeader: View {
     private enum HeaderSheet: Identifiable, Hashable {
         case neteasePlaylist
         case localPlaylist
-        case comments(Track)
 
         var id: Int { hashValue }
     }
@@ -1944,9 +1931,6 @@ private struct CompactTrackHeader: View {
                     Menu {
                         TrackDownloadActions(track: track, showsIcons: true)
                         TrackBlacklistMenu(track: track, showsIcons: true)
-                        SongCommentsMenuButton(track: track, showsIcons: true) {
-                            activeSheet = .comments(track)
-                        }
                         Divider()
                         Button {
                             player.addToPlayNext(track)
@@ -2003,8 +1987,6 @@ private struct CompactTrackHeader: View {
                     AddToPlaylistSheet(track: track)
                 case .localPlaylist:
                     AddTracksToPlaylistSheet(tracks: [track])
-                case .comments(let commentTrack):
-                    SongCommentsView(track: commentTrack)
                 }
             }
         }
@@ -2131,7 +2113,6 @@ private struct CompactSecondaryControls: View {
     let showsQueue: Bool
     let onToggleLyrics: () -> Void
     let onToggleQueue: () -> Void
-    let onOpenComments: (Track) -> Void
     let onOpenSoundEffects: () -> Void
 
     var body: some View {
@@ -2170,14 +2151,6 @@ private struct CompactSecondaryControls: View {
                 label: showsQueue ? "关闭播放队列" : "显示播放队列",
                 isActive: showsQueue
             ) { onToggleQueue() }
-
-            if let track = player.currentTrack,
-               SongCommentsMenuButton.isAvailable(for: track),
-               !SongCommentAvailability.isShortVideoTrack(track) {
-                secondaryButton(icon: "text.bubble", label: "查看评论") {
-                    onOpenComments(track)
-                }
-            }
         }
     }
 
@@ -2736,7 +2709,6 @@ private enum MoreSheet: Identifiable, Hashable {
     case pluginPlaylist
     case localPlaylist
     case share
-    case comments(Track)
 
     var id: Int { hashValue }
 }
@@ -2800,8 +2772,6 @@ private struct MinimalTrackInfoRow: View {
                     AddTracksToPlaylistSheet(tracks: [track])
                 case .share:
                     ShareSheet(items: Self.shareItems(for: track))
-                case .comments(let commentTrack):
-                    SongCommentsView(track: commentTrack)
                 }
             }
         }
@@ -2859,9 +2829,6 @@ private struct MinimalTrackInfoRow: View {
         Menu {
             TrackDownloadActions(track: track, showsIcons: true)
             TrackBlacklistMenu(track: track, showsIcons: true)
-            SongCommentsMenuButton(track: track, showsIcons: true) {
-                moreSheet = .comments(track)
-            }
             Divider()
             Button {
                 airPlayRequest += 1
