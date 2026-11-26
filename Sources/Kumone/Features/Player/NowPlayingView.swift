@@ -1546,43 +1546,42 @@ struct NowPlayingView: View {
     }
 
     private func bigLyricLine(_ line: LyricLine, isActive: Bool) -> some View {
-        Button {
-            player.seek(to: line.time)
-        } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                if settings.lyricsAnnotation == .romaji, let romaji = line.romaji {
-                    Text(romaji)
-                        .font(.system(size: isActive ? 15 : 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.35))
-                }
-                LyricMainText(
-                    line: line, isActive: isActive,
-                    size: isActive ? settings.lyricFontSize + 6 : settings.lyricFontSize,
-                    weight: isActive ? .bold : .semibold,
-                    verbatim: settings.verbatimLyrics
-                )
-                if settings.showLyricsTranslation, let translation = line.translation {
-                    Text(translation)
-                        .font(.system(size: isActive ? 16 : 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.35))
-                }
+        // A tap seeks; a drag belongs to the page swipe. A Button fires on
+        // touch-up inside even after a page drag on iOS15, so the lyric line
+        // seeks every time the listener swipes to the comments (#6S 380).
+        VStack(alignment: .leading, spacing: 5) {
+            if settings.lyricsAnnotation == .romaji, let romaji = line.romaji {
+                Text(romaji)
+                    .font(.system(size: isActive ? 15 : 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.35))
             }
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .blur(radius: isActive || isUserScrolling ? 0 : max(0.6, settings.lyricBlurAmount))
-            .rotation3DEffect(
-                .degrees(isActive ? settings.lyricTiltX : settings.lyricTiltX * 0.3),
-                axis: (x: CGFloat(settings.lyricTiltY / 90), y: 1, z: 0),
-                perspective: 0.4
+            LyricMainText(
+                line: line, isActive: isActive,
+                size: isActive ? settings.lyricFontSize + 6 : settings.lyricFontSize,
+                weight: isActive ? .bold : .semibold,
+                verbatim: settings.verbatimLyrics
             )
-            .shadow(
-                color: .white.opacity(isActive ? 0.06 * settings.lyricGlow : 0),
-                radius: settings.lyricGlow * 4
-            )
-            .scaleEffect(isActive ? 1.02 : 1, anchor: .leading)
+            if settings.showLyricsTranslation, let translation = line.translation {
+                Text(translation)
+                    .font(.system(size: isActive ? 16 : 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.35))
+            }
         }
-        .buttonStyle(.plain)
+        .multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .blur(radius: isActive || isUserScrolling ? 0 : max(0.6, settings.lyricBlurAmount))
+        .rotation3DEffect(
+            .degrees(isActive ? settings.lyricTiltX : settings.lyricTiltX * 0.3),
+            axis: (x: CGFloat(settings.lyricTiltY / 90), y: 1, z: 0),
+            perspective: 0.4
+        )
+        .shadow(
+            color: .white.opacity(isActive ? 0.06 * settings.lyricGlow : 0),
+            radius: settings.lyricGlow * 4
+        )
+        .scaleEffect(isActive ? 1.02 : 1, anchor: .leading)
+        .onTapGesture { player.seek(to: line.time) }
         .animation(.compatSpring(response: 0.4, dampingFraction: 0.8), value: isActive)
         .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
@@ -1591,38 +1590,35 @@ struct NowPlayingView: View {
     /// large and carries the verbatim wipe like a KTV subtitle; the neighbours
     /// stay smaller and dimmer so the eye follows the sung line.
     private func landscapeKaraokeLine(_ line: LyricLine, isActive: Bool) -> some View {
-        Button {
-            player.seek(to: line.time)
-        } label: {
-            VStack(spacing: 7) {
-                if settings.lyricsAnnotation == .romaji, let romaji = line.romaji {
-                    Text(romaji)
-                        .font(.system(size: isActive ? 16 : 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.3))
-                }
-                LyricMainText(
-                    line: line, isActive: isActive,
-                    size: isActive ? 32 : 21,
-                    weight: isActive ? .bold : .medium,
-                    verbatim: settings.verbatimLyrics,
-                    alignment: .center
-                )
-                if settings.showLyricsTranslation, let translation = line.translation {
-                    Text(translation)
-                        .font(.system(size: isActive ? 17 : 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(isActive ? 0.72 : 0.3))
-                }
+        // Tap seeks, drag pages: same reasoning as `bigLyricLine` (#6S 380).
+        VStack(spacing: 7) {
+            if settings.lyricsAnnotation == .romaji, let romaji = line.romaji {
+                Text(romaji)
+                    .font(.system(size: isActive ? 16 : 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(isActive ? 0.7 : 0.3))
             }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .contentShape(Rectangle())
-            .opacity(isActive ? 1 : 0.6)
-            .scaleEffect(isActive ? 1 : 0.97)
-            .blur(radius: isActive || isUserScrolling ? 0 : 0.4)
-            .shadow(color: .black.opacity(isActive ? 0.45 : 0),
-                    radius: isActive ? 18 : 0, y: isActive ? 6 : 0)
+            LyricMainText(
+                line: line, isActive: isActive,
+                size: isActive ? 32 : 21,
+                weight: isActive ? .bold : .medium,
+                verbatim: settings.verbatimLyrics,
+                alignment: .center
+            )
+            if settings.showLyricsTranslation, let translation = line.translation {
+                Text(translation)
+                    .font(.system(size: isActive ? 17 : 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(isActive ? 0.72 : 0.3))
+            }
         }
-        .buttonStyle(.plain)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .contentShape(Rectangle())
+        .opacity(isActive ? 1 : 0.6)
+        .scaleEffect(isActive ? 1 : 0.97)
+        .blur(radius: isActive || isUserScrolling ? 0 : 0.4)
+        .shadow(color: .black.opacity(isActive ? 0.45 : 0),
+                radius: isActive ? 18 : 0, y: isActive ? 6 : 0)
+        .onTapGesture { player.seek(to: line.time) }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: isActive)
         .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }
@@ -1814,46 +1810,44 @@ private struct IOSImmersiveLyricsColumn: View {
     }
 
     private func lyricLine(_ line: LyricLine, isActive: Bool) -> some View {
-        Button {
-            player.seek(to: line.time)
-        } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                if settings.lyricsAnnotation == .romaji, let romaji = line.romaji {
-                    Text(romaji)
-                        .font(.system(size: isActive ? 15 : 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(isActive ? 0.75 : 0.4))
-                }
-
-                LyricMainText(
-                    line: line,
-                    isActive: isActive,
-                    size: isActive ? 26 : 21,
-                    weight: isActive ? .bold : .semibold,
-                    verbatim: settings.verbatimLyrics
-                )
-
-                if settings.showLyricsTranslation, let translation = line.translation {
-                    Text(translation)
-                        .font(.system(size: isActive ? 16 : 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(isActive ? 0.75 : 0.4))
-                }
+        // Tap seeks, drag pages: a Button fires on touch-up after a page drag
+        // on iOS15, so every swipe to the comments seeked too (#6S 380).
+        VStack(alignment: .leading, spacing: 5) {
+            if settings.lyricsAnnotation == .romaji, let romaji = line.romaji {
+                Text(romaji)
+                    .font(.system(size: isActive ? 15 : 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(isActive ? 0.75 : 0.4))
             }
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .blur(radius: isActive || isUserScrolling ? 0 : max(0.4, settings.lyricBlurAmount))
-            .rotation3DEffect(
-                .degrees(isActive ? settings.lyricTiltX : settings.lyricTiltX * 0.3),
-                axis: (x: CGFloat(settings.lyricTiltY / 90), y: 1, z: 0),
-                perspective: 0.4
+
+            LyricMainText(
+                line: line,
+                isActive: isActive,
+                size: isActive ? 26 : 21,
+                weight: isActive ? .bold : .semibold,
+                verbatim: settings.verbatimLyrics
             )
-            .shadow(
-                color: .white.opacity(isActive ? 0.06 * settings.lyricGlow : 0),
-                radius: settings.lyricGlow * 4
-            )
-            .scaleEffect(isActive ? 1.07 : 0.82, anchor: .leading)
+
+            if settings.showLyricsTranslation, let translation = line.translation {
+                Text(translation)
+                    .font(.system(size: isActive ? 16 : 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(isActive ? 0.75 : 0.4))
+            }
         }
-        .buttonStyle(.plain)
+        .multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .blur(radius: isActive || isUserScrolling ? 0 : max(0.4, settings.lyricBlurAmount))
+        .rotation3DEffect(
+            .degrees(isActive ? settings.lyricTiltX : settings.lyricTiltX * 0.3),
+            axis: (x: CGFloat(settings.lyricTiltY / 90), y: 1, z: 0),
+            perspective: 0.4
+        )
+        .shadow(
+            color: .white.opacity(isActive ? 0.06 * settings.lyricGlow : 0),
+            radius: settings.lyricGlow * 4
+        )
+        .scaleEffect(isActive ? 1.07 : 0.82, anchor: .leading)
+        .onTapGesture { player.seek(to: line.time) }
         .animation(.compatSpring(response: 0.35, dampingFraction: 0.85), value: isActive)
         .animation(.easeOut(duration: 0.25), value: isUserScrolling)
     }

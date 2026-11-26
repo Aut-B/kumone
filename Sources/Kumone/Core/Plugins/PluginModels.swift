@@ -55,10 +55,20 @@ struct PluginMusicItem: Identifiable, Hashable, Sendable {
 struct PluginMediaSource: Sendable {
     let url: URL?
     let headers: [String: String]?
+    /// Why nothing resolved, in the user's words. Nil when a URL came back
+    /// or the caller has its own failure story.
+    var failureReason: String?
 
     init(url: URL?, headers: [String: String]?) {
         self.url = url
         self.headers = headers
+        self.failureReason = nil
+    }
+
+    init(url: URL?, headers: [String: String]?, failureReason: String?) {
+        self.url = url
+        self.headers = headers
+        self.failureReason = failureReason
     }
 }
 

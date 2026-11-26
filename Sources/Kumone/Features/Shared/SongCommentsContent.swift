@@ -60,6 +60,7 @@ final class SongCommentsContent: ObservableObject {
         self.client = client
         self.backend = .netease(songID: songID)
         self.session = .shared
+        adoptSnapshotIfMatching()
     }
 
     /// Picks the backend from the track. A track with no readable comment
@@ -74,9 +75,46 @@ final class SongCommentsContent: ObservableObject {
         self.session = session
         self.backend = Self.makeBackend(for: track)
         if source == .unavailable { phase = .loaded }
+        adoptSnapshotIfMatching()
     }
 
     var isEmpty: Bool { hot.isEmpty && latest.isEmpty }
+
+    /// The last loaded snapshot, keyed by song id: stepping to the queue and
+    /// back rebuilds this object, and without the snapshot the comments the
+    /// listener just read would reload from the network (#380, 瑕疵C).
+    private struct Snapshot {
+        let songID: Int
+        let hot: [SongComment]
+        let latest: [SongComment]
+        let total: Int
+        let nextOffset: Int
+        let nextPage: Int
+        let latestIDs: Set<Int>
+        let hasMore: Bool
+    }
+
+    @MainActor
+    private static var recentSnapshot: Snapshot?
+
+    private func adoptSnapshotIfMatching() {
+        guard let snap = Self.recentSnapshot, snap.songID == songID else { return }
+        hot = snap.hot
+        latest = snap.latest
+        total = snap.total
+        nextOffset = snap.nextOffset
+        nextPage = snap.nextPage
+        latestIDs = snap.latestIDs
+        hasMore = snap.hasMore
+        phase = .loaded
+    }
+
+    private func saveSnapshot() {
+        Self.recentSnapshot = Snapshot(
+            songID: songID, hot: hot, latest: latest, total: total,
+            nextOffset: nextOffset, nextPage: nextPage,
+            latestIDs: latestIDs, hasMore: hasMore)
+    }
 
     /// Loads the first page, replacing whatever is shown. A no-op while it runs.
     func loadFirstPage() async {
@@ -98,6 +136,7 @@ final class SongCommentsContent: ObservableObject {
                 break
             }
             phase = .loaded
+            saveSnapshot()
         } catch is CancellationError {
             phase = .idle
         } catch {
@@ -155,10 +194,13 @@ final class SongCommentsContent: ObservableObject {
 
     private func loadBilibiliFirstPage(track: Track) async throws {
         let aid = try await bilibiliAID(for: track)
-        let hotPage = try await BilibiliComments.fetchPage(oid: aid, page: 1, pageSize: pageSize,
-                                                            sort: .hot, using: session)
-        let latestPage = try await BilibiliComments.fetchPage(oid: aid, page: 1, pageSize: pageSize,
-                                                               sort: .time, using: session)
+        // The two orderings are independent requests. Serially they doubled
+        // the first-comment wait on a slow A9 (6S, #380): run them together.
+        async let hotPageTask = BilibiliComments.fetchPage(
+            oid: aid, page: 1, pageSize: pageSize, sort: .hot, using: session)
+        let latestPage = try await BilibiliComments.fetchPage(
+            oid: aid, page: 1, pageSize: pageSize, sort: .time, using: session)
+        let hotPage = try await hotPageTask
         var hotIDs: Set<Int> = []
         hot = hotPage.hot.filter { hotIDs.insert($0.id).inserted }
         latestIDs = []

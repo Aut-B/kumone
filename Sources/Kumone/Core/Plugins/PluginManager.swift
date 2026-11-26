@@ -351,6 +351,9 @@ final class PluginManager: ObservableObject {
             if let nativeURL = native.url {
                 return PluginMediaSource(url: nativeURL, headers: native.headers)
             }
+            // The video is gone or the resolution hiccupped; pass the real
+            // reason up so the toast stops blaming NetEase (#6S 380).
+            return PluginMediaSource(url: nil, headers: nil, failureReason: native.failureReason)
         }
         // Netease-family: resolve natively FIRST — fast and correct (the item
         // id IS the Netease song id); no JS involvement, no long waits.
@@ -376,7 +379,12 @@ final class PluginManager: ObservableObject {
         let headers = (result?["headers"] as? [String: Any])?.reduce(into: [String: String]()) { dict, pair in
             if let value = pair.value as? String { dict[pair.key] = value }
         }
-        return PluginMediaSource(url: url, headers: headers)
+        if let url {
+            return PluginMediaSource(url: url, headers: headers)
+        }
+        return PluginMediaSource(
+            url: nil, headers: nil,
+            failureReason: String(localized: "插件未能取得播放地址"))
     }
 
     /// Native Netease resolution: eapi songURL (valid levels) then unblock.
@@ -401,7 +409,10 @@ final class PluginManager: ObservableObject {
     }
 
     /// Direct B站 resolution: view → cid → playurl → first audio stream.
-    static func nativeBilibiliMediaURL(bvid: String) async -> (url: URL?, headers: [String: String]?) {
+    /// `failureReason` tells the listener why nothing came back: a deleted
+    /// video (the view API refuses) reads differently from a resolution
+    /// hiccup, so the toast no longer guesses (#6S 380).
+    static func nativeBilibiliMediaURL(bvid: String) async -> (url: URL?, headers: [String: String]?, failureReason: String?) {
         let browserHeaders = [
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36",
             "Referer": "https://www.bilibili.com/",
@@ -409,11 +420,17 @@ final class PluginManager: ObservableObject {
         var viewRequest = URLRequest(url: URL(string: "https://api.bilibili.com/x/web-interface/view?bvid=\(bvid)")!)
         viewRequest.timeoutInterval = 10
         browserHeaders.forEach { viewRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
-        guard let (viewData, _) = try? await URLSession.shared.data(for: viewRequest),
+        guard let (viewData, viewResponse) = try? await URLSession.shared.data(for: viewRequest),
               let viewJSON = (try? JSONSerialization.jsonObject(with: viewData)) as? [String: Any],
               let detail = viewJSON["data"] as? [String: Any],
               let cid = (detail["cid"] as? NSNumber)?.stringValue ?? detail["cid"] as? String else {
-            return (nil, nil)
+            // A refused view call with a bilibili code means the video is
+            // gone (deleted or made private); anything else is transient.
+            let gone = (viewResponse as? HTTPURLResponse).map { !(200..<300).contains($0.statusCode) } ?? false
+                || ((viewJSON["code"] as? Int) ?? 0) != 0
+            return (nil, nil, gone
+                ? String(localized: "B站视频已失效")
+                : String(localized: "B站取播放地址失败"))
         }
         var playRequest = URLRequest(url: URL(string: "https://api.bilibili.com/x/player/playurl?bvid=\(bvid)&cid=\(cid)&fnval=16&platform=html5")!)
         playRequest.timeoutInterval = 10
@@ -421,7 +438,7 @@ final class PluginManager: ObservableObject {
         guard let (playData, _) = try? await URLSession.shared.data(for: playRequest),
               let playJSON = (try? JSONSerialization.jsonObject(with: playData)) as? [String: Any],
               let data = playJSON["data"] as? [String: Any] else {
-            return (nil, nil)
+            return (nil, nil, String(localized: "B站取播放地址失败"))
         }
         // Prefer DASH audio (best quality), fall back to durl.
         var urlString: String?
@@ -435,9 +452,9 @@ final class PluginManager: ObservableObject {
         }
         guard let urlString, !urlString.isEmpty,
               let url = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://")) else {
-            return (nil, nil)
+            return (nil, nil, String(localized: "B站取播放地址失败"))
         }
-        return (url, browserHeaders)
+        return (url, browserHeaders, nil)
     }
 
 }

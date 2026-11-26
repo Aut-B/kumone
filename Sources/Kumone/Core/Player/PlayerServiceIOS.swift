@@ -992,34 +992,39 @@ final class PlayerService: ObservableObject {
         }
 
         var data: SongURLData?
-        do {
-            data = try await MusicAPI.songURLRetrying(ids: [track.id], level: quality).first
-            if data?.url == nil, quality != AudioQuality.standard.rawValue {
-                data = try await MusicAPI.songURLRetrying(ids: [track.id], level: AudioQuality.standard.rawValue).first
-            }
-        } catch {
-            guard generation == resolveGeneration else { return }
-            if !(error is CancellationError) {
-                lastResolveFailure = error.localizedDescription
-                Self.resolveLog.error("Playback URL for \(track.id) failed: \(String(describing: error))")
-            }
-            // A download covers a request that died on the network. Anything
-            // else goes on below: a cached copy, then third-party sources.
-            if ConnectivityFailure.matches(error) {
-                if let lease = await acquireOfflineLease(for: track, generation: generation, anyQuality: true) {
-                    await playOfflineFile(lease, for: track, generation: generation, resumeAt: resumeAt)
-                    return
+        // A plugin track resolves through its own plugin below; asking NetEase
+        // with the plugin item's id only burns seconds and leaves a 404 behind
+        // that the failure toast used to blame (#6S 380).
+        if track.plugin == nil {
+            do {
+                data = try await MusicAPI.songURLRetrying(ids: [track.id], level: quality).first
+                if data?.url == nil, quality != AudioQuality.standard.rawValue {
+                    data = try await MusicAPI.songURLRetrying(ids: [track.id], level: AudioQuality.standard.rawValue).first
                 }
+            } catch {
                 guard generation == resolveGeneration else { return }
-                if usesOfflineQueue {
-                    if cacheEnabled, await loadFallbackCache(for: track, generation: generation, allowsUnblock: allowsUnblock, resumeAt: resumeAt) { return }
+                if !(error is CancellationError) {
+                    lastResolveFailure = error.localizedDescription
+                    Self.resolveLog.error("Playback URL for \(track.id) failed: \(String(describing: error))")
+                }
+                // A download covers a request that died on the network. Anything
+                // else goes on below: a cached copy, then third-party sources.
+                if ConnectivityFailure.matches(error) {
+                    if let lease = await acquireOfflineLease(for: track, generation: generation, anyQuality: true) {
+                        await playOfflineFile(lease, for: track, generation: generation, resumeAt: resumeAt)
+                        return
+                    }
                     guard generation == resolveGeneration else { return }
-                    unavailableOffline(track, generation: generation)
-                    return
+                    if usesOfflineQueue {
+                        if cacheEnabled, await loadFallbackCache(for: track, generation: generation, allowsUnblock: allowsUnblock, resumeAt: resumeAt) { return }
+                        guard generation == resolveGeneration else { return }
+                        unavailableOffline(track, generation: generation)
+                        return
+                    }
                 }
             }
+            guard generation == resolveGeneration else { return }
         }
-        guard generation == resolveGeneration else { return }
 
         var resolvedURL: URL?
         var pluginHeaders: [String: String]?
@@ -1037,14 +1042,36 @@ final class PlayerService: ObservableObject {
            let itemData = plugin.rawJSON.data(using: .utf8),
            let itemDict = (try? JSONSerialization.jsonObject(with: itemData)) as? [String: Any],
            let item = PluginMusicItem(normalizing: itemDict, platform: plugin.platform) {
-            let source = await PluginManager.shared.getMediaSource(
-                platform: plugin.platform,
-                item: item,
-                quality: SettingsManager.shared.audioQuality.pluginQuality
-            )
+            // Hard deadline for the whole plugin resolve: every layer caps its
+            // own requests, but a wedged JS engine would leave the spinner up
+            // forever (#6S 380).
+            let source: PluginMediaSource? = await withTaskGroup(
+                of: PluginMediaSource?.self
+            ) { group in
+                group.addTask {
+                    await PluginManager.shared.getMediaSource(
+                        platform: plugin.platform,
+                        item: item,
+                        quality: SettingsManager.shared.audioQuality.pluginQuality
+                    )
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    return nil
+                }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
             guard generation == resolveGeneration else { return }
-            resolvedURL = source.url
-            pluginHeaders = source.headers
+            resolvedURL = source?.url
+            pluginHeaders = source?.headers
+            if resolvedURL == nil {
+                // The real reason for a plugin failure goes up front: the
+                // misleading NetEase 404 must never come back (#6S 380).
+                lastResolveFailure = source?.failureReason
+                    ?? String(localized: "插件未能取得播放地址")
+            }
             // Bilibili CDN hosts sometimes check referer/UA on direct links;
             // attach browser-style defaults when the plugin didn't provide any.
             if let host = resolvedURL?.host,
