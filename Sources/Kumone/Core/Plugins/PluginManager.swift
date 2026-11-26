@@ -420,14 +420,16 @@ final class PluginManager: ObservableObject {
         var viewRequest = URLRequest(url: URL(string: "https://api.bilibili.com/x/web-interface/view?bvid=\(bvid)")!)
         viewRequest.timeoutInterval = 10
         browserHeaders.forEach { viewRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
-        guard let (viewData, viewResponse) = try? await URLSession.shared.data(for: viewRequest),
-              let viewJSON = (try? JSONSerialization.jsonObject(with: viewData)) as? [String: Any],
+        let viewResult = try? await URLSession.shared.data(for: viewRequest)
+        let viewResponse = viewResult?.1
+        let viewJSON = (viewResult?.0).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        guard let viewJSON,
               let detail = viewJSON["data"] as? [String: Any],
               let cid = (detail["cid"] as? NSNumber)?.stringValue ?? detail["cid"] as? String else {
             // A refused view call with a bilibili code means the video is
             // gone (deleted or made private); anything else is transient.
             let gone = (viewResponse as? HTTPURLResponse).map { !(200..<300).contains($0.statusCode) } ?? false
-                || ((viewJSON["code"] as? Int) ?? 0) != 0
+                || ((viewJSON?["code"] as? Int) ?? 0) != 0
             return (nil, nil, gone
                 ? String(localized: "B站视频已失效")
                 : String(localized: "B站取播放地址失败"))
