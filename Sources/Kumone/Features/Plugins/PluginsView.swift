@@ -394,6 +394,23 @@ struct PluginsRootView: View {
     }
 }
 
+private enum ImportedPlaylistSheet: Identifiable {
+    case collect
+    case switchSource(LocalTrackEntry)
+    case switchSourceBatch
+
+    var id: String {
+        switch self {
+        case .collect:
+            return "collect"
+        case .switchSource(let entry):
+            return "switchSource|\(entry.id)"
+        case .switchSourceBatch:
+            return "switchSourceBatch"
+        }
+    }
+}
+
 /// Detail view for a local playlist: play from one, select in bulk, reorder.
 ///
 /// A local playlist holds both kinds of entry — plugin items and NetEase
@@ -407,7 +424,7 @@ struct ImportedPlaylistDetailView: View {
     @State private var multiSelectMode = false
     @State private var selectedIDs: Set<String> = []
     @State private var editMode: EditMode = .inactive
-    @State private var showCollect = false
+    @State private var activeSheet: ImportedPlaylistSheet?
     @State private var showDeleteConfirm = false
 
     private var isReordering: Bool { editMode == .active }
@@ -432,6 +449,10 @@ struct ImportedPlaylistDetailView: View {
         entries.filter { selectedIDs.contains($0.id) }.map(\.track)
     }
 
+    private var selectedEntries: [LocalTrackEntry] {
+        entries.filter { selectedIDs.contains($0.id) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if multiSelectMode {
@@ -447,7 +468,8 @@ struct ImportedPlaylistDetailView: View {
                     canDelete: true,
                     onPlayNext: playSelectedNext,
                     onQueueEnd: queueSelectedAtEnd,
-                    onCollect: { showCollect = true },
+                    onSwitchSource: { activeSheet = .switchSourceBatch },
+                    onCollect: { activeSheet = .collect },
                     onDelete: { showDeleteConfirm = true }
                 )
                 Divider().opacity(0.4)
@@ -524,8 +546,30 @@ struct ImportedPlaylistDetailView: View {
                 .accessibilityLabel("更多")
             }
         }
-        .sheet(isPresented: $showCollect) {
-            AddTracksToPlaylistSheet(tracks: selectedTracks)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .collect:
+                AddTracksToPlaylistSheet(tracks: selectedTracks)
+            case .switchSource(let entry):
+                SourceSwitchTargetSheet(
+                    entries: [entry],
+                    playlist: playlist,
+                    onFinished: {
+                        reload()
+                        ToastCenter.shared.show(String(localized: "换源完成，已在原位置替换"))
+                    }
+                )
+            case .switchSourceBatch:
+                SourceSwitchTargetSheet(
+                    entries: selectedEntries,
+                    playlist: playlist,
+                    onFinished: {
+                        reload()
+                        selectedIDs.removeAll()
+                        multiSelectMode = false
+                    }
+                )
+            }
         }
         .confirmationDialog(
             "从歌单移除 \(selectedIDs.count) 首？",
@@ -594,6 +638,13 @@ struct ImportedPlaylistDetailView: View {
             }
         }
         .contextMenu {
+            if !multiSelectMode && !isReordering {
+                Button {
+                    activeSheet = .switchSource(entry)
+                } label: {
+                    Label("换源…", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
             Button {
                 player.addToPlayNext(entry.track)
             } label: {

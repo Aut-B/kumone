@@ -32,10 +32,10 @@ struct PlaylistSelectionSummaryBar: View {
     }
 }
 
-/// The batch action bar: 下一首播放 / 排到队尾 / 下载 / 添加到歌单 / 删除.
+/// The batch action bar: 下一首播放 / 排到队尾 / 下载 / 换源 / 添加到歌单 / 删除.
 ///
-/// Download is opt-in: callers that manage their own collection download pass
-/// `onDownload`; callers without one simply omit the button.
+/// Download and source switching are opt-in: callers pass `onDownload` or
+/// `onSwitchSource`; callers without them simply omit the button.
 struct PlaylistSelectionActionBar: View {
     let selectedCount: Int
     var canDelete = true
@@ -46,6 +46,9 @@ struct PlaylistSelectionActionBar: View {
     /// Download the current selection. Optional so local/cloud callers decide
     /// whether the action bar offers bulk downloads.
     var onDownload: (() -> Void)? = nil
+    /// Switch the selected plugin tracks to another source. Optional so only
+    /// callers that can write playlist entries expose the action.
+    var onSwitchSource: (() -> Void)? = nil
     /// Extra disabled state for the download button (e.g. a request is already
     /// awaiting the metered-network gate). Ignored when `onDownload` is nil.
     var downloadDisabled = false
@@ -75,6 +78,14 @@ struct PlaylistSelectionActionBar: View {
                     tint: .primary,
                     disabled: downloadDisabled,
                     action: onDownload
+                )
+            }
+            if let onSwitchSource {
+                actionButton(
+                    icon: "arrow.triangle.2.circlepath",
+                    label: "换源",
+                    tint: .primary,
+                    action: onSwitchSource
                 )
             }
             actionButton(
@@ -126,6 +137,7 @@ struct PlaylistSelectionBar: View {
     let onPlayNext: () -> Void
     var onQueueEnd: (() -> Void)? = nil
     var onDownload: (() -> Void)? = nil
+    var onSwitchSource: (() -> Void)? = nil
     var downloadDisabled = false
     let onCollect: () -> Void
     let onDelete: () -> Void
@@ -144,6 +156,7 @@ struct PlaylistSelectionBar: View {
                 onPlayNext: onPlayNext,
                 onQueueEnd: onQueueEnd,
                 onDownload: onDownload,
+                onSwitchSource: onSwitchSource,
                 downloadDisabled: downloadDisabled,
                 onCollect: onCollect,
                 onDelete: onDelete
