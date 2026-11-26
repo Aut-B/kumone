@@ -397,6 +397,7 @@ struct PluginsRootView: View {
 private enum ImportedPlaylistSheet: Identifiable {
     case collect
     case switchSource(LocalTrackEntry)
+    case switchSourceBatch
 
     var id: String {
         switch self {
@@ -404,6 +405,8 @@ private enum ImportedPlaylistSheet: Identifiable {
             return "collect"
         case .switchSource(let entry):
             return "switchSource|\(entry.id)"
+        case .switchSourceBatch:
+            return "switchSourceBatch"
         }
     }
 }
@@ -446,6 +449,10 @@ struct ImportedPlaylistDetailView: View {
         entries.filter { selectedIDs.contains($0.id) }.map(\.track)
     }
 
+    private var selectedEntries: [LocalTrackEntry] {
+        entries.filter { selectedIDs.contains($0.id) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if multiSelectMode {
@@ -461,6 +468,7 @@ struct ImportedPlaylistDetailView: View {
                     canDelete: true,
                     onPlayNext: playSelectedNext,
                     onQueueEnd: queueSelectedAtEnd,
+                    onSwitchSource: { activeSheet = .switchSourceBatch },
                     onCollect: { activeSheet = .collect },
                     onDelete: { showDeleteConfirm = true }
                 )
@@ -549,6 +557,16 @@ struct ImportedPlaylistDetailView: View {
                     onFinished: {
                         reload()
                         ToastCenter.shared.show(String(localized: "换源完成，已在原位置替换"))
+                    }
+                )
+            case .switchSourceBatch:
+                SourceSwitchTargetSheet(
+                    entries: selectedEntries,
+                    playlist: playlist,
+                    onFinished: {
+                        reload()
+                        selectedIDs.removeAll()
+                        multiSelectMode = false
                     }
                 )
             }

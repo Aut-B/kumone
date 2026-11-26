@@ -10,11 +10,13 @@ import Foundation
 final class SourceSwitchService {
     typealias Search = @MainActor (String, String, Int) async throws -> (isEnd: Bool, items: [PluginMusicItem])
     typealias Probe = @MainActor (String, PluginMusicItem) async -> PluginMediaSource
+    typealias PluginList = @MainActor () -> [PluginManager.InstalledPlugin]
 
     static let shared = SourceSwitchService()
 
     private let search: Search
     private let probe: Probe
+    private let availablePlugins: PluginList
     /// Spacing between requests; batch callers use it to keep older devices
     /// from firing every search at once.
     let throttleNanoseconds: UInt64
@@ -22,6 +24,7 @@ final class SourceSwitchService {
     init(
         search: Search? = nil,
         probe: Probe? = nil,
+        plugins: PluginList? = nil,
         throttleNanoseconds: UInt64 = 700_000_000
     ) {
         if let search {
@@ -41,6 +44,11 @@ final class SourceSwitchService {
                     quality: SettingsManager.shared.audioQuality.pluginQuality
                 )
             }
+        }
+        if let plugins {
+            self.availablePlugins = plugins
+        } else {
+            self.availablePlugins = { PluginManager.shared.plugins }
         }
         self.throttleNanoseconds = throttleNanoseconds
     }
@@ -81,6 +89,104 @@ final class SourceSwitchService {
                 error: .searchFailed(error.localizedDescription)
             )
         }
+    }
+
+    /// Switches several entries to one target, strictly one request at a time.
+    ///
+    /// Older devices stutter when a whole selection hits the JS engine at once,
+    /// so each song waits for the previous one and for the shared throttle
+    /// before it starts. `progress` is called after every finished song with
+    /// `(done, total)`; entries that cannot be matched keep their old value.
+    func switchEntries(
+        _ entries: [LocalTrackEntry],
+        to platform: String,
+        progress: @escaping (Int, Int) -> Void
+    ) async -> [SourceSwitchOutcome] {
+        guard !entries.isEmpty else { return [] }
+
+        let total = entries.count
+        var outcomes: [SourceSwitchOutcome] = []
+        outcomes.reserveCapacity(total)
+        for (index, entry) in entries.enumerated() {
+            if index > 0 {
+                try? await Task.sleep(nanoseconds: throttleNanoseconds)
+            }
+            let outcome = await switchEntry(entry, to: platform)
+            outcomes.append(outcome)
+            progress(index + 1, total)
+        }
+        return outcomes
+    }
+
+    /// Probes every enabled plugin in registration order and adopts the first
+    /// one whose media source actually resolves to a URL.
+    ///
+    /// A search error, a missing match, or a source without a URL only rules
+    /// out that plugin; the next one gets a turn. When every plugin is ruled
+    /// out the outcome carries a line per source so the report can explain
+    /// exactly why nothing was replaced.
+    func switchEntrySmart(_ entry: LocalTrackEntry) async -> SourceSwitchOutcome {
+        let targetName = SourceSwitchTarget.smart.title
+        let plugins = availablePlugins().filter(\.enabled)
+        guard !plugins.isEmpty else {
+            return failure(
+                entry,
+                targetName: targetName,
+                error: .allSourcesFailed(String(localized: "没有启用的插件音源"))
+            )
+        }
+
+        let query = "\(entry.title) \(entry.artist)"
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var failures: [String] = []
+        var attempted = 0
+
+        for plugin in plugins {
+            guard !Self.isSameSource(platform: plugin.platform, entry: entry) else { continue }
+            attempted += 1
+
+            do {
+                let page = try await search(plugin.platform, query, 1)
+                let candidates = page.items.map(\.sourceCandidate)
+                guard let match = SourceMatcher.bestMatch(
+                    for: SourceMatchQuery(entry: entry),
+                    among: candidates
+                ), let item = page.items.first(where: { $0.sourceCandidate.identity == match.identity })
+                else {
+                    failures.append(
+                        "\(plugin.name)：\(String(localized: "未找到匹配条目"))"
+                    )
+                    continue
+                }
+
+                let source = await probe(plugin.platform, item)
+                guard source.url != nil else {
+                    let reason = source.failureReason ?? String(localized: "未取得播放地址")
+                    failures.append("\(plugin.name)：\(reason)")
+                    continue
+                }
+
+                return SourceSwitchOutcome(
+                    sourceID: entry.id,
+                    sourceTitle: entry.title,
+                    sourceArtist: entry.artist,
+                    targetName: plugin.name,
+                    replacementID: match.identity,
+                    error: nil,
+                    replacement: Self.storableEntry(from: item, platform: plugin.platform)
+                )
+            } catch {
+                failures.append("\(plugin.name)：\(error.localizedDescription)")
+            }
+        }
+
+        let details: String
+        if attempted == 0 {
+            details = String(localized: "没有可用的其他音源")
+        } else {
+            details = failures.joined(separator: "\n")
+        }
+        return failure(entry, targetName: targetName, error: .allSourcesFailed(details))
     }
 
     /// A plugin's search payload does not carry the routing key — that lives in

@@ -2,25 +2,43 @@ import Foundation
 
 /// A destination for a source switch.
 ///
-/// This batch exposes installed plugins only; later batches add the smart
-/// probe and NetEase targets without changing how callers name a target.
+/// Smart probes every enabled plugin in registration order and takes the first
+/// one whose `getMediaSource` returns a URL; the plugin case names one
+/// destination explicitly.
 enum SourceSwitchTarget: Identifiable, Hashable {
+    case smart
     case plugin(String)
 
-    var platform: String {
+    var isSmart: Bool {
+        if case .smart = self { return true }
+        return false
+    }
+
+    /// Routing key of the plugin target; nil for smart, which probes on its own.
+    var platform: String? {
         switch self {
+        case .smart: return nil
         case .plugin(let platform): return platform
         }
     }
 
-    var id: String { "plugin:\(platform)" }
+    var id: String {
+        switch self {
+        case .smart: return "smart"
+        case .plugin(let platform): return "plugin:\(platform)"
+        }
+    }
 
     /// The plugin's display name, falling back to its routing key.
     @MainActor
     var title: String {
-        PluginManager.shared.plugins
-            .first(where: { $0.platform == platform })?
-            .name ?? platform
+        switch self {
+        case .smart:
+            return String(localized: "智能换源")
+        case .plugin(let platform):
+            return PluginManager.shared.plugins
+                .first(where: { $0.platform == platform })?.name ?? platform
+        }
     }
 }
 
@@ -30,6 +48,7 @@ enum SourceSwitchError: Error, Equatable, LocalizedError {
     case samePlatform
     case sourceUnavailable(String)
     case searchFailed(String)
+    case allSourcesFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -41,6 +60,8 @@ enum SourceSwitchError: Error, Equatable, LocalizedError {
             return String(localized: "「\(name)」暂时不可用")
         case .searchFailed(let message):
             return String(localized: "搜索失败：\(message)")
+        case .allSourcesFailed(let details):
+            return details
         }
     }
 }
