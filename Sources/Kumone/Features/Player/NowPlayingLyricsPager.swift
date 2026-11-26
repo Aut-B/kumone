@@ -22,6 +22,9 @@ struct NowPlayingLyricsPager<Lyrics: View>: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var settings: SettingsManager
     @State private var page = Page.lyrics
+    /// The page the current drag started on, so a turn goes one page from
+    /// there even if the TabView has already moved under the finger.
+    @State private var swipeStartPage: Page?
     /// Presented from here, outside the pager: a sheet raised from inside
     /// one of its pages closed again a moment later, when the pages refreshed.
     @State private var sharedComment: SharedComment?
@@ -57,12 +60,32 @@ struct NowPlayingLyricsPager<Lyrics: View>: View {
             .overlay(alignment: .bottom) {
                 if pages.count > 1 { pageIndicator }
             }
+            .overlay(alignment: .bottomTrailing) {
+                if pages.count > 1 { commentsToggle }
+            }
             .sheet(item: $sharedComment) { shared in
                 CommentShareSheet(track: shared.track, comment: shared.comment)
             }
             .onAppear { alignPage() }
             .onChange(of: hasNoLyrics) { _ in alignPage() }
             .onChange(of: isShown) { _ in alignPage() }
+            // Simultaneous, never priority: the lyric scroll and the TabView's
+            // own paging keep their gestures, and this only reads the travel.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onChanged { _ in
+                        if swipeStartPage == nil { swipeStartPage = currentPage }
+                    }
+                    .onEnded { value in
+                        let start = swipeStartPage ?? currentPage
+                        swipeStartPage = nil
+                        guard PagerSwipeDecision.shouldPage(
+                            dx: value.translation.width,
+                            dy: value.translation.height
+                        ) else { return }
+                        turnPage(from: start, by: value.translation.width < 0 ? 1 : -1)
+                    }
+            )
         } else if hasNoLyrics {
             EmptyView()
         } else {
@@ -119,6 +142,47 @@ struct NowPlayingLyricsPager<Lyrics: View>: View {
         withTransaction(transaction, update)
     }
 
+    /// The comments button mirrors the page it can reach: the lyrics open the
+    /// comments, the comments return to the lyrics. Built only when the pager
+    /// really has two pages, so it never leads to a blank page.
+    private var commentsToggle: some View {
+        Button(action: togglePage) {
+            Image(systemName: "text.bubble")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 34, height: 34)
+                .background(.white.opacity(0.12), in: Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, horizontalInset)
+        .padding(.bottom, 6)
+        .accessibilityIdentifier("nowPlayingCommentsToggle")
+        .accessibilityLabel(
+            currentPage == .lyrics
+                ? LocalizedStringKey("查看评论")
+                : LocalizedStringKey("返回歌词")
+        )
+    }
+
+    private func togglePage() {
+        let target: Page = currentPage == .lyrics ? .comments : .lyrics
+        guard pages.contains(target) else { return }
+        withoutAnimation { page = target }
+    }
+
+    /// Moves one page from where the drag began, clamped to the two pages:
+    /// a long swipe on the last page never lands past it.
+    private func turnPage(from start: Page, by offset: Int) {
+        guard let index = pages.firstIndex(of: start) else { return }
+        let target = index + offset
+        guard pages.indices.contains(target) else { return }
+        let destination = pages[target]
+        guard destination != currentPage else { return }
+        withoutAnimation { page = destination }
+    }
+
     private var pageIndicator: some View {
         HStack(spacing: 6) {
             ForEach(pages, id: \.self) { item in
@@ -127,7 +191,6 @@ struct NowPlayingLyricsPager<Lyrics: View>: View {
                     .frame(width: item == currentPage ? 14 : 5, height: 5)
             }
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: currentPage)
         .padding(.bottom, 2)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
