@@ -83,6 +83,10 @@ final class MusicClient: @unchecked Sendable {
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.timeoutIntervalForRequest = 15
+        // The request timeout only bounds each wait for bytes, so a socket
+        // that trickles can stay open indefinitely. The comments watchdog
+        // also needs the transport itself to give up.
+        config.timeoutIntervalForResource = 25
         session = URLSession(configuration: config)
 
         guard persistsCookies else { cookieFileURL = nil; return }

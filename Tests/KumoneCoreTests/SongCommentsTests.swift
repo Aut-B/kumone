@@ -6,6 +6,7 @@ import Testing
 /// Answers eapi requests from a handler that sees the decrypted payload.
 private final class SongCommentsProtocol: URLProtocol, @unchecked Sendable {
     struct Request {
+        let url: URL
         let path: String
         let payload: [String: Any]
     }
@@ -16,6 +17,11 @@ private final class SongCommentsProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requests: [Request] = []
     /// Holds a like request until the test has looked at the optimistic state.
     nonisolated(unsafe) static var gate: DispatchSemaphore?
+    /// Leaves the first request in flight until the test answers it.
+    nonisolated(unsafe) static var defersFirstRequest = false
+    /// Fails the way a cancelled transport does.
+    nonisolated(unsafe) static var cancels = false
+    nonisolated(unsafe) private static var deferred: ((Int, String) -> Void)?
     private static let lock = NSLock()
 
     static func reset(_ handler: @escaping Handler) {
@@ -23,6 +29,9 @@ private final class SongCommentsProtocol: URLProtocol, @unchecked Sendable {
         self.handler = handler
         requests = []
         gate = nil
+        defersFirstRequest = false
+        cancels = false
+        deferred = nil
     }
 
     static func hold(with gate: DispatchSemaphore) {
@@ -35,21 +44,48 @@ private final class SongCommentsProtocol: URLProtocol, @unchecked Sendable {
         return requests
     }
 
+    /// Answers the request held back by `defersFirstRequest`.
+    static func answerDeferred(status: Int, body: String) {
+        lock.lock()
+        let answer = deferred
+        deferred = nil
+        lock.unlock()
+        answer?(status, body)
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        let path = request.url?.path ?? ""
+        guard let url = request.url else { return }
         let payload = EAPIPayload.decode(Self.body(of: request)) ?? [:]
-        let recorded = Request(path: path, payload: payload)
+        let recorded = Request(url: url, path: url.path, payload: payload)
         Self.lock.lock()
         Self.requests.append(recorded)
         let handler = Self.handler
         let gate = Self.gate
+        let cancels = Self.cancels
+        let defers = Self.defersFirstRequest && Self.requests.count == 1
+        if defers {
+            Self.deferred = { status, body in
+                self.deliver(status: status, body: body, for: recorded)
+            }
+        }
         Self.lock.unlock()
         gate?.wait()
-        let (status, body) = handler(recorded)
-        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        if cancels {
+            client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+            return
+        }
+        // A deferred request stays in flight until the test answers it.
+        if defers { return }
+        let reply = handler(recorded)
+        deliver(status: reply.status, body: reply.body, for: recorded)
+    }
+
+    private func deliver(status: Int, body: String, for request: Request) {
+        let response = HTTPURLResponse(url: request.url, statusCode: status,
+                                       httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
@@ -157,6 +193,21 @@ struct SongCommentsTests {
         let client = MusicClient(configuration: configuration, persistsCookies: false)
         if signedIn { client.setCookies(["MUSIC_U": "song-comments-test-session"]) }
         return client
+    }
+
+    /// Yields to a page's load task until its phase settles, for about three
+    /// seconds at most, so a watchdog test does not race the scheduler.
+    private func settledPhase(of content: SongCommentsContent) async throws -> SongCommentsContent.Phase {
+        var waited = 0
+        while content.phase == .idle, waited < 600 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+            waited += 1
+        }
+        while content.phase == .loading, waited < 600 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+            waited += 1
+        }
+        return content.phase
     }
 
     // MARK: Decoding
@@ -333,6 +384,145 @@ struct SongCommentsTests {
         await content.retry()
         #expect(content.loadMoreError == nil)
         #expect(content.latest.map(\.id) == [1, 2] && !content.hasMore)
+    }
+
+    // MARK: Loading watchdog
+
+    /// The Watchdog ends a first page that never answers, so a stalled socket
+    /// cannot leave the spinner up forever (#214, #381).
+    @Test func aStalledFirstPageFailsAtTheWatchdogDeadline() async throws {
+        SongCommentsProtocol.reset { _ in (200, page(latest: [comment(1)], more: false)) }
+        SongCommentsProtocol.defersFirstRequest = true
+        let content = SongCommentsContent(songID: 1, client: client(), loadingDeadline: 0.2)
+
+        let load = Task { await content.loadFirstPage() }
+        let phase = try await settledPhase(of: content)
+        guard case .failed(let message) = phase else {
+            Issue.record("Expected the watchdog to end the load, got \(phase)")
+            SongCommentsProtocol.answerDeferred(status: 500, body: "")
+            await load.value
+            return
+        }
+        #expect(message.contains("重试"))
+        #expect(SongCommentsProtocol.recorded.count == 1)
+
+        // The request the watchdog gave up on answers late; it still lands
+        // without a second failure.
+        SongCommentsProtocol.answerDeferred(
+            status: 200, body: page(hot: [comment(2)], latest: [comment(1)], more: false))
+        await load.value
+        #expect(content.phase == .loaded)
+        #expect(content.latest.map(\.id) == [1])
+    }
+
+    @Test func aFirstPageThatAnswersIsNotFailedByTheWatchdog() async throws {
+        SongCommentsProtocol.reset { _ in
+            (200, page(hot: [comment(2)], latest: [comment(1)], more: false))
+        }
+        let content = SongCommentsContent(songID: 1, client: client(), loadingDeadline: 0.2)
+
+        await content.loadFirstPage()
+        #expect(content.phase == .loaded)
+
+        // Past the deadline the answered page must stay loaded.
+        try await Task.sleep(nanoseconds: 400_000_000)
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [2] && content.latest.map(\.id) == [1])
+    }
+
+    @Test func retryAfterTheDeadlineReloadsAndDropsTheLateAnswer() async throws {
+        SongCommentsProtocol.reset { _ in
+            (200, page(hot: [comment(2)], latest: [comment(1)], more: false))
+        }
+        SongCommentsProtocol.defersFirstRequest = true
+        let content = SongCommentsContent(songID: 1, client: client(), loadingDeadline: 0.2)
+
+        let first = Task { await content.loadFirstPage() }
+        let phase = try await settledPhase(of: content)
+        guard case .failed = phase else {
+            Issue.record("Expected the watchdog to fail the first load, got \(phase)")
+            SongCommentsProtocol.answerDeferred(status: 500, body: "")
+            await first.value
+            return
+        }
+
+        await content.retry()
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [2] && content.latest.map(\.id) == [1])
+
+        // The request from before the retry answers only now, with a page
+        // from the older generation; it must not overwrite the fresh one.
+        SongCommentsProtocol.answerDeferred(
+            status: 200, body: page(hot: [comment(99)], latest: [comment(99)], more: false))
+        await first.value
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [2] && content.latest.map(\.id) == [1])
+        #expect(SongCommentsProtocol.recorded.count == 2)
+    }
+
+    @Test func aCancelledFirstPageReturnsToIdleAndReloadsOnReentry() async throws {
+        SongCommentsProtocol.reset { _ in (200, page(latest: [comment(1)], more: false)) }
+        SongCommentsProtocol.cancels = true
+        let content = SongCommentsContent(songID: 1, client: client())
+
+        await content.loadFirstPage()
+        #expect(content.phase == .idle)
+        #expect(content.isEmpty)
+
+        // Coming back to an idle page loads it again.
+        SongCommentsProtocol.cancels = false
+        await content.loadFirstPage()
+        #expect(content.phase == .loaded)
+        #expect(content.latest.map(\.id) == [1])
+        #expect(SongCommentsProtocol.recorded.count == 2)
+    }
+
+    @Test func aCancelledTaskLeavesTheFirstPageIdle() async throws {
+        SongCommentsProtocol.reset { _ in (200, page(latest: [comment(1)], more: false)) }
+        let content = SongCommentsContent(songID: 1, client: client())
+
+        await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await content.loadFirstPage()
+        }.value
+
+        #expect(content.phase == .idle)
+        // A cancelled task may or may not have reached the transport; what
+        // matters is that it never leaves the page loading or failed.
+        #expect(SongCommentsProtocol.recorded.count <= 1)
+    }
+
+    /// A page turned back to while its first load is still in flight waits
+    /// for that load before deciding, so it cannot find a stale `.loading`
+    /// and leave the spinner up with nothing to start it again.
+    @Test func waitingForTheFirstPageReturnsOnceItSettles() async throws {
+        SongCommentsProtocol.reset { _ in (200, page(latest: [comment(1)], more: false)) }
+        SongCommentsProtocol.defersFirstRequest = true
+        let content = SongCommentsContent(songID: 1, client: client(), loadingDeadline: 5)
+
+        let load = Task { await content.loadFirstPage() }
+        var waited = 0
+        while content.phase != .loading, waited < 600 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+            waited += 1
+        }
+        #expect(content.phase == .loading)
+
+        let waiter = Task { await content.waitForFirstPageToSettle() }
+        waited = 0
+        while SongCommentsProtocol.recorded.isEmpty, waited < 600 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+            waited += 1
+        }
+        #expect(SongCommentsProtocol.recorded.count == 1)
+        #expect(content.phase == .loading)
+
+        SongCommentsProtocol.answerDeferred(
+            status: 200, body: page(latest: [comment(1)], more: false))
+        await waiter.value
+        #expect(content.phase == .loaded)
+        #expect(content.latest.map(\.id) == [1])
+        await load.value
     }
 
     // MARK: Likes

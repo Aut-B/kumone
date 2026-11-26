@@ -697,6 +697,7 @@
 "还没有评论" = "No comments yet";
 "%lld 条评论" = "%lld comments";
 "没有更多评论了" = "No more comments";
+"评论加载超时，请重试" = "Comment loading timed out — try again";
 "登录后可点赞评论" = "Sign in to like comments";
 "匿名用户" = "Anonymous";
 "回复 @%@：%@" = "Replying to @%@: %@";

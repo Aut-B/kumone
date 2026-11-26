@@ -35,6 +35,13 @@ final class SongCommentsContent: ObservableObject {
     private let client: MusicClient
     private let backend: Backend
     private let session: URLSession
+    /// How long a first page may stay unanswered before it is reported as a
+    /// retryable failure. Injectable so tests need not wait 20 seconds.
+    private let loadingDeadline: TimeInterval
+    /// Bumped by every first-page load: a reply from an older one is stale.
+    private var loadGeneration = 0
+    private var watchdog: Task<Void, Never>?
+    private var watchdogGeneration = 0
     private var nextOffset = 0
     private var nextPage = 1
     private var bilibiliAID: Int?
@@ -53,11 +60,13 @@ final class SongCommentsContent: ObservableObject {
 
     /// The NetEase-only initializer, kept for callers that already hold a
     /// song id.
-    init(songID: Int, pageSize: Int = 20, client: MusicClient = .shared) {
+    init(songID: Int, pageSize: Int = 20, client: MusicClient = .shared,
+         loadingDeadline: TimeInterval = 20) {
         self.songID = songID
         self.threadID = MusicAPI.songCommentThread(songID: songID)
         self.pageSize = max(1, pageSize)
         self.client = client
+        self.loadingDeadline = loadingDeadline
         self.backend = .netease(songID: songID)
         self.session = .shared
         adoptSnapshotIfMatching()
@@ -66,12 +75,14 @@ final class SongCommentsContent: ObservableObject {
     /// Picks the backend from the track. A track with no readable comment
     /// thread starts loaded and empty, so no request is ever sent for it.
     init(track: Track, pageSize: Int = 20,
-         client: MusicClient = .shared, session: URLSession = .shared) {
+         client: MusicClient = .shared, session: URLSession = .shared,
+         loadingDeadline: TimeInterval = 20) {
         let source = SongCommentAvailability.source(for: track)
         self.songID = track.id
         self.threadID = source == .netease ? MusicAPI.songCommentThread(songID: track.id) : ""
         self.pageSize = max(1, pageSize)
         self.client = client
+        self.loadingDeadline = loadingDeadline
         self.session = session
         self.backend = Self.makeBackend(for: track)
         if source == .unavailable { phase = .loaded }
@@ -85,6 +96,19 @@ final class SongCommentsContent: ObservableObject {
     /// listener just read would reload from the network (#380, 瑕疵C).
     private struct Snapshot {
         let songID: Int
+        let hot: [SongComment]
+        let latest: [SongComment]
+        let total: Int
+        let nextOffset: Int
+        let nextPage: Int
+        let latestIDs: Set<Int>
+        let hasMore: Bool
+    }
+
+    /// A first page fetched off the object. It is applied only after the
+    /// generation check, so a superseded load cannot touch any published
+    /// state, including the paging cursors.
+    private struct FirstPage {
         let hot: [SongComment]
         let latest: [SongComment]
         let total: Int
@@ -124,24 +148,81 @@ final class SongCommentsContent: ObservableObject {
             phase = .loaded
             return
         }
+        loadGeneration += 1
+        let generation = loadGeneration
         phase = .loading
         loadMoreError = nil
+        startWatchdog(for: generation)
+        var outcome = Phase.loaded
+        var firstPage: FirstPage?
         do {
             switch backend {
             case .netease(let songID):
-                try await loadNeteaseFirstPage(songID: songID)
+                firstPage = try await loadNeteaseFirstPage(songID: songID)
             case .bilibili(let track):
-                try await loadBilibiliFirstPage(track: track)
+                firstPage = try await loadBilibiliFirstPage(track: track)
             case .unavailable:
                 break
             }
-            phase = .loaded
-            saveSnapshot()
         } catch is CancellationError {
-            phase = .idle
+            // Turning away from the page cancels its task. That is not a
+            // failure: coming back to an idle page loads again (#214).
+            outcome = .idle
+        } catch let error as URLError where error.code == .cancelled {
+            outcome = .idle
         } catch {
-            phase = .failed(error.localizedDescription)
+            outcome = .failed(error.localizedDescription)
         }
+        stopWatchdog(for: generation)
+        // An answer from before a retry must not overwrite the newer state:
+        // not the phase and not the comments the retry has already shown.
+        guard generation == loadGeneration else { return }
+        if let firstPage {
+            hot = firstPage.hot
+            latest = firstPage.latest
+            total = firstPage.total
+            nextOffset = firstPage.nextOffset
+            nextPage = firstPage.nextPage
+            latestIDs = firstPage.latestIDs
+            hasMore = firstPage.hasMore
+        }
+        phase = outcome
+        if outcome == .loaded { saveSnapshot() }
+    }
+
+    /// Waits for an in-flight first page to settle. A page turned away and
+    /// straight back can find the cancelled load still `.loading`; without
+    /// this the new task would skip its load and leave the spinner up.
+    func waitForFirstPageToSettle() async {
+        while phase == .loading, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    /// Ends a first page that never answers: a stalled socket would otherwise
+    /// leave the spinner up forever. The watchdog belongs to one generation
+    /// and stands down once that load finishes, fails or is retried.
+    private func startWatchdog(for generation: Int) {
+        watchdog?.cancel()
+        watchdogGeneration = generation
+        let nanoseconds = UInt64(max(0, loadingDeadline) * 1_000_000_000)
+        watchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.watchdogExpired(for: generation)
+        }
+    }
+
+    private func watchdogExpired(for generation: Int) {
+        guard generation == loadGeneration, phase == .loading else { return }
+        watchdog = nil
+        phase = .failed(String(localized: "评论加载超时，请重试"))
+    }
+
+    private func stopWatchdog(for generation: Int) {
+        guard generation == watchdogGeneration else { return }
+        watchdog?.cancel()
+        watchdog = nil
     }
 
     /// Appends the next page of latest comments, skipping ones already shown.
@@ -165,20 +246,23 @@ final class SongCommentsContent: ObservableObject {
             try await load()
         } catch is CancellationError {
             return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch {
             loadMoreError = error.localizedDescription
         }
     }
 
-    private func loadNeteaseFirstPage(songID: Int) async throws {
+    private func loadNeteaseFirstPage(songID: Int) async throws -> FirstPage {
         let page = try await MusicAPI.songComments(songID: songID, limit: pageSize, offset: 0, using: client)
         var hotIDs: Set<Int> = []
-        hot = page.hot.filter { hotIDs.insert($0.id).inserted }
-        latestIDs = []
-        latest = page.latest.filter { latestIDs.insert($0.id).inserted }
-        total = page.total
-        nextOffset = pageSize
-        hasMore = page.more && !page.latest.isEmpty
+        let hot = page.hot.filter { hotIDs.insert($0.id).inserted }
+        var latestIDs: Set<Int> = []
+        let latest = page.latest.filter { latestIDs.insert($0.id).inserted }
+        return FirstPage(
+            hot: hot, latest: latest, total: page.total,
+            nextOffset: pageSize, nextPage: 1, latestIDs: latestIDs,
+            hasMore: page.more && !page.latest.isEmpty)
     }
 
     private func loadNeteaseMore(songID: Int) async throws {
@@ -192,7 +276,7 @@ final class SongCommentsContent: ObservableObject {
         hasMore = page.more && !fresh.isEmpty
     }
 
-    private func loadBilibiliFirstPage(track: Track) async throws {
+    private func loadBilibiliFirstPage(track: Track) async throws -> FirstPage {
         let aid = try await bilibiliAID(for: track)
         // The two orderings are independent requests. Serially they doubled
         // the first-comment wait on a slow A9 (6S, #380): run them together.
@@ -202,12 +286,14 @@ final class SongCommentsContent: ObservableObject {
             oid: aid, page: 1, pageSize: pageSize, sort: .time, using: session)
         let hotPage = try await hotPageTask
         var hotIDs: Set<Int> = []
-        hot = hotPage.hot.filter { hotIDs.insert($0.id).inserted }
-        latestIDs = []
-        latest = latestPage.latest.filter { latestIDs.insert($0.id).inserted }
-        total = latestPage.total > 0 ? latestPage.total : hotPage.total
-        nextPage = 2
-        hasMore = latestPage.more && !latestPage.latest.isEmpty
+        let hot = hotPage.hot.filter { hotIDs.insert($0.id).inserted }
+        var latestIDs: Set<Int> = []
+        let latest = latestPage.latest.filter { latestIDs.insert($0.id).inserted }
+        return FirstPage(
+            hot: hot, latest: latest,
+            total: latestPage.total > 0 ? latestPage.total : hotPage.total,
+            nextOffset: 0, nextPage: 2, latestIDs: latestIDs,
+            hasMore: latestPage.more && !latestPage.latest.isEmpty)
     }
 
     private func loadBilibiliMore(track: Track) async throws {

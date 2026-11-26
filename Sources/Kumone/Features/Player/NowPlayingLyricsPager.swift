@@ -165,20 +165,18 @@ private struct NowPlayingCommentsPage: View {
             .mask(edgeMask)
             .environment(\.colorScheme, .dark)
             .accessibilityIdentifier("nowPlayingComments")
-            .onAppear { load(if: needsLoad) }
-            // Watching the page and the phase together also restarts a load
-            // that ended back at idle, as a cancelled one does, rather than
-            // leaving the spinner up until the page is turned again (#214).
-            .onChange(of: needsLoad) { load(if: $0) }
-    }
-
-    private var needsLoad: Bool { isActive && content.phase == .idle }
-
-    /// Unstructured so that turning back to the lyrics mid-load doesn't
-    /// cancel it into an error.
-    private func load(if needed: Bool) {
-        guard needed else { return }
-        Task { await content.loadFirstPage() }
+            // Keyed to the page being shown and nothing else: keying it to the
+            // phase would cancel the request it just started. Turning away
+            // cancels the task, which puts an unfinished load back to idle, so
+            // turning back loads again (#214).
+            .task(id: isActive) {
+                guard isActive else { return }
+                // A quick turn away and back can find the cancelled load
+                // still running; wait for it before deciding to load again.
+                await content.waitForFirstPageToSettle()
+                guard !Task.isCancelled, content.phase == .idle else { return }
+                await content.loadFirstPage()
+            }
     }
 
     private var edgeMask: some View {
