@@ -3,6 +3,48 @@ import Foundation
 import ImageIO
 import SwiftUI
 
+/// Caps how many small CDN thumbnails may load from the network at once.
+/// Memory hits, disk hits, full-size artwork and URLs without a `param=NyN`
+/// hint never touch it, so only the thumbnail fetches queue.
+actor ThumbnailRequestLimiter {
+    static let shared = ThumbnailRequestLimiter()
+    /// Larger covers are not thumbnails for the purpose of this limit.
+    static let maximumThumbnailEdge = 96
+
+    private let limit: Int
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int = 3) {
+        self.limit = max(1, limit)
+    }
+
+    static func applies(to url: URL) -> Bool {
+        guard let edge = ImageCache.thumbnailLimit(for: url) else { return false }
+        return edge <= maximumThumbnailEdge
+    }
+
+    func acquire() async {
+        if active < limit {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        // Hand the slot straight to the next waiter instead of dropping the
+        // count and waking it, which would briefly allow one extra request.
+        guard waiters.isEmpty else {
+            waiters.removeFirst().resume()
+            return
+        }
+        active = max(0, active - 1)
+    }
+}
+
 /// Two-tier (memory + disk) image cache with in-flight request coalescing.
 actor ImageCache {
     static let shared = ImageCache()
@@ -12,6 +54,7 @@ actor ImageCache {
     nonisolated let directory: URL
     private let session: URLSession
     private let offlineArtwork: @Sendable (URL) async -> Data?
+    private let thumbnailLimiter: ThumbnailRequestLimiter
     private var generation: UInt64 = 0
     private struct Request {
         let generation: UInt64
@@ -20,9 +63,11 @@ actor ImageCache {
     private var inflight: [String: Request] = [:]
 
     init(directory: URL = KumonePaths.imageCache, session: URLSession = .shared,
+         thumbnailLimiter: ThumbnailRequestLimiter = .shared,
          offlineArtwork: @escaping @Sendable (URL) async -> Data? = { await ImageCache.loadOfflineArtwork(for: $0) }) {
         self.directory = directory
         self.session = session
+        self.thumbnailLimiter = thumbnailLimiter
         self.offlineArtwork = offlineArtwork
         #if os(macOS)
         // Small decoded covers for a large playlist can fit within the byte
@@ -69,10 +114,13 @@ actor ImageCache {
             }
             if let data = await offlineArtwork(url),
                let image = Self.decode(data, for: url) { return image }
-            guard let (data, response) = try? await session.data(from: url),
-                  (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
-                  let image = Self.decode(data, for: url) else { return nil }
-            if generation == requestGeneration { try? data.write(to: fileURL, options: .atomic) }
+            // Only the network leg of a small thumbnail is rate-limited; a
+            // cache or offline hit above returns without taking a slot.
+            let limited = ThumbnailRequestLimiter.applies(to: url)
+            if limited { await thumbnailLimiter.acquire() }
+            let image = await networkImage(for: url, fileURL: fileURL,
+                                           requestGeneration: requestGeneration)
+            if limited { await thumbnailLimiter.release() }
             return image
         }
         inflight[key] = Request(generation: requestGeneration, task: task)
@@ -89,12 +137,21 @@ actor ImageCache {
         return result ?? cachedVariant(for: url)
     }
 
+    private func networkImage(for url: URL, fileURL: URL,
+                              requestGeneration: UInt64) async -> PlatformImage? {
+        guard let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+              let image = Self.decode(data, for: url) else { return nil }
+        if generation == requestGeneration { try? data.write(to: fileURL, options: .atomic) }
+        return image
+    }
+
     private func diskImage(for key: String, requestedURL: URL) -> PlatformImage? {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent(key)) else { return nil }
         return Self.decode(data, for: requestedURL)
     }
 
-    private static func thumbnailLimit(for url: URL) -> Int? {
+    static func thumbnailLimit(for url: URL) -> Int? {
         guard let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == "param" })?.value else { return nil }
         let dimensions = value.split(separator: "y", omittingEmptySubsequences: false)

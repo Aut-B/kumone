@@ -33,6 +33,9 @@ final class SongCommentsContent: ObservableObject {
     @Published private(set) var pendingLikes: Set<Int> = []
 
     private let client: MusicClient
+    /// Shared with the player's background prefetch so opening the panel can
+    /// reuse the request already in flight, or its finished first page.
+    private let prefetcher: NeteaseCommentPrefetcher
     private let backend: Backend
     private let session: URLSession
     /// How long a first page may stay unanswered before it is reported as a
@@ -40,6 +43,10 @@ final class SongCommentsContent: ObservableObject {
     private let loadingDeadline: TimeInterval
     /// Bumped by every first-page load: a reply from an older one is stale.
     private var loadGeneration = 0
+    /// Set when the watchdog gave up on a request; the retry must replace that
+    /// request rather than join it again. A panel simply reopened after being
+    /// cancelled keeps waiting on the prefetch instead.
+    private var refreshFirstPageOnNextLoad = false
     private var watchdog: Task<Void, Never>?
     private var watchdogGeneration = 0
     private var nextOffset = 0
@@ -61,11 +68,13 @@ final class SongCommentsContent: ObservableObject {
     /// The NetEase-only initializer, kept for callers that already hold a
     /// song id.
     init(songID: Int, pageSize: Int = 20, client: MusicClient = .shared,
+         prefetcher: NeteaseCommentPrefetcher? = nil,
          loadingDeadline: TimeInterval = 20) {
         self.songID = songID
         self.threadID = MusicAPI.songCommentThread(songID: songID)
         self.pageSize = max(1, pageSize)
         self.client = client
+        self.prefetcher = prefetcher ?? Self.defaultPrefetcher(for: client)
         self.loadingDeadline = loadingDeadline
         self.backend = .netease(songID: songID)
         self.session = .shared
@@ -76,17 +85,25 @@ final class SongCommentsContent: ObservableObject {
     /// thread starts loaded and empty, so no request is ever sent for it.
     init(track: Track, pageSize: Int = 20,
          client: MusicClient = .shared, session: URLSession = .shared,
+         prefetcher: NeteaseCommentPrefetcher? = nil,
          loadingDeadline: TimeInterval = 20) {
         let source = SongCommentAvailability.source(for: track)
         self.songID = track.id
         self.threadID = source == .netease ? MusicAPI.songCommentThread(songID: track.id) : ""
         self.pageSize = max(1, pageSize)
         self.client = client
+        self.prefetcher = prefetcher ?? Self.defaultPrefetcher(for: client)
         self.loadingDeadline = loadingDeadline
         self.session = session
         self.backend = Self.makeBackend(for: track)
         if source == .unavailable { phase = .loaded }
         adoptSnapshotIfMatching()
+    }
+
+    /// The shared prefetcher is only valid for the shared transport; a stub or
+    /// alternate client needs its own cache or prefetch would leave the stub.
+    private static func defaultPrefetcher(for client: MusicClient) -> NeteaseCommentPrefetcher {
+        client === MusicClient.shared ? .shared : NeteaseCommentPrefetcher(client: client)
     }
 
     var isEmpty: Bool { hot.isEmpty && latest.isEmpty }
@@ -187,7 +204,10 @@ final class SongCommentsContent: ObservableObject {
             hasMore = firstPage.hasMore
         }
         phase = outcome
-        if outcome == .loaded { saveSnapshot() }
+        if outcome == .loaded {
+            refreshFirstPageOnNextLoad = false
+            saveSnapshot()
+        }
     }
 
     /// Waits for an in-flight first page to settle. A page turned away and
@@ -216,6 +236,7 @@ final class SongCommentsContent: ObservableObject {
     private func watchdogExpired(for generation: Int) {
         guard generation == loadGeneration, phase == .loading else { return }
         watchdog = nil
+        refreshFirstPageOnNextLoad = true
         phase = .failed(String(localized: "评论加载超时，请重试"))
     }
 
@@ -254,7 +275,16 @@ final class SongCommentsContent: ObservableObject {
     }
 
     private func loadNeteaseFirstPage(songID: Int) async throws -> FirstPage {
-        let page = try await MusicAPI.songComments(songID: songID, limit: pageSize, offset: 0, using: client)
+        let page: SongCommentsPage
+        if refreshFirstPageOnNextLoad {
+            refreshFirstPageOnNextLoad = false
+            // A retry replaces a prefetch the watchdog already stopped waiting
+            // for; otherwise it would join that same stalled request forever.
+            page = try await prefetcher.refreshPage(songID: songID, limit: pageSize)
+        } else {
+            page = try await prefetcher.page(songID: songID, limit: pageSize)
+        }
+        try Task.checkCancellation()
         var hotIDs: Set<Int> = []
         let hot = page.hot.filter { hotIDs.insert($0.id).inserted }
         var latestIDs: Set<Int> = []

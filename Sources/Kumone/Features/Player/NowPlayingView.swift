@@ -147,6 +147,11 @@ struct NowPlayingView: View {
         .ignoresSafeArea()
         #endif
         .preferredColorScheme(.dark)
+        // A NetEase song's comments are one request; start it with the track so
+        // opening the panel can reuse the page instead of waiting on the wire.
+        .task(id: player.currentTrack?.id) {
+            prefetchNeteaseComments()
+        }
         #if os(iOS)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -1427,6 +1432,26 @@ struct NowPlayingView: View {
               SongCommentAvailability.isAvailable(for: track),
               !SongCommentAvailability.isShortVideoTrack(track) else { return nil }
         return track
+    }
+
+    /// Bilibili keeps its own first-page requests, and a hidden comment entry
+    /// means there is nothing to open.
+    private func prefetchNeteaseComments() {
+        let prefetcher = NeteaseCommentPrefetcher.shared
+        #if os(iOS)
+        guard settings.swipeToComments else {
+            prefetcher.cancelAll()
+            return
+        }
+        #endif
+        guard let track = commentsTrack,
+              SongCommentAvailability.source(for: track) == .netease else {
+            // Moving to Bilibili, a short video or a song without comments
+            // must not leave the previous song's prefetch running.
+            prefetcher.cancelAll()
+            return
+        }
+        prefetcher.prefetch(songID: track.id)
     }
 
     private var regularRightColumn: some View {

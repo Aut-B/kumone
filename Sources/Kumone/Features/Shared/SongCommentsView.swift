@@ -295,7 +295,7 @@ private struct SongCommentRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            CachedAsyncImage(url: comment.avatarURL?.resizedImageURL(96), animated: false) {
+            CachedAsyncImage(url: comment.avatarURL?.resizedImageURL(48), animated: false) {
                 ZStack {
                     Circle().fill(.quaternary.opacity(0.5))
                     Image(systemName: "person.fill")

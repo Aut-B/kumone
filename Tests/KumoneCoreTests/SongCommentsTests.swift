@@ -525,6 +525,121 @@ struct SongCommentsTests {
         await load.value
     }
 
+    // MARK: First-page prefetch
+
+    private func waitForPrefetchedPage(_ prefetcher: NeteaseCommentPrefetcher, songID: Int,
+                                       limit: Int = 20) async -> SongCommentsPage? {
+        for _ in 0..<300 {
+            if let page = prefetcher.cachedPage(songID: songID, limit: limit) { return page }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return prefetcher.cachedPage(songID: songID, limit: limit)
+    }
+
+    @Test func openingAfterAPrefetchReusesItsPageWithoutANewRequest() async throws {
+        SongCommentsProtocol.reset { _ in
+            (200, page(hot: [comment(11)], latest: [comment(1), comment(2)], more: true))
+        }
+        let prefetcher = NeteaseCommentPrefetcher(client: client())
+        prefetcher.prefetch(songID: 9_301)
+        let prefetched = try #require(await waitForPrefetchedPage(prefetcher, songID: 9_301))
+        #expect(prefetched.hot.map(\.id) == [11])
+
+        // Showing the player again must not send the first page a second time.
+        prefetcher.prefetch(songID: 9_301)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(SongCommentsProtocol.recorded.count == 1)
+
+        let content = SongCommentsContent(songID: 9_301, client: client(), prefetcher: prefetcher)
+        await content.loadFirstPage()
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [11])
+        #expect(content.latest.map(\.id) == [1, 2])
+        #expect(SongCommentsProtocol.recorded.count == 1)
+    }
+
+    @Test func openingDuringAPrefetchWaitsForTheSameRequest() async throws {
+        SongCommentsProtocol.reset { _ in
+            (200, page(hot: [comment(21)], latest: [comment(2)], more: false))
+        }
+        SongCommentsProtocol.defersFirstRequest = true
+        let prefetcher = NeteaseCommentPrefetcher(client: client())
+        prefetcher.prefetch(songID: 9_302)
+        var waited = 0
+        while SongCommentsProtocol.recorded.isEmpty, waited < 300 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            waited += 1
+        }
+        #expect(SongCommentsProtocol.recorded.count == 1)
+
+        let content = SongCommentsContent(songID: 9_302, client: client(), prefetcher: prefetcher)
+        let load = Task { await content.loadFirstPage() }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(content.phase == .loading)
+        #expect(SongCommentsProtocol.recorded.count == 1)
+
+        SongCommentsProtocol.answerDeferred(
+            status: 200, body: page(hot: [comment(21)], latest: [comment(2)], more: false))
+        await load.value
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [21])
+        #expect(content.latest.map(\.id) == [2])
+        #expect(SongCommentsProtocol.recorded.count == 1)
+    }
+
+    @Test func switchingSongsCancelsTheOldPrefetchAndDropsItsAnswer() async throws {
+        SongCommentsProtocol.reset { request in
+            if request.path.contains("9304") {
+                return (200, page(hot: [comment(41)], latest: [comment(4)], more: false))
+            }
+            return (200, page(hot: [comment(31)], latest: [comment(3)], more: false))
+        }
+        SongCommentsProtocol.defersFirstRequest = true
+        let prefetcher = NeteaseCommentPrefetcher(client: client())
+        prefetcher.prefetch(songID: 9_303)
+        var waited = 0
+        while SongCommentsProtocol.recorded.isEmpty, waited < 300 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            waited += 1
+        }
+        #expect(SongCommentsProtocol.recorded.count == 1)
+
+        prefetcher.prefetch(songID: 9_304)
+        let next = try #require(await waitForPrefetchedPage(prefetcher, songID: 9_304))
+        #expect(next.hot.map(\.id) == [41])
+        // The new song's cache starts empty.
+        #expect(prefetcher.cachedPage(songID: 9_303) == nil)
+
+        // The cancelled request answers late; it must not refill the old entry.
+        SongCommentsProtocol.answerDeferred(
+            status: 200, body: page(hot: [comment(31)], latest: [comment(3)], more: false))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(prefetcher.cachedPage(songID: 9_303) == nil)
+        #expect(prefetcher.cachedPage(songID: 9_304)?.hot.map(\.id) == [41])
+    }
+
+    @Test func aFailedPrefetchIsNotCachedAndCanBeRetried() async throws {
+        let attempts = Counter()
+        SongCommentsProtocol.reset { _ in
+            attempts.next() == 1
+                ? (502, "")
+                : (200, page(hot: [comment(51)], latest: [comment(5)], more: false))
+        }
+        let prefetcher = NeteaseCommentPrefetcher(client: client())
+        prefetcher.prefetch(songID: 9_305)
+        do {
+            _ = try await prefetcher.page(songID: 9_305)
+            Issue.record("A failed prefetch must not look like a page")
+        } catch {
+            // Expected.
+        }
+        #expect(prefetcher.cachedPage(songID: 9_305) == nil)
+
+        let page = try await prefetcher.page(songID: 9_305)
+        #expect(page.hot.map(\.id) == [51] && page.latest.map(\.id) == [5])
+        #expect(SongCommentsProtocol.recorded.count == 2)
+    }
+
     // MARK: Likes
 
     @Test func guestsCannotLikeAndSendNothing() async throws {
