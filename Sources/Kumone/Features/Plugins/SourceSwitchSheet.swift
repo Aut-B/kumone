@@ -36,11 +36,19 @@ struct SourceSwitchTargetSheet: View {
 
     private var isBatch: Bool { entries.count > 1 }
 
-    /// Smart comes first and never disappears; a playlist with no enabled
-    /// plugins still gets a (failing) report instead of an unreachable sheet.
+    /// Smart and NetEase always come first and never disappear, so a playlist
+    /// with no enabled plugins still gets a result report. NetEase-family
+    /// plugins are hidden because the NetEase row already searches `MusicAPI`
+    /// directly; showing both would offer the same destination twice.
     private var targets: [SourceSwitchTarget] {
-        var result: [SourceSwitchTarget] = [.smart]
+        var result: [SourceSwitchTarget] = [.smart, .netease]
         for plugin in pluginManager.plugins where plugin.enabled {
+            if SourceSwitchService.isNeteasePlugin(
+                platform: plugin.platform,
+                sourceURL: plugin.sourceURL
+            ) {
+                continue
+            }
             let sameForAll = entries.allSatisfy {
                 SourceSwitchService.isSameSource(platform: plugin.platform, entry: $0)
             }
@@ -172,7 +180,7 @@ struct SourceSwitchTargetSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(target.title)
                         .foregroundStyle(.primary)
-                    Text(target.isSmart ? "自动尝试所有已启用的插件音源" : "插件音源")
+                    Text(subtitle(for: target))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -185,6 +193,17 @@ struct SourceSwitchTargetSheet: View {
         }
         .buttonStyle(.plain)
         .disabled(isSwitching)
+    }
+
+    private func subtitle(for target: SourceSwitchTarget) -> String {
+        switch target {
+        case .smart:
+            return String(localized: "自动尝试所有已启用的插件音源")
+        case .netease:
+            return String(localized: "网易云直连搜索，可看歌词评论")
+        case .plugin:
+            return String(localized: "插件音源")
+        }
     }
 
     private func reportRow(_ outcome: SourceSwitchOutcome, showsReason: Bool) -> some View {
@@ -200,6 +219,11 @@ struct SourceSwitchTargetSheet: View {
                 Text(error.localizedDescription)
                     .font(.caption2)
                     .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !showsReason {
+                Text(String(localized: "\(outcome.targetName)未找到可替换条目，已保留原样"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -222,9 +246,12 @@ struct SourceSwitchTargetSheet: View {
 
         Task { @MainActor in
             let outcomes: [SourceSwitchOutcome]
-            if target.isSmart {
+            switch target {
+            case .smart:
                 outcomes = await switchSmart(snapshot)
-            } else if let platform = target.platform {
+            case .netease:
+                outcomes = await switchNetease(snapshot)
+            case .plugin(let platform):
                 outcomes = await SourceSwitchService.shared.switchEntries(
                     snapshot,
                     to: platform
@@ -232,8 +259,6 @@ struct SourceSwitchTargetSheet: View {
                     progressDone = done
                     progressTotal = total
                 }
-            } else {
-                outcomes = []
             }
 
             isSwitching = false
@@ -250,11 +275,11 @@ struct SourceSwitchTargetSheet: View {
                 onFinished()
             }
 
-            if snapshot.count > 1 || target.isSmart {
+            // Any miss stays on a scrollable report so the reason is readable;
+            // a lone success can close right away.
+            if snapshot.count > 1 || target.isSmart
+                || outcomes.contains(where: { !$0.isSuccess }) {
                 report = outcomes
-            } else if let failure = outcomes.first(where: { !$0.isSuccess })?.error {
-                showFailure(failure)
-                dismiss()
             } else {
                 dismiss()
             }
@@ -272,11 +297,10 @@ struct SourceSwitchTargetSheet: View {
         return outcomes
     }
 
-    private func showFailure(_ error: SourceSwitchError) {
-        if error != .notFound {
-            ToastCenter.shared.show(error.localizedDescription)
-        } else {
-            ToastCenter.shared.show(String(localized: "未找到可替换条目，已保留原样"))
+    private func switchNetease(_ snapshot: [LocalTrackEntry]) async -> [SourceSwitchOutcome] {
+        await SourceSwitchService.shared.switchEntriesToNetease(snapshot) { done, total in
+            progressDone = done
+            progressTotal = total
         }
     }
 }

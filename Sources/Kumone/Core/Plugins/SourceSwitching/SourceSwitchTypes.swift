@@ -4,9 +4,11 @@ import Foundation
 ///
 /// Smart probes every enabled plugin in registration order and takes the first
 /// one whose `getMediaSource` returns a URL; the plugin case names one
-/// destination explicitly.
+/// destination explicitly. NetEase is searched through `MusicAPI` directly so
+/// the target list never duplicates an installed NetEase plugin row.
 enum SourceSwitchTarget: Identifiable, Hashable {
     case smart
+    case netease
     case plugin(String)
 
     var isSmart: Bool {
@@ -14,10 +16,12 @@ enum SourceSwitchTarget: Identifiable, Hashable {
         return false
     }
 
-    /// Routing key of the plugin target; nil for smart, which probes on its own.
+    /// Routing key of a plugin target; nil for the targets that do not route
+    /// through `PluginManager`.
     var platform: String? {
         switch self {
         case .smart: return nil
+        case .netease: return nil
         case .plugin(let platform): return platform
         }
     }
@@ -25,6 +29,7 @@ enum SourceSwitchTarget: Identifiable, Hashable {
     var id: String {
         switch self {
         case .smart: return "smart"
+        case .netease: return "netease"
         case .plugin(let platform): return "plugin:\(platform)"
         }
     }
@@ -35,6 +40,8 @@ enum SourceSwitchTarget: Identifiable, Hashable {
         switch self {
         case .smart:
             return String(localized: "智能换源")
+        case .netease:
+            return String(localized: "网易云")
         case .plugin(let platform):
             return PluginManager.shared.plugins
                 .first(where: { $0.platform == platform })?.name ?? platform

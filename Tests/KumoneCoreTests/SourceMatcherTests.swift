@@ -134,6 +134,47 @@ struct SourceMatcherTests {
         #expect(SourceMatcher.bestMatch(for: query, among: [weak]) == nil)
     }
 
+    @Test("a query without a duration still matches")
+    func zeroDurationStillMatches() {
+        let query = SourceMatchQuery(
+            title: "Song",
+            artist: "Artist A",
+            album: "",
+            durationMS: 0
+        )
+        let candidate = makeCandidate(
+            identity: "source|zero-duration",
+            title: "Song",
+            artist: "Artist A",
+            durationMS: 180_000
+        )
+
+        #expect(SourceMatcher.score(query: query, candidate: candidate) > 0.6)
+        #expect(SourceMatcher.bestMatch(for: query, among: [candidate])?.identity
+            == "source|zero-duration")
+    }
+
+    @Test("an empty album does not block matching")
+    func emptyAlbumStillMatches() {
+        let query = SourceMatchQuery(
+            title: "Song",
+            artist: "Artist A",
+            album: "",
+            durationMS: 180_000
+        )
+        let candidate = makeCandidate(
+            identity: "source|album",
+            title: "Song",
+            artist: "Artist A",
+            album: "Another Album",
+            durationMS: 180_000
+        )
+
+        #expect(SourceMatcher.score(query: query, candidate: candidate) > 0.6)
+        #expect(SourceMatcher.bestMatch(for: query, among: [candidate])?.identity
+            == "source|album")
+    }
+
     private func makeItem(
         id: String,
         title: String,
@@ -156,13 +197,14 @@ struct SourceMatcherTests {
         identity: String,
         title: String,
         artist: String,
+        album: String = "Album",
         durationMS: Int
     ) -> SourceCandidate {
         SourceCandidate(
             identity: identity,
             title: title,
             artist: artist,
-            album: "Album",
+            album: album,
             durationMS: durationMS
         )
     }

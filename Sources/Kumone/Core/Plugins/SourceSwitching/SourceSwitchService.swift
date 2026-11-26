@@ -11,12 +11,16 @@ final class SourceSwitchService {
     typealias Search = @MainActor (String, String, Int) async throws -> (isEnd: Bool, items: [PluginMusicItem])
     typealias Probe = @MainActor (String, PluginMusicItem) async -> PluginMediaSource
     typealias PluginList = @MainActor () -> [PluginManager.InstalledPlugin]
+    typealias NeteaseSearch = @MainActor (String) async throws -> MusicAPI.SearchResult
 
     static let shared = SourceSwitchService()
 
     private let search: Search
     private let probe: Probe
     private let availablePlugins: PluginList
+    /// Direct NetEase search; the plugin JS path would duplicate the NetEase
+    /// row in the target list, so this one is injected separately.
+    let neteaseSearch: NeteaseSearch
     /// Spacing between requests; batch callers use it to keep older devices
     /// from firing every search at once.
     let throttleNanoseconds: UInt64
@@ -25,6 +29,7 @@ final class SourceSwitchService {
         search: Search? = nil,
         probe: Probe? = nil,
         plugins: PluginList? = nil,
+        neteaseSearch: NeteaseSearch? = nil,
         throttleNanoseconds: UInt64 = 700_000_000
     ) {
         if let search {
@@ -50,6 +55,13 @@ final class SourceSwitchService {
         } else {
             self.availablePlugins = { PluginManager.shared.plugins }
         }
+        if let neteaseSearch {
+            self.neteaseSearch = neteaseSearch
+        } else {
+            self.neteaseSearch = { query in
+                try await Self.searchNeteaseSongs(query)
+            }
+        }
         self.throttleNanoseconds = throttleNanoseconds
     }
 
@@ -59,8 +71,14 @@ final class SourceSwitchService {
             return failure(entry, targetName: targetName, error: .samePlatform)
         }
 
-        let query = "\(entry.title) \(entry.artist)"
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = Self.searchQuery(for: entry)
+        guard Self.hasSearchableTitle(entry) else {
+            return failure(
+                entry,
+                targetName: targetName,
+                error: .searchFailed(String(localized: "歌曲信息不完整，无法搜索"))
+            )
+        }
         do {
             let page = try await search(platform, query, 1)
             let candidates = page.items.map(\.sourceCandidate)
@@ -136,8 +154,14 @@ final class SourceSwitchService {
             )
         }
 
-        let query = "\(entry.title) \(entry.artist)"
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = Self.searchQuery(for: entry)
+        guard Self.hasSearchableTitle(entry) else {
+            return failure(
+                entry,
+                targetName: targetName,
+                error: .searchFailed(String(localized: "歌曲信息不完整，无法搜索"))
+            )
+        }
         var failures: [String] = []
         var attempted = 0
 
@@ -227,6 +251,29 @@ final class SourceSwitchService {
         }
     }
 
+    /// Trimmed "<title> <artist>" pair sent to every source.
+    nonisolated static func searchQuery(for entry: LocalTrackEntry) -> String {
+        "\(entry.title) \(entry.artist)"
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A blank title makes any match a guess, so every source search skips it.
+    nonisolated static func hasSearchableTitle(_ entry: LocalTrackEntry) -> Bool {
+        !entry.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Hides an installed NetEase-family plugin in favour of the direct row.
+    ///
+    /// Some builds expose an opaque platform name ("元力WY"), so the source
+    /// URL is checked as a second signal; every preset NetEase build ships as
+    /// `wy.js`.
+    nonisolated static func isNeteasePlugin(platform: String, sourceURL: String?) -> Bool {
+        if isNeteaseSource(platform: platform) { return true }
+        guard let sourceURL else { return false }
+        let path = sourceURL.lowercased().split(separator: "?").first.map(String.init) ?? ""
+        return path.hasSuffix("/wy.js")
+    }
+
     nonisolated static func isNeteaseSource(platform: String) -> Bool {
         let trimmed = platform.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -234,9 +281,11 @@ final class SourceSwitchService {
         return lowered.contains("netease")
             || lowered.contains("163")
             || trimmed.contains("网易")
+            || lowered == "wy"
+            || lowered == "元力wy"
     }
 
-    private func failure(
+    func failure(
         _ entry: LocalTrackEntry,
         targetName: String,
         error: SourceSwitchError
