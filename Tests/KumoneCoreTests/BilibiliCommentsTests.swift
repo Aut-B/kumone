@@ -166,17 +166,22 @@ struct BilibiliCommentsTests {
     }
 
     @Test func resolvesBvidToAid() async throws {
-        let body = json(["code": 0, "message": "0", "data": ["aid": 24680, "bvid": "BV1ab411c7d9"]])
+        BilibiliComments.resetAIDCacheForTesting()
+        defer { BilibiliComments.resetAIDCacheForTesting() }
+        let bvid = "BV1resolve411c7"
+        let body = json(["code": 0, "message": "0", "data": ["aid": 24680, "bvid": bvid]])
         let session = makeSession([body])
-        let aid = try await BilibiliComments.resolveAID(bvid: "BV1ab411c7d9", using: session)
+        let aid = try await BilibiliComments.resolveAID(bvid: bvid, using: session)
 
         #expect(aid == 24680)
         let request = try #require(BilibiliProtocol.requests.first)
         #expect(request.url?.path == "/x/web-interface/view")
-        #expect(queryItems(request.url)["bvid"] == "BV1ab411c7d9")
+        #expect(queryItems(request.url)["bvid"] == bvid)
     }
 
     @Test func loadsCommentsForABvidOnlyTrack() async throws {
+        BilibiliComments.resetAIDCacheForTesting()
+        defer { BilibiliComments.resetAIDCacheForTesting() }
         let view = json(["code": 0, "message": "0", "data": ["aid": 24680]])
         let replies = json([
             "code": 0,
@@ -186,7 +191,7 @@ struct BilibiliCommentsTests {
             ],
         ])
         let session = makeSession([view, replies])
-        let track = try makeTrack(rawJSON: #"{"id":"BV1ab411c7d9","bvid":"BV1ab411c7d9"}"#)
+        let track = try makeTrack(rawJSON: #"{"id":"BV1comments411c","bvid":"BV1comments411c"}"#)
         let page = try await BilibiliComments.comments(for: track, sort: .time, using: session)
 
         #expect(page.latest.map(\.id) == [9])
@@ -214,9 +219,11 @@ struct BilibiliCommentsTests {
     }
 
     @Test func reportsADeclinedViewRequest() async {
+        BilibiliComments.resetAIDCacheForTesting()
+        defer { BilibiliComments.resetAIDCacheForTesting() }
         let session = makeSession([json(["code": -400, "message": "请求错误"])])
         do {
-            _ = try await BilibiliComments.resolveAID(bvid: "BV1xx411c7m2", using: session)
+            _ = try await BilibiliComments.resolveAID(bvid: "BV1declined411c", using: session)
             Issue.record("expected a business failure")
         } catch let error as MusicAPIError {
             guard case .business(let code, let message) = error else {

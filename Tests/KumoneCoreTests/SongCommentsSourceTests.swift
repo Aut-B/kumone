@@ -83,17 +83,41 @@ private final class BilibiliCommentsProtocol: URLProtocol, @unchecked Sendable {
 
     private nonisolated(unsafe) static var handler: Handler = { _ in (200, #"{"code":0,"data":{}}"#) }
     private nonisolated(unsafe) static var recorded: [Recorded] = []
+    /// The first matching request stays in flight until the test answers it,
+    /// so slow-page tests need not block a URL loading thread.
+    nonisolated(unsafe) private static var deferPredicate: (@Sendable (Recorded) -> Bool)?
+    nonisolated(unsafe) private static var deferred: ((Int, String) -> Void)?
     private static let lock = NSLock()
 
     static func reset(_ handler: @escaping Handler) {
         lock.lock(); defer { lock.unlock() }
         self.handler = handler
         recorded = []
+        deferPredicate = nil
+        deferred = nil
     }
 
     static var requests: [Recorded] {
         lock.lock(); defer { lock.unlock() }
         return recorded
+    }
+
+    static var hasDeferredRequest: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return deferred != nil
+    }
+
+    static func deferNext(matching predicate: @escaping @Sendable (Recorded) -> Bool) {
+        lock.lock(); defer { lock.unlock() }
+        deferPredicate = predicate
+    }
+
+    static func answerDeferred(status: Int, body: String) {
+        lock.lock()
+        let answer = deferred
+        deferred = nil
+        lock.unlock()
+        answer?(status, body)
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -104,8 +128,20 @@ private final class BilibiliCommentsProtocol: URLProtocol, @unchecked Sendable {
         Self.lock.lock()
         Self.recorded.append(recorded)
         let handler = Self.handler
+        let shouldDefer = Self.deferPredicate?(recorded) ?? false
+        if shouldDefer {
+            Self.deferPredicate = nil
+            Self.deferred = { [weak self] status, body in
+                self?.deliver(status: status, body: body)
+            }
+        }
         Self.lock.unlock()
         let (status, body) = handler(recorded)
+        if shouldDefer { return }
+        deliver(status: status, body: body)
+    }
+
+    private func deliver(status: Int, body: String) {
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
@@ -129,6 +165,15 @@ private func makeSession() -> URLSession {
     return URLSession(configuration: configuration)
 }
 
+@MainActor
+private func waitUntil(_ condition: () -> Bool) async throws {
+    for _ in 0..<400 {
+        if condition() { return }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    Issue.record("timed out waiting for the expected state")
+}
+
 private func biliComment(_ rpid: Int) -> [String: Any] {
     [
         "rpid": rpid,
@@ -148,6 +193,19 @@ private func biliPage(_ comments: [[String: Any]], count: Int, isEnd: Bool) -> S
             "isEnd": isEnd,
         ],
     ])
+}
+
+/// The comment endpoints fetch a day-scoped WBI key pair before their first
+/// signed page request; page tests answer that round-trip too.
+private func isWBIKeyRequest(_ request: BilibiliCommentsProtocol.Recorded) -> Bool {
+    request.path.hasSuffix("GenWebTicket")
+}
+
+private func biliWBIKeys() -> String {
+    json(["code": 0, "data": ["nav": [
+        "img": "https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png",
+        "sub": "https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png",
+    ]]])
 }
 
 @Suite("Song comment sources", .serialized)
@@ -201,6 +259,8 @@ struct SongCommentsSourceTests {
     }
 
     @Test func aBVOnlyTrackResolvesTheAIDOnce() async throws {
+        BilibiliComments.resetAIDCacheForTesting()
+        defer { BilibiliComments.resetAIDCacheForTesting() }
         BilibiliCommentsProtocol.reset { request in
             if request.path == "/x/web-interface/view" {
                 return (200, #"{"code":0,"data":{"aid":123}}"#)
@@ -213,7 +273,7 @@ struct SongCommentsSourceTests {
             }
             return (200, biliPage([biliComment(2)], count: 3, isEnd: true))
         }
-        let track = try makeTrack(platform: "bilibili", itemID: "BV1xx411c7m2")
+        let track = try makeTrack(platform: "bilibili", itemID: "BV1aidonly411c7")
         let content = SongCommentsContent(track: track, pageSize: 1, session: makeSession())
 
         await content.loadFirstPage()
@@ -254,5 +314,171 @@ struct SongCommentsSourceTests {
         #expect(BilibiliCommentsProtocol.requests.count == count)
         #expect(content.hot.first?.liked == false)
         #expect(content.hot.first?.likedCount == 3)
+    }
+
+    @Test func hotFirstShowsCommentsWhileLatestIsDelayed() async throws {
+        BilibiliCommentsProtocol.reset { request in
+            if isWBIKeyRequest(request) { return (200, biliWBIKeys()) }
+            if request.query["mode"] == "3" {
+                return (200, biliPage([biliComment(100), biliComment(100), biliComment(101)],
+                                      count: 4, isEnd: false))
+            }
+            return (200, biliPage([biliComment(1), biliComment(1), biliComment(2)],
+                                  count: 4, isEnd: false))
+        }
+        BilibiliCommentsProtocol.deferNext { $0.query["mode"] == "2" }
+        let track = try makeTrack(id: 9101, platform: "bilibili", rawJSON: #"{"aid":123}"#)
+        let content = SongCommentsContent(track: track, pageSize: 2, session: makeSession())
+
+        let load = Task { await content.loadFirstPage() }
+        try await waitUntil { BilibiliCommentsProtocol.hasDeferredRequest }
+        try await waitUntil { content.phase == .loaded }
+
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [100, 101])
+        #expect(content.latest.isEmpty)
+
+        BilibiliCommentsProtocol.answerDeferred(
+            status: 200,
+            body: biliPage([biliComment(1), biliComment(1), biliComment(2)], count: 4, isEnd: false))
+        await load.value
+
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [100, 101])
+        #expect(content.latest.map(\.id) == [1, 2])
+        #expect(content.total == 4 && content.hasMore)
+    }
+
+    @Test func hotSurvivesALatestFailure() async throws {
+        BilibiliCommentsProtocol.reset { request in
+            if isWBIKeyRequest(request) { return (200, biliWBIKeys()) }
+            return request.query["mode"] == "3"
+                ? (200, biliPage([biliComment(100)], count: 2, isEnd: false))
+                : (500, "")
+        }
+        let track = try makeTrack(id: 9102, platform: "bilibili", rawJSON: #"{"aid":123}"#)
+        let content = SongCommentsContent(track: track, pageSize: 2, session: makeSession())
+
+        await content.loadFirstPage()
+
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [100])
+        #expect(content.latest.isEmpty)
+    }
+
+    @Test func latestFillsInWhenHotFails() async throws {
+        BilibiliCommentsProtocol.reset { request in
+            if isWBIKeyRequest(request) { return (200, biliWBIKeys()) }
+            return request.query["mode"] == "3"
+                ? (500, "")
+                : (200, biliPage([biliComment(7)], count: 3, isEnd: true))
+        }
+        let track = try makeTrack(id: 9103, platform: "bilibili", rawJSON: #"{"aid":123}"#)
+        let content = SongCommentsContent(track: track, pageSize: 2, session: makeSession())
+
+        await content.loadFirstPage()
+
+        #expect(content.phase == .loaded)
+        #expect(content.hot.isEmpty)
+        #expect(content.latest.map(\.id) == [7])
+    }
+
+    @Test func cancellingAfterHotKeepsHotLoaded() async throws {
+        BilibiliCommentsProtocol.reset { request in
+            if isWBIKeyRequest(request) { return (200, biliWBIKeys()) }
+            if request.query["mode"] == "3" {
+                return (200, biliPage([biliComment(100)], count: 2, isEnd: false))
+            }
+            return (200, biliPage([biliComment(1)], count: 2, isEnd: false))
+        }
+        BilibiliCommentsProtocol.deferNext { $0.query["mode"] == "2" }
+        let track = try makeTrack(id: 9104, platform: "bilibili", rawJSON: #"{"aid":123}"#)
+        let content = SongCommentsContent(track: track, pageSize: 2, session: makeSession())
+
+        let load = Task { await content.loadFirstPage() }
+        try await waitUntil { BilibiliCommentsProtocol.hasDeferredRequest }
+        try await waitUntil { content.phase == .loaded }
+        #expect(content.hot.map(\.id) == [100])
+
+        load.cancel()
+        BilibiliCommentsProtocol.answerDeferred(
+            status: 200, body: biliPage([biliComment(1)], count: 2, isEnd: false))
+        await load.value
+
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [100])
+    }
+
+    @Test func staleLatestDoesNotAppendToTheRetriedPage() async throws {
+        BilibiliCommentsProtocol.reset { request in
+            if isWBIKeyRequest(request) { return (200, biliWBIKeys()) }
+            if request.query["mode"] == "3" {
+                return (200, biliPage([biliComment(100)], count: 3, isEnd: false))
+            }
+            return (200, biliPage([biliComment(2)], count: 3, isEnd: false))
+        }
+        BilibiliCommentsProtocol.deferNext { $0.query["mode"] == "2" }
+        let track = try makeTrack(id: 9105, platform: "bilibili", rawJSON: #"{"aid":123}"#)
+        let content = SongCommentsContent(track: track, pageSize: 2, session: makeSession())
+
+        let staleLoad = Task { await content.loadFirstPage() }
+        try await waitUntil { BilibiliCommentsProtocol.hasDeferredRequest }
+        try await waitUntil { content.phase == .loaded }
+
+        await content.loadFirstPage()
+        #expect(content.latest.map(\.id) == [2])
+
+        BilibiliCommentsProtocol.answerDeferred(
+            status: 200, body: biliPage([biliComment(1)], count: 3, isEnd: false))
+        await staleLoad.value
+
+        #expect(content.phase == .loaded)
+        #expect(content.hot.map(\.id) == [100])
+        #expect(content.latest.map(\.id) == [2])
+    }
+
+    @Test func aidCacheServesASecondResolveWithoutAnotherViewRequest() async throws {
+        BilibiliComments.resetAIDCacheForTesting()
+        defer { BilibiliComments.resetAIDCacheForTesting() }
+        let bvid = "BV1cache411c7m1"
+        BilibiliCommentsProtocol.reset { request in
+            guard request.path == "/x/web-interface/view" else { return (500, "") }
+            return (200, json(["code": 0, "data": ["aid": 987_654]]))
+        }
+        let session = makeSession()
+
+        let first = try await BilibiliComments.resolveAID(bvid: bvid, using: session)
+        let second = try await BilibiliComments.resolveAID(bvid: bvid, using: session)
+
+        #expect(first == 987_654)
+        #expect(second == first)
+        #expect(BilibiliCommentsProtocol.requests.filter {
+            $0.path == "/x/web-interface/view"
+        }.count == 1)
+    }
+
+    @Test func aidCacheKeepsDifferentBvidsAndResetsForTests() async throws {
+        BilibiliComments.resetAIDCacheForTesting()
+        defer { BilibiliComments.resetAIDCacheForTesting() }
+        let firstBVID = "BV1cache411c7m2"
+        let secondBVID = "BV1cache411c7m3"
+        BilibiliCommentsProtocol.reset { request in
+            let aid = request.query["bvid"] == firstBVID ? 111 : 222
+            return (200, json(["code": 0, "data": ["aid": aid]]))
+        }
+        let session = makeSession()
+
+        let first = try await BilibiliComments.resolveAID(bvid: firstBVID, using: session)
+        let second = try await BilibiliComments.resolveAID(bvid: secondBVID, using: session)
+        let cachedFirst = try await BilibiliComments.resolveAID(bvid: firstBVID, using: session)
+
+        #expect([first, second, cachedFirst] == [111, 222, 111])
+        #expect(BilibiliCommentsProtocol.requests.count == 2)
+
+        BilibiliComments.resetAIDCacheForTesting()
+        let refetched = try await BilibiliComments.resolveAID(bvid: firstBVID, using: session)
+
+        #expect(refetched == 111)
+        #expect(BilibiliCommentsProtocol.requests.count == 3)
     }
 }

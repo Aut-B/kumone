@@ -160,7 +160,7 @@ final class SongCommentsContent: ObservableObject {
             case .netease(let songID):
                 firstPage = try await loadNeteaseFirstPage(songID: songID)
             case .bilibili(let track):
-                firstPage = try await loadBilibiliFirstPage(track: track)
+                firstPage = try await loadBilibiliFirstPage(track: track, generation: generation)
             case .unavailable:
                 break
             }
@@ -276,24 +276,73 @@ final class SongCommentsContent: ObservableObject {
         hasMore = page.more && !fresh.isEmpty
     }
 
-    private func loadBilibiliFirstPage(track: Track) async throws -> FirstPage {
+    /// Fetches the Bilibili first page. Hot and latest start together; a
+    /// non-empty hot page is published the moment it lands instead of waiting
+    /// for the slower latest page. Latest then fills in behind it (#381).
+    ///
+    /// Returns `nil` when hot was already published and the rest of the page
+    /// could not be used: those hot comments stay on screen. A superseded
+    /// generation is also returned as `nil` so the caller leaves every
+    /// published value alone.
+    private func loadBilibiliFirstPage(track: Track, generation: Int) async throws -> FirstPage? {
         let aid = try await bilibiliAID(for: track)
+        try Task.checkCancellation()
         // The two orderings are independent requests. Serially they doubled
         // the first-comment wait on a slow A9 (6S, #380): run them together.
         async let hotPageTask = BilibiliComments.fetchPage(
             oid: aid, page: 1, pageSize: pageSize, sort: .hot, using: session)
-        let latestPage = try await BilibiliComments.fetchPage(
+        async let latestPageTask = BilibiliComments.fetchPage(
             oid: aid, page: 1, pageSize: pageSize, sort: .time, using: session)
-        let hotPage = try await hotPageTask
-        var hotIDs: Set<Int> = []
-        let hot = hotPage.hot.filter { hotIDs.insert($0.id).inserted }
-        var latestIDs: Set<Int> = []
-        let latest = latestPage.latest.filter { latestIDs.insert($0.id).inserted }
-        return FirstPage(
-            hot: hot, latest: latest,
-            total: latestPage.total > 0 ? latestPage.total : hotPage.total,
-            nextOffset: 0, nextPage: 2, latestIDs: latestIDs,
-            hasMore: latestPage.more && !latestPage.latest.isEmpty)
+
+        var hotPage: SongCommentsPage?
+        var hotFailure: Error?
+        do {
+            hotPage = try await hotPageTask
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw error
+        } catch {
+            hotFailure = error
+        }
+
+        var hotComments: [SongComment] = []
+        var hotPublished = false
+        if let hotPage {
+            // A retried load owns the screen now; this answer is stale.
+            guard generation == loadGeneration else { return nil }
+            try Task.checkCancellation()
+            var hotIDs: Set<Int> = []
+            hotComments = hotPage.hot.filter { hotIDs.insert($0.id).inserted }
+            if !hotComments.isEmpty {
+                hot = hotComments
+                if hotPage.total > 0 { total = hotPage.total }
+                phase = .loaded
+                stopWatchdog(for: generation)
+                hotPublished = true
+            }
+        }
+
+        do {
+            let latestPage = try await latestPageTask
+            guard generation == loadGeneration else { return nil }
+            var latestIDs: Set<Int> = []
+            let latest = latestPage.latest.filter { latestIDs.insert($0.id).inserted }
+            return FirstPage(
+                hot: hotComments, latest: latest,
+                total: latestPage.total > 0 ? latestPage.total : hotPage?.total ?? 0,
+                nextOffset: 0, nextPage: 2, latestIDs: latestIDs,
+                hasMore: latestPage.more && !latestPage.latest.isEmpty)
+        } catch is CancellationError {
+            if hotPublished { return nil }
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            if hotPublished { return nil }
+            throw error
+        } catch {
+            if hotPublished { return nil }
+            throw hotFailure ?? error
+        }
     }
 
     private func loadBilibiliMore(track: Track) async throws {

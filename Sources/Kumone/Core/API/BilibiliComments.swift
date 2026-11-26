@@ -50,6 +50,12 @@ enum BilibiliComments {
     /// Day-scoped, so the ticket/nav round-trip runs at most once a day.
     nonisolated(unsafe) private static var wbiKeysCache: WBIKeys?
 
+    /// Bilibili's BV id never changes for a video, so resolving it is a
+    /// process-wide one-time cost. The dictionary is guarded by a lock:
+    /// comment pages for several tracks may resolve at once.
+    private static let aidCacheLock = NSLock()
+    nonisolated(unsafe) private static var aidCache: [String: Int] = [:]
+
     /// The numeric aid of a plugin track.
     static func aid(for track: Track) -> Int? {
         guard let rawJSON = track.plugin?.rawJSON else { return nil }
@@ -84,6 +90,7 @@ enum BilibiliComments {
         guard !bvid.isEmpty else {
             throw MusicAPIError.business(code: 400, message: String(localized: "无法识别这个视频"))
         }
+        if let cached = cachedAID(for: bvid) { return cached }
         let url = endpoint(viewURL, [
             URLQueryItem(name: "bvid", value: bvid),
         ])
@@ -92,7 +99,28 @@ enum BilibiliComments {
               let aid = int(data["aid"]), aid > 0 else {
             throw MusicAPIError.decoding("view: missing data.aid")
         }
+        storeAID(aid, for: bvid)
         return aid
+    }
+
+    private static func cachedAID(for bvid: String) -> Int? {
+        aidCacheLock.lock()
+        defer { aidCacheLock.unlock() }
+        return aidCache[bvid]
+    }
+
+    private static func storeAID(_ aid: Int, for bvid: String) {
+        aidCacheLock.lock()
+        defer { aidCacheLock.unlock() }
+        aidCache[bvid] = aid
+    }
+
+    /// Drops every resolved aid. Tests call this so a unique BV id can prove
+    /// the cache was hit rather than a previous test's entry.
+    static func resetAIDCacheForTesting() {
+        aidCacheLock.lock()
+        defer { aidCacheLock.unlock() }
+        aidCache.removeAll()
     }
 
     /// One page of a video's comments, keyed by aid. A hot page fills `hot`;
