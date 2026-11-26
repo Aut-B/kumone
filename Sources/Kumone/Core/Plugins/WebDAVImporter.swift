@@ -492,6 +492,44 @@ final class ImportedPlaylistStore: ObservableObject {
         if added == 0 { throw WebDAVError.malformedResponse }
     }
 
+    /// Replaces whole entries in place, preserving the playlist order.
+    ///
+    /// Writes the file once and updates `itemCount`; an empty replacement set
+    /// (or one that only produced conflicts) leaves the disk untouched.
+    @discardableResult
+    func replaceEntries(
+        _ replacements: [String: LocalTrackEntry],
+        in playlist: ImportedPlaylist
+    ) -> LocalPlaylistReplaceResult {
+        let entries = loadEntries(of: playlist)
+        let result = LocalPlaylistReplacement.apply(replacements, to: entries)
+        guard !result.replacedIDs.isEmpty else { return result }
+
+        guard (try? writeEntries(result.entries, fileName: playlist.fileName)) != nil else {
+            return LocalPlaylistReplaceResult(
+                entries: entries,
+                replacedIDs: [],
+                skippedIDs: result.skippedIDs
+            )
+        }
+        guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else {
+            return result
+        }
+        playlists[index].itemCount = result.entries.count
+        persist()
+        return result
+    }
+
+    /// Single-entry convenience for a one-song source switch.
+    @discardableResult
+    func replaceEntry(
+        _ replacement: LocalTrackEntry,
+        forID id: String,
+        in playlist: ImportedPlaylist
+    ) -> LocalPlaylistReplaceResult {
+        replaceEntries([id: replacement], in: playlist)
+    }
+
     /// Removes every entry whose identity key is in `ids`.
     func removeEntries(withIDs ids: Set<String>, from playlist: ImportedPlaylist) {
         var entries = loadEntries(of: playlist)
