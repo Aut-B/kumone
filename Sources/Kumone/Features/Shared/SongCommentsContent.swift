@@ -173,7 +173,7 @@ final class SongCommentsContent: ObservableObject {
         phase = .loading
         loadMoreError = nil
         startWatchdog(for: generation)
-        log.info("load start song=\(self.songID) gen=\(generation) refresh=\(self.refreshFirstPageOnNextLoad)")
+        Self.log.info("load start song=\(self.songID) gen=\(generation) refresh=\(self.refreshFirstPageOnNextLoad)")
         var outcome = Phase.loaded
         var firstPage: FirstPage?
         do {
@@ -194,18 +194,18 @@ final class SongCommentsContent: ObservableObject {
             // self-heal replaces it instead of rejoining the dead request.
             if !Task.isCancelled {
                 refreshFirstPageOnNextLoad = true
-                log.info("external cancel song=\(self.songID) gen=\(generation) → self-heal reload")
+                Self.log.info("external cancel song=\(self.songID) gen=\(generation) → self-heal reload")
             }
             outcome = .idle
         } catch let error as URLError where error.code == .cancelled {
             if !Task.isCancelled {
                 refreshFirstPageOnNextLoad = true
-                log.info("external cancel (URL) song=\(self.songID) gen=\(generation) → self-heal reload")
+                Self.log.info("external cancel (URL) song=\(self.songID) gen=\(generation) → self-heal reload")
             }
             outcome = .idle
         } catch {
             outcome = .failed(error.localizedDescription)
-            log.error("load failed song=\(self.songID) gen=\(generation): \(error.localizedDescription)")
+            Self.log.error("load failed song=\(self.songID) gen=\(generation): \(error.localizedDescription)")
         }
         stopWatchdog(for: generation)
         // An answer from before a retry must not overwrite the newer state:
@@ -224,7 +224,7 @@ final class SongCommentsContent: ObservableObject {
         if outcome == .loaded {
             refreshFirstPageOnNextLoad = false
             saveSnapshot()
-            log.info("load done song=\(self.songID) hot=\(self.hot.count) latest=\(self.latest.count) more=\(self.hasMore)")
+            Self.log.info("load done song=\(self.songID) hot=\(self.hot.count) latest=\(self.latest.count) more=\(self.hasMore)")
         }
     }
 
@@ -256,7 +256,7 @@ final class SongCommentsContent: ObservableObject {
         watchdog = nil
         refreshFirstPageOnNextLoad = true
         phase = .failed(String(localized: "评论加载超时，请重试"))
-        log.error("watchdog expired song=\(self.songID) gen=\(generation) → retryable failure")
+        Self.log.error("watchdog expired song=\(self.songID) gen=\(generation) → retryable failure")
     }
 
     private func stopWatchdog(for generation: Int) {
