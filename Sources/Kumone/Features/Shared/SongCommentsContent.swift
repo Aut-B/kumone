@@ -1,10 +1,13 @@
 import Foundation
+import os
 
 /// Paging and like state for one song's comments: hot comments from the
 /// first page, then the latest ones a page at a time. NetEase and Bilibili
 /// share the paging shape but not the API.
 @MainActor
 final class SongCommentsContent: ObservableObject {
+    static let log = Logger(subsystem: "sb.moe.kumone", category: "comments")
+
     enum Phase: Equatable {
         case idle
         case loading
@@ -170,6 +173,7 @@ final class SongCommentsContent: ObservableObject {
         phase = .loading
         loadMoreError = nil
         startWatchdog(for: generation)
+        log.info("load start song=\(self.songID) gen=\(generation) refresh=\(self.refreshFirstPageOnNextLoad)")
         var outcome = Phase.loaded
         var firstPage: FirstPage?
         do {
@@ -182,13 +186,26 @@ final class SongCommentsContent: ObservableObject {
                 break
             }
         } catch is CancellationError {
-            // Turning away from the page cancels its task. That is not a
-            // failure: coming back to an idle page loads again (#214).
+            // Turning away from the page cancels its task: idle, and the view
+            // reloads when it comes back (#214). A cancellation from OUTSIDE
+            // this task (a song switch cancelling the shared prefetch this
+            // load joined) leaves the page on screen with an idle spinner and
+            // no watcher (#382): mark the prefetch stale so the view's
+            // self-heal replaces it instead of rejoining the dead request.
+            if !Task.isCancelled {
+                refreshFirstPageOnNextLoad = true
+                log.info("external cancel song=\(self.songID) gen=\(generation) → self-heal reload")
+            }
             outcome = .idle
         } catch let error as URLError where error.code == .cancelled {
+            if !Task.isCancelled {
+                refreshFirstPageOnNextLoad = true
+                log.info("external cancel (URL) song=\(self.songID) gen=\(generation) → self-heal reload")
+            }
             outcome = .idle
         } catch {
             outcome = .failed(error.localizedDescription)
+            log.error("load failed song=\(self.songID) gen=\(generation): \(error.localizedDescription)")
         }
         stopWatchdog(for: generation)
         // An answer from before a retry must not overwrite the newer state:
@@ -207,6 +224,7 @@ final class SongCommentsContent: ObservableObject {
         if outcome == .loaded {
             refreshFirstPageOnNextLoad = false
             saveSnapshot()
+            log.info("load done song=\(self.songID) hot=\(self.hot.count) latest=\(self.latest.count) more=\(self.hasMore)")
         }
     }
 
@@ -238,6 +256,7 @@ final class SongCommentsContent: ObservableObject {
         watchdog = nil
         refreshFirstPageOnNextLoad = true
         phase = .failed(String(localized: "评论加载超时，请重试"))
+        log.error("watchdog expired song=\(self.songID) gen=\(generation) → retryable failure")
     }
 
     private func stopWatchdog(for generation: Int) {

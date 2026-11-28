@@ -240,6 +240,15 @@ private struct NowPlayingCommentsPage: View {
                 guard !Task.isCancelled, content.phase == .idle else { return }
                 await content.loadFirstPage()
             }
+            .onAppear { loadIfIdle() }
+            // A load can also end back at idle while this page stays put: a
+            // song switch cancels the shared prefetch the load joined, and
+            // that cancellation maps to idle (#382). Without this watcher the
+            // spinner would never try again, so any transition back to idle
+            // while active reloads once (the load itself re-guards).
+            .onChange(of: content.phase) { phase in
+                if phase == .idle { loadIfIdle() }
+            }
     }
 
     private var edgeMask: some View {
@@ -253,6 +262,14 @@ private struct NowPlayingCommentsPage: View {
             startPoint: .top,
             endPoint: .bottom
         )
+    }
+
+    /// One guarded entry point for every trigger: appearing, the page task,
+    /// and the idle self-heal. `loadFirstPage` ignores a load already
+    /// running, so the redundant triggers cannot double-request.
+    private func loadIfIdle() {
+        guard isActive, content.phase == .idle else { return }
+        Task { await content.loadFirstPage() }
     }
 }
 #endif

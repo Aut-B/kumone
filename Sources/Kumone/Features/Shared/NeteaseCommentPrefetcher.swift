@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Fetches the first page of a NetEase song's comments in the background so
 /// opening the comments panel reuses that request instead of starting another.
@@ -7,6 +8,8 @@ import Foundation
 @MainActor
 final class NeteaseCommentPrefetcher {
     static let shared = NeteaseCommentPrefetcher()
+
+    private static let log = Logger(subsystem: "sb.moe.kumone", category: "comments")
 
     private struct Key: Hashable {
         let songID: Int
@@ -43,6 +46,9 @@ final class NeteaseCommentPrefetcher {
     /// Drops the cached first page and cancels in-flight requests, e.g. when
     /// the player moves on to a song whose comments are not prefetched.
     func cancelAll() {
+        if !inflight.isEmpty {
+            Self.log.info("cancelAll dropping \(self.inflight.count) inflight (song switch)")
+        }
         for entry in inflight.values { entry.task.cancel() }
         inflight.removeAll()
         completed.removeAll()
